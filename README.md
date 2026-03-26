@@ -9,9 +9,43 @@ where you're stuck, and how to improve.
 
 ---
 
+## Quick Start
+
+```bash
+# Clone and install
+git clone git@github.com:leetio-varsha/claudeye.git
+cd claudeye
+npm install
+
+# Link CLI globally — makes `claudeye` available everywhere
+npm link
+
+# Configure (enter OpenAI key for embeddings — optional but recommended)
+claudeye setup
+
+# Install hooks into Claude Code (patches ~/.claude/settings.json)
+claudeye install-hooks
+
+# Restart Claude Code — hooks are now active for ALL projects
+```
+
+### Bootstrap with existing history
+
+Don't start with an empty database — import your git history:
+
+```bash
+cd ~/my-project
+claudeye import git                    # import from current repo
+claudeye import git --since 2024-01-01 # only recent commits
+```
+
+Repeat for each project you want Claudeye to know about.
+
+---
+
 ## Two parts
 
-### 🧠 Memory
+### Memory
 Claude Code forgets everything when a session ends. Claudeye doesn't.
 
 - Captures every tool event, compressed by AI into searchable observations
@@ -19,7 +53,7 @@ Claude Code forgets everything when a session ends. Claudeye doesn't.
 - Works across all your projects — ask "how did we solve this in project X"
   and get a grounded answer, not a hallucination
 
-### 📊 Analytics + Advisor
+### Analytics + Advisor
 Raw usage data turned into actionable insight.
 
 - **Friction scores** per session and project — where are you struggling?
@@ -50,28 +84,6 @@ Three hook scripts, one SQLite file, that's it.
 
 ---
 
-## Setup
-
-```bash
-# 1. Clone and install
-git clone https://github.com/yourname/claudeye
-cd claudeye
-npm install
-
-# 2. Link CLI globally
-npm link
-
-# 3. Configure
-claudeye setup        # enter OpenAI key for embeddings (optional but recommended)
-
-# 4. Install hooks into Claude Code
-claudeye install-hooks
-
-# 5. Restart Claude Code
-```
-
----
-
 ## Usage
 
 ```bash
@@ -80,6 +92,12 @@ claudeye search "how we fixed the auth bug"   # hybrid search across all project
 claudeye recent                               # last 15 observations, current project
 claudeye sessions                             # browse session history
 claudeye viewer                               # web UI at localhost:47777
+
+# Import
+claudeye import git                           # import git history from current repo
+claudeye import git --path /other/repo        # from another repo
+claudeye import notion                        # (coming soon)
+claudeye import jira                          # (coming soon)
 
 # Analytics
 claudeye analytics                            # global overview
@@ -130,11 +148,11 @@ different projects — because it understands meaning, not just keywords.
 
 | Issue | claude-mem | Claudeye |
 |-------|-----------|----------|
-| Unauthenticated HTTP API | ✗ Always running | ✓ No daemon |
-| Open port 37777 | ✗ Always | ✓ Only when `claudeye viewer` |
-| API keys in GET response | ✗ Cleartext | ✓ No settings API endpoint |
-| Path traversal via MCP | ✗ Unfixed | ✓ No MCP server |
-| Credential file permissions | ✗ 0644 | ✓ 0600 |
+| Unauthenticated HTTP API | Always running | No daemon |
+| Open port 37777 | Always | Only when `claudeye viewer` |
+| API keys in GET response | Cleartext | No settings API endpoint |
+| Path traversal via MCP | Unfixed | No MCP server |
+| Credential file permissions | 0644 | 0600 |
 
 ---
 
@@ -160,12 +178,14 @@ Embeddings (optional, for semantic search):
 - [x] Issue auto-detection and lifecycle tracking
 - [x] On-demand advisor (`claudeye advise`)
 - [x] Weekly digest generation
-- [ ] Fix critical gaps (see CLAUDE.md)
-- [ ] Web dashboard analytics tabs
+- [x] Git history import (`claudeye import git`)
+- [ ] Web dashboard analytics polish (Chart.js)
 - [ ] Weekly digest launchd automation
+- [ ] Notion import
+- [ ] Jira/Linear import
 - [ ] Per-project `.claudeye` config
 - [ ] `claudeye export` — memory as markdown
-- [ ] Team sharing via shared Postgres
+- [ ] Team sharing via shared Postgres + pgvector
 
 ---
 
