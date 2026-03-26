@@ -197,4 +197,41 @@ program.command('clear')
     console.log(chalk.green('\n✓ Cleared.\n'));
   });
 
+
+
+// ─── import ───────────────────────────────────────────────────────────────
+program.command('import')
+  .description('Import history from external sources')
+  .argument('<source>', 'Source type: git')
+  .option('-p, --path <path>', 'Repository path', process.cwd())
+  .option('--since <date>', 'Only import commits since date')
+  .option('-n, --limit <n>', 'Max commits to import')
+  .option('--skip-ai', 'Skip AI compression (faster, less rich)')
+  .action(async (source, opts) => {
+    if (source !== 'git') {
+      console.log(chalk.red(`
+  Unknown source: ${source}. Supported: git
+`));
+      return;
+    }
+    const { importGit } = await import('./src/import.js');
+    const ora = (await import('ora')).default;
+    const repoPath = opts.path;
+    const spinner = ora(`Importing git history from ${repoPath}...`).start();
+    try {
+      const result = await importGit(repoPath, {
+        since: opts.since || null,
+        limit: opts.limit ? parseInt(opts.limit) : null,
+        skipAi: opts.skipAi || false,
+      });
+      if (result.error) {
+        spinner.warn(result.error);
+      } else {
+        spinner.succeed(`Imported ${result.imported} commits (${result.skipped} skipped) from ${result.total} total`);
+      }
+    } catch (err) {
+      spinner.fail(err.message);
+    }
+  });
+
 program.parse();
