@@ -1,0 +1,134 @@
+/**
+ * search.js — Hybrid FTS5 + vector search with Reciprocal Rank Fusion
+ *
+ * Strategy:
+ *   1. FTS5 search → ranked list of observation IDs
+ *   2. Vector cosine similarity → ranked list of observation IDs
+ *   3. RRF fusion → merge both ranked lists into a final score
+ *   4. Return top-K deduped results
+ *
+ * RRF score = Σ 1 / (k + rank_i)  where k=60 (standard)
+ */
+
+import { ftsSearch, getObservationsWithEmbeddings, getRecentObservations } from './db.js';
+import { embed, cosineSimilarity, bufToFloat32 } from './embeddings.js';
+
+const RRF_K = 60;
+
+/**
+ * Main hybrid search entry point.
+ *
+ * @param {string} query      — natural language query (usually the user's prompt)
+ * @param {string} project    — current working directory / project path
+ * @param {object} opts
+ * @param {number} opts.limit — max results to return (default 8)
+ * @param {number} opts.ftsWeight    — weight for FTS rank (default 0.4)
+ * @param {number} opts.vectorWeight — weight for vector rank (default 0.6)
+ * @returns {Promise<Array>}  — sorted observations with hybrid scores
+ */
+export async function hybridSearch(query, project, {
+  limit        = 8,
+  ftsWeight    = 0.4,
+  vectorWeight = 0.6,
+} = {}) {
+
+  // Run FTS and vector search in parallel
+  const [ftsResults, vectorResults] = await Promise.all([
+    runFTS(query, project),
+    runVectorSearch(query, project),
+  ]);
+
+  // Build RRF score map: id → score
+  const scores = new Map();
+
+  ftsResults.forEach((obs, rank) => {
+    const id = obs.id;
+    const prev = scores.get(id) || { obs, score: 0 };
+    prev.score += ftsWeight * (1 / (RRF_K + rank + 1));
+    scores.set(id, prev);
+  });
+
+  vectorResults.forEach((obs, rank) => {
+    const id = obs.id;
+    const prev = scores.get(id) || { obs, score: 0 };
+    prev.score += vectorWeight * (1 / (RRF_K + rank + 1));
+    // Boost by importance
+    prev.score *= (0.5 + obs.importance * 0.5);
+    scores.set(id, prev);
+  });
+
+  return [...scores.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ obs, score }) => ({ ...obs, hybridScore: score }));
+}
+
+/**
+ * Build the context string to inject into Claude Code.
+ * Combines recent observations + hybrid search results.
+ */
+export async function buildContext(userPrompt, project, opts = {}) {
+  const [recent, searched] = await Promise.all([
+    getRecentObservations(project, 3),
+    hybridSearch(userPrompt, project, { limit: 6, ...opts }),
+  ]);
+
+  // Dedup: searched results may overlap with recent
+  const recentIds  = new Set(recent.map(o => o.id));
+  const dedupedSearch = searched.filter(o => !recentIds.has(o.id));
+
+  const lines = [];
+
+  if (recent.length) {
+    lines.push('## Recent session context');
+    for (const obs of recent) {
+      lines.push(`- ${obs.summary}`);
+    }
+  }
+
+  if (dedupedSearch.length) {
+    lines.push('\n## Relevant past context');
+    for (const obs of dedupedSearch) {
+      const tags = JSON.parse(obs.tags || '[]').join(', ');
+      lines.push(`- ${obs.summary}${tags ? ` [${tags}]` : ''}`);
+    }
+  }
+
+  if (!lines.length) return null;
+
+  return [
+    '<!-- claude-mem: injected context — do not edit -->',
+    ...lines,
+    '<!-- end claude-mem context -->',
+  ].join('\n');
+}
+
+// ─── Internal ─────────────────────────────────────────────────────────────
+
+async function runFTS(query, project) {
+  try {
+    return ftsSearch(query, project, 20);
+  } catch (err) {
+    console.error('[mem:fts] search failed:', err.message);
+    return [];
+  }
+}
+
+async function runVectorSearch(query, project) {
+  try {
+    const queryVec = await embed(query);
+    const rows     = getObservationsWithEmbeddings(project, 300);
+
+    return rows
+      .map(row => {
+        const vec = bufToFloat32(row.vector);
+        const sim = cosineSimilarity(queryVec, vec);
+        return { ...row, vectorScore: sim };
+      })
+      .sort((a, b) => b.vectorScore - a.vectorScore)
+      .slice(0, 30);
+  } catch (err) {
+    console.error('[mem:vector] search failed:', err.message);
+    return [];
+  }
+}
