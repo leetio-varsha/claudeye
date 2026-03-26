@@ -206,7 +206,21 @@ claudeye digest --generate            # generate now
 - #14 Landing page + pricing
 - #18 Local agent mode
 
+### Phase 5: Agent v1 (~June-July)
+- #19 Pattern detection: повторяющиеся проблемы и hotspots
+- #20 Agent v1: один use-case через Claudeye (PR review / bug triage / cross-repo / meeting->tasks)
+- #21 Feedback loop: система учится на своей работе
+- #22 Routing + Control: анти-хаос (1 агент, строгий контекст, kill switch)
+
+### Phase 6: Integrations (~July-August)
+- #23 Read-first интеграции: GitLab, Jira, Slack, Gmail, Sentry
+
+### Phase 7: Autopilot (~August+)
+- #24 Частичная автоматизация с контролем (авто triage, отчёты, таски)
+
 Each issue has readiness criteria — scheduler checks them daily.
+
+**Общая стратегия:** ядро -> польза -> один агент -> обучение -> масштаб
 
 ---
 
