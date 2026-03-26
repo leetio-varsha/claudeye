@@ -33,8 +33,7 @@ Long-term vision: "Datadog for AI-assisted development." Start personal, grow to
 
 ## Current status
 
-**Runtime:** sql.js (pure JavaScript SQLite). FTS5 not available — uses LIKE-based fallback.
-**Planned migration:** better-sqlite3 for native FTS5 support (Issue #1).
+**Runtime:** better-sqlite3 (native SQLite with FTS5). Fully operational.
 **Scheduler:** Cowork scheduled task `claudeye-analyzer` runs daily at 17:05 — analyzes codebase, usage patterns, workflow, and checks issue readiness criteria.
 **GitHub Project:** https://github.com/users/leetio-varsha/projects/4
 
@@ -55,7 +54,7 @@ claudeye/
 │   └── summary-hook.js         # Stop — compress full session summary
 │
 ├── src/
-│   ├── db.js                   # SQLite schema (sql.js), migrations, all DB operations
+│   ├── db.js                   # SQLite schema (better-sqlite3), migrations, all DB operations
 │   ├── embeddings.js           # embed(), cosineSimilarity(), bufToFloat32()
 │   ├── compress.js             # AI compression via claude --print CLI
 │   ├── search.js               # hybridSearch(), buildContext() — RRF fusion
@@ -179,7 +178,7 @@ claudeye digest --generate            # generate now
 ## Development roadmap
 
 ### Phase 1: Dogfooding Foundation (now — week of March 26)
-- #1 Switch to better-sqlite3 for native FTS5 ← START HERE
+- #1 Switch to better-sqlite3 for native FTS5 ✅ DONE
 - #2 E2E test hook lifecycle (after #1)
 - #3 Validate hook stdin payloads (after #1)
 - #4 First real git import (after #1)
@@ -239,7 +238,7 @@ memory tool -> self-improving system -> personal AI OS -> digital twin
 ## Known gaps (critical — fix before heavy dogfooding)
 
 ### Critical
-- **sql.js lacks FTS5** — currently using LIKE fallback. Issue #1 fixes this.
+- ~~sql.js lacks FTS5~~ — RESOLVED: using better-sqlite3 with native FTS5.
 - **Hook payload format unverified** — need to log real stdin. Issue #3.
 - **analytics-cli.js wiring** — may not be imported in cli.js correctly.
 
@@ -267,7 +266,7 @@ The scheduler auto-creates GitHub issues and adds them to Project #4.
 
 ```json
 {
-  "sql.js": "^1.11.0",
+  "better-sqlite3": "^11.0.0",
   "chalk": "^5.3.0",
   "commander": "^12.0.0",
   "express": "^4.18.2",
@@ -303,4 +302,4 @@ When starting a new session:
 3. Check Known gaps — fix criticals before adding features
 4. Run `claudeye-analyzer` readiness report to see what's ready
 
-**Current priority:** Issue #1 (better-sqlite3) — unblocks everything else.
+**Current priority:** Issues #2, #3, #4 — test hooks and validate payloads.
