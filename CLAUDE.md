@@ -218,9 +218,21 @@ claudeye digest --generate            # generate now
 ### Phase 7: Autopilot (~August+)
 - #24 Частичная автоматизация с контролем (авто triage, отчёты, таски)
 
+### Phase 8: Digital Twin (~Q4 2026+)
+- #29 Модель разработчика: стиль, решения, delegation
+
+### Cross-phase (постепенно)
+- #25 Decision Memory: сохранять почему, а не только что (Phase 2.5, малой кровью)
+- #26 Knowledge Graph: связи между сущностями (Phase 5, нужно 500+ observations)
+- #27 Personal AI OS: единая память, единый вход, единый контроль (Phase 3-4)
+- #28 Self-Improving Workflow Engine: coach + optimizer (Phase 5)
+
 Each issue has readiness criteria — scheduler checks them daily.
 
 **Общая стратегия:** ядро -> польза -> один агент -> обучение -> масштаб
+
+**Эволюция продукта:**
+memory tool -> self-improving system -> personal AI OS -> digital twin
 
 ---
 

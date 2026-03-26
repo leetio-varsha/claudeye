@@ -245,7 +245,18 @@ Embeddings (optional, for semantic search):
 ### Phase 7: Autopilot (August+ 2026)
 - [ ] Partial automation with control: auto triage, reports, tasks (#24)
 
+### Phase 8: Digital Twin (Q4 2026+)
+- [ ] Developer model: style, decisions, partial delegation (#29)
+
+### Cross-phase (gradual)
+- [ ] Decision Memory: capture why, not just what (#25)
+- [ ] Knowledge Graph: entity relationships (#26)
+- [ ] Personal AI OS: unified memory, entry, control (#27)
+- [ ] Self-Improving Workflow Engine: coach + optimizer (#28)
+
 **Strategy:** core -> value -> one agent -> learning -> scale
+
+**Evolution:** memory tool -> self-improving system -> personal AI OS -> digital twin
 
 All issues have readiness criteria — the daily analyzer checks them automatically.
 
