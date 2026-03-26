@@ -4,8 +4,7 @@
 
 Claudeye gives Claude Code a memory and shows you how to use it better.
 It captures everything across your sessions, surfaces relevant context when you need it,
-and analyzes your AI workflow patterns to show you exactly where you're fast,
-where you're stuck, and how to improve.
+analyzes your AI workflow patterns, and recommends what to automate in your entire dev workflow.
 
 ---
 
@@ -17,7 +16,7 @@ git clone git@github.com:leetio-varsha/claudeye.git
 cd claudeye
 npm install
 
-# Link CLI globally — makes `claudeye` available everywhere
+# Link CLI globally
 npm link
 
 # Configure (enter OpenAI key for embeddings — optional but recommended)
@@ -43,9 +42,10 @@ Repeat for each project you want Claudeye to know about.
 
 ---
 
-## Two parts
+## Three parts
 
-### Memory
+### 1. Memory
+
 Claude Code forgets everything when a session ends. Claudeye doesn't.
 
 - Captures every tool event, compressed by AI into searchable observations
@@ -53,7 +53,8 @@ Claude Code forgets everything when a session ends. Claudeye doesn't.
 - Works across all your projects — ask "how did we solve this in project X"
   and get a grounded answer, not a hallucination
 
-### Analytics + Advisor
+### 2. Analytics + Advisor
+
 Raw usage data turned into actionable insight.
 
 - **Friction scores** per session and project — where are you struggling?
@@ -61,6 +62,20 @@ Raw usage data turned into actionable insight.
 - **Model comparison** — when does Opus outperform Sonnet for your work?
 - **Issue resolution time** — how long do bugs actually take to fix?
 - **Weekly digest** — Claude analyzes your patterns and tells you what to change
+
+### 3. Automation Advisor (coming soon)
+
+Analyzes your entire dev workflow — not just Claude Code — and recommends what to automate.
+
+- **Task management** — detects repeated issue creation, stale tickets, sprint grooming patterns
+- **Code review** — spots PRs waiting too long, repeated review comments, missing checks
+- **Monitoring** — CI/CD status checks, branch divergence, dependency updates
+- **Documentation** — README/CHANGELOG drift, release notes generation
+- **Communications** — standup generation, weekly digests, Slack notifications
+- **Dev operations** — merged branch cleanup, test scheduling, database checks
+
+Each recommendation includes: automation type (Scheduler / Hook / Agent / Script / MCP / GitHub Action),
+estimated time savings, and implementation complexity.
 
 ---
 
@@ -75,6 +90,7 @@ Claude Code
 ```
 
 **Retrieval: Hybrid FTS5 + Vector (RRF fusion)**
+
 ```
 prompt → FTS5 search + cosine similarity → RRF merge → importance boost → inject
 ```
@@ -96,8 +112,8 @@ claudeye viewer                               # web UI at localhost:47777
 # Import
 claudeye import git                           # import git history from current repo
 claudeye import git --path /other/repo        # from another repo
-claudeye import notion                        # (coming soon)
-claudeye import jira                          # (coming soon)
+claudeye import notion                        # (coming soon — Issue #9)
+claudeye import jira                          # (coming soon — Issue #10)
 
 # Analytics
 claudeye analytics                            # global overview
@@ -122,7 +138,7 @@ All data stays on your machine at `~/.claudeye/` — never leaves.
 
 ```
 ~/.claudeye/
-├── mem.db          # SQLite database (WAL mode)
+├── mem.db          # SQLite database
 └── settings.json   # API keys (mode 0600, only you can read)
 ```
 
@@ -141,6 +157,21 @@ and the top results are prepended to your prompt as a context block.
 This means searching *"login issue"* finds past observations about
 *"JWT token expiry"*, *"session middleware"*, *"auth guard"* — even across
 different projects — because it understands meaning, not just keywords.
+
+---
+
+## Automated daily analysis
+
+Claudeye includes a scheduled analyzer (via Cowork) that runs daily with 4 tracks:
+
+| Track | What it does |
+|-------|-------------|
+| **A: Codebase** | Finds bugs, code quality issues, security gaps, missing features |
+| **B: Usage patterns** | Analyzes mem.db for friction hotspots, repeated actions |
+| **C: Workflow** | Scans git + GitHub for PR/issue patterns, recommends automations |
+| **D: Readiness** | Checks each issue's start criteria, comments when ready |
+
+The analyzer auto-creates GitHub issues and adds them to the project board.
 
 ---
 
@@ -170,22 +201,39 @@ Embeddings (optional, for semantic search):
 
 ## Roadmap
 
+### Phase 1: Dogfooding Foundation (March 2026)
 - [x] Core memory hooks (save, inject, summarize)
 - [x] Hybrid FTS5 + vector search with RRF
 - [x] AI compression via Claude CLI
 - [x] Analytics computation layer
-- [x] Plugin + model effectiveness comparison
-- [x] Issue auto-detection and lifecycle tracking
-- [x] On-demand advisor (`claudeye advise`)
-- [x] Weekly digest generation
-- [x] Git history import (`claudeye import git`)
-- [ ] Web dashboard analytics polish (Chart.js)
-- [ ] Weekly digest launchd automation
-- [ ] Notion import
-- [ ] Jira/Linear import
-- [ ] Per-project `.claudeye` config
-- [ ] `claudeye export` — memory as markdown
-- [ ] Team sharing via shared Postgres + pgvector
+- [x] Git history import
+- [ ] Switch to better-sqlite3 for native FTS5 (#1)
+- [ ] E2E hook testing (#2, #3)
+- [ ] First real git import on own repos (#4)
+
+### Phase 2: Polish & Fix (April 2026, after 2 weeks dogfooding)
+- [ ] Retention policy (#5)
+- [ ] Private tag support (#6)
+- [ ] Dashboard polish with Chart.js (#7)
+- [ ] Weekly digest automation (#8)
+
+### Phase 2.5: Advisor Foundation (April 2026)
+- [ ] Structured advisor output — JSON format (#17)
+- [ ] Auto-issues from advisor (#15)
+- [ ] Automation advisor — full workflow analysis (#16)
+
+### Phase 3: Import Layer (late April 2026)
+- [ ] Notion import (#9)
+- [ ] Jira/Linear import (#10)
+- [ ] Memory export as markdown (#11)
+
+### Phase 4: Team Prep (May-June 2026)
+- [ ] Postgres + pgvector (#12)
+- [ ] API auth + multi-user (#13)
+- [ ] Landing page + pricing (#14)
+- [ ] Local agent mode (#18)
+
+All issues have readiness criteria — the daily analyzer checks them automatically.
 
 ---
 

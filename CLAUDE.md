@@ -9,10 +9,12 @@
 ## What this project is
 
 Claudeye is a production-ready personal memory and analytics layer for Claude Code.
-Two distinct parts — both important, different maturity levels.
+
+Three distinct parts — all important, different maturity levels.
 
 **Part 1: Memory** — persist context across Claude Code sessions using hooks.
 **Part 2: Analytics + Advisor** — understand and improve how you use Claude Code.
+**Part 3: Automation Advisor** — analyze your entire dev workflow and recommend what to automate.
 
 Long-term vision: "Datadog for AI-assisted development." Start personal, grow to teams.
 
@@ -26,6 +28,15 @@ Long-term vision: "Datadog for AI-assisted development." Start personal, grow to
 - **Claude CLI only** — use `claude --print` for AI calls. No Anthropic SDK, no API keys for compression/advice. Uses the user's existing Claude Code subscription.
 - **OpenAI embeddings only** — the one external API. `text-embedding-3-small`, 1536 dims. Optional but strongly recommended.
 - **Security first** — settings file mode 0600, no sensitive data in GET responses, localhost-only for viewer.
+
+---
+
+## Current status
+
+**Runtime:** sql.js (pure JavaScript SQLite). FTS5 not available — uses LIKE-based fallback.
+**Planned migration:** better-sqlite3 for native FTS5 support (Issue #1).
+**Scheduler:** Cowork scheduled task `claudeye-analyzer` runs daily at 17:05 — analyzes codebase, usage patterns, workflow, and checks issue readiness criteria.
+**GitHub Project:** https://github.com/users/leetio-varsha/projects/4
 
 ---
 
@@ -44,13 +55,14 @@ claudeye/
 │   └── summary-hook.js         # Stop — compress full session summary
 │
 ├── src/
-│   ├── db.js                   # SQLite schema, migrations, all DB operations
+│   ├── db.js                   # SQLite schema (sql.js), migrations, all DB operations
 │   ├── embeddings.js           # embed(), cosineSimilarity(), bufToFloat32()
 │   ├── compress.js             # AI compression via claude --print CLI
 │   ├── search.js               # hybridSearch(), buildContext() — RRF fusion
 │   ├── analytics.js            # all analytics computations (pure SQLite)
 │   ├── advisor.js              # Claude CLI advisor, weekly digest, issue detection
 │   ├── analytics-cli.js        # CLI commands: analytics, advise, rate, digest
+│   ├── import.js               # Import dispatcher (git implemented, notion/jira stubs)
 │   └── server.js               # Express web viewer, localhost:47777
 │
 └── scripts/
@@ -73,42 +85,13 @@ All data lives in `~/.claudeye/` (mode 0700).
 ### Key tables
 
 **`observations`** — compressed AI summaries of every tool event
-```sql
-id, session_id, project, tool, summary, raw_input, raw_output,
-tags (JSON array), importance (0.0–1.0), created_at,
-retry_count, duration_ms
-```
-
 **`embeddings`** — Float32Array blobs (1536 dims) per observation
-```sql
-observation_id, vector (BLOB), model, created_at
-```
-
-**`sessions`** — session metadata
-```sql
-id, project, started_at, ended_at, summary, prompt_count,
-model, plugins (JSON), skills (JSON), duration_ms,
-token_input, token_output, friction_score, outcome
-```
-
-**`fts_obs`** — FTS5 virtual table, auto-synced via triggers on observations
-
+**`sessions`** — session metadata with friction scores
+**`fts_obs`** — FTS5 virtual table (when available, otherwise LIKE fallback)
 **`issues`** — auto-detected issue lifecycle
-```sql
-id, project, title, status (open|resolved|abandoned),
-opened_at, resolved_at, session_ids (JSON), obs_ids (JSON),
-complexity, resolution_ms
-```
-
 **`digests`** — cached weekly advisor reports
-```sql
-id, week_start, report (markdown), raw_stats (JSON), created_at
-```
-
-**`session_ratings`** — user ratings 1–5 per session
-```sql
-session_id, rating, note, created_at
-```
+**`session_ratings`** — user ratings 1-5 per session
+**`import_sources`** — idempotent import tracking
 
 ---
 
@@ -117,27 +100,14 @@ session_id, rating, note, created_at
 ```
 User prompt
     │
-    ├── FTS5 (Porter stemmer, bm25 ranking)     → ranked list A (up to 20)
-    └── cosine similarity vs stored embeddings  → ranked list B (top 30 of 300)
+    ├── FTS5/LIKE search (keyword matching)        → ranked list A (up to 20)
+    └── cosine similarity vs stored embeddings     → ranked list B (top 30 of 300)
               │
     RRF fusion: score = Σ 1/(60 + rank)
               │
     importance boost: score × (0.5 + importance × 0.5)
               │
-    top-K deduped results
-              │
-    inject as markdown comment block before user prompt
-```
-
-Context injection format:
-```
-<!-- claudeye: injected context — do not edit -->
-## Recent session context
-- <observation summary>
-
-## Relevant past context
-- <observation summary> [#tag1 #tag2]
-<!-- end claudeye context -->
+    top-K deduped results → inject as markdown comment block before user prompt
 ```
 
 ---
@@ -159,38 +129,13 @@ Importance scale:
 
 ---
 
-## Analytics signals
+## Friction score
 
-**Friction score** (0.0–1.0, computed per session):
 ```
 friction = (error_ratio × 0.4) + (retry_ratio × 0.4) + (importance_avg × 0.2)
 ```
+
 High friction = session had errors, retries, or complex work.
-
-**Plugin effectiveness**: friction delta vs baseline (sessions with no plugins).
-Example output:
-```
-superpowers          47 sessions
-  Friction:  +0.18 ↑ worse
-  Duration:  +23min slower
-  Rating:    3.1/5
-```
-
-**Issue auto-detection**: observations tagged `error|bug|crash` → open issue.
-Subsequent `bugfix|fix|resolved` tag in same project → auto-close with resolution time.
-
----
-
-## Advisor engine (advisor.js)
-
-Uses `claude --print` (no API cost, uses subscription).
-
-On-demand: `claudeye advise` — streams to terminal.
-Weekly: `claudeye digest --generate` — stores markdown in `digests` table.
-
-Prompt structure: aggregated stats JSON → Claude → structured markdown report with sections:
-- Key Patterns, Top 3 Recommendations, Plugin & Model Insights,
-  Issue Resolution Analysis, One Big Change
 
 ---
 
@@ -198,87 +143,97 @@ Prompt structure: aggregated stats JSON → Claude → structured markdown repor
 
 ```bash
 # Setup
-claudeye setup              # configure API keys (~/.claudeye/settings.json)
-claudeye install-hooks      # patch ~/.claude/settings.json with hook definitions
+claudeye setup              # configure API keys
+claudeye install-hooks      # patch ~/.claude/settings.json
 
 # Memory
 claudeye search <query>     # hybrid FTS + vector search
-claudeye recent [n]         # recent observations for current project
+claudeye recent [n]         # recent observations
 claudeye sessions           # browse sessions
 claudeye viewer             # web UI at localhost:47777
-claudeye clear              # clear data (--project or --yes for all)
+claudeye clear              # clear data
+
+# Import
+claudeye import git         # import git history
+claudeye import notion      # (stub — Issue #9)
+claudeye import jira        # (stub — Issue #10)
 
 # Analytics
 claudeye analytics                    # global overview
-claudeye analytics --project <path>   # per-project deep dive
-claudeye analytics --plugins          # plugin effectiveness matrix
+claudeye analytics --project <path>   # per-project
+claudeye analytics --plugins          # plugin effectiveness
 claudeye analytics --models           # model comparison
-claudeye analytics --issues           # issue resolution metrics
-claudeye analytics --hotspots         # complexity hotspots (most-edited files)
+claudeye analytics --issues           # issue resolution
+claudeye analytics --hotspots         # complexity hotspots
 
 # Advisor
-claudeye advise                       # on-demand Claude recommendations (streams)
+claudeye advise                       # AI recommendations (streams)
 claudeye advise --focus plugins       # focused advice
-claudeye advise --days 14             # custom lookback period
-claudeye rate [session-id]            # rate session 1-5 (improves advisor)
-claudeye digest                       # show latest weekly digest
+claudeye rate [session-id]            # rate session 1-5
+claudeye digest                       # show latest digest
 claudeye digest --generate            # generate now
-claudeye digest --list                # history
 ```
 
 ---
 
-## Known gaps (must fix before production use)
+## Development roadmap
+
+### Phase 1: Dogfooding Foundation (now — week of March 26)
+- #1 Switch to better-sqlite3 for native FTS5 ← START HERE
+- #2 E2E test hook lifecycle (after #1)
+- #3 Validate hook stdin payloads (after #1)
+- #4 First real git import (after #1)
+
+### Phase 2: Polish & Fix (~April 9, after 2 weeks dogfooding)
+- #5 Retention policy
+- #6 Private tag support
+- #7 Dashboard polish (Chart.js)
+- #8 Weekly digest launchd automation
+
+### Phase 2.5: Advisor Foundation (~April 9-16)
+- #17 Structured advisor output (JSON) — foundation for #15 and #16
+- #15 Auto-issues from advisor (after #17)
+- #16 Automation advisor — full workflow analysis (after #17)
+
+### Phase 3: Import Layer (~April 23)
+- #9 Notion import
+- #10 Jira/Linear import
+- #11 claudeye export
+
+### Phase 4: Team Prep (~May-June)
+- #12 Postgres + pgvector
+- #13 API auth + multi-user
+- #14 Landing page + pricing
+- #18 Local agent mode
+
+Each issue has readiness criteria — scheduler checks them daily.
+
+---
+
+## Known gaps (critical — fix before heavy dogfooding)
 
 ### Critical
-- **Hook payload validation** — need to verify exactly what fields Claude Code
-  exposes in hook JSON. Specifically: does it include `model`, `plugins_active`,
-  `token_input`, `token_output`? If not, those analytics fields stay null.
-  Test by logging raw stdin in save-hook.js and running a session.
-
-- **setup.js bug** — uses `require()` instead of `readFileSync` for existing
-  settings load. Replace with:
-  ```js
-  import { readFileSync } from 'fs';
-  const existing = existsSync(SETTINGS_PATH)
-    ? JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'))
-    : {};
-  ```
-
-- **analytics-cli.js not wired into cli.js** — commands exist in
-  `src/analytics-cli.js` but aren't imported/registered in the main `cli.js`.
-  Add: `import './src/analytics-cli.js'` at the bottom of cli.js.
-
-- **migrateAnalytics() not called** — analytics schema additions
-  (ALTER TABLE sessions ADD COLUMN model...) need to run on first use.
-  Call `migrateAnalytics()` from `scripts/setup.js` wrapped in try/catch
-  (ALTER TABLE fails silently if columns already exist in SQLite — that's fine).
+- **sql.js lacks FTS5** — currently using LIKE fallback. Issue #1 fixes this.
+- **Hook payload format unverified** — need to log real stdin. Issue #3.
+- **analytics-cli.js wiring** — may not be imported in cli.js correctly.
 
 ### Important
-- **`<private>` tag support** — if user wraps content in `<private>...</private>`
-  in their prompt, save-hook should skip storing that observation.
-  Implement in save-hook.js before storing.
+- **`<private>` tag support** — Issue #6
+- **Retention policy** — Issue #5
+- **Web dashboard analytics tabs** — Issue #7
 
-- **Retention policy** — no auto-cleanup currently. Add to setup.js:
-  ```js
-  // Delete low-importance observations older than 90 days
-  db.prepare(`
-    DELETE FROM observations
-    WHERE importance < 0.3 AND created_at < date('now', '-90 days')
-  `).run();
-  ```
+---
 
-- **Web dashboard analytics tabs** — server.js has the viewer UI but only
-  shows observations. Analytics tabs (plugin matrix, model comparison,
-  issue timeline) not yet built into the HTML.
+## Automated analysis (Scheduler)
 
-- **Weekly digest automation** — need a launchd plist (macOS) to run
-  `claudeye digest --generate` every Sunday. Not yet created.
+A Cowork scheduled task `claudeye-analyzer` runs daily at 17:05 with 4 tracks:
 
-### Nice to have
-- Per-project `.claudeye` config file (exclude paths, importance thresholds)
-- `claudeye export` — dump project memory as readable markdown
-- Cross-device sync (swap better-sqlite3 for pg + pgvector, same interface)
+- **Track A:** Codebase analysis — bugs, quality, security, features
+- **Track B:** Usage pattern analysis from mem.db — friction, repeated actions
+- **Track C:** Full workflow analysis — git, GitHub PRs/issues, dev operations
+- **Track D:** Readiness check — verifies criteria for each open issue, comments when ready
+
+The scheduler auto-creates GitHub issues and adds them to Project #4.
 
 ---
 
@@ -286,7 +241,7 @@ claudeye digest --list                # history
 
 ```json
 {
-  "better-sqlite3": "^11.0.0",
+  "sql.js": "^1.11.0",
   "chalk": "^5.3.0",
   "commander": "^12.0.0",
   "express": "^4.18.2",
@@ -298,29 +253,28 @@ Node.js >= 20 required (ESM throughout).
 
 ---
 
-## Product context (for future decisions)
+## Product context
 
-This is a personal tool first. Two-phase roadmap:
-1. **Personal** — validate memory + analytics work well for one developer
+Personal tool first. Three-phase roadmap:
+1. **Personal** — validate memory + analytics + automation advisor for one developer
 2. **Team** — shared Postgres backend, team dashboard, per-seat pricing
+3. **Platform** — marketplace for custom analyzers and integrations
 
-The analytics + advisor layer (Part 2) is the defensible product.
+The analytics + advisor + automation layer (Parts 2-3) is the defensible product.
 Memory (Part 1) will eventually be commoditized by Anthropic native features.
 
-Target market when going team: engineering teams spending $1k+/month on AI
-tooling who want ROI visibility. The pitch: "understand and improve how your
-team uses AI." Price point: $50-200/month per team.
-
-Open-source the memory core, monetize the analytics/advisor layer.
+Target market: engineering teams spending $1k+/month on AI tooling who want ROI visibility.
+Price point: $50-200/month per team.
+Open-source the memory core, monetize the analytics/advisor/automation layer.
 
 ---
 
 ## How to continue work in Claude Code
 
 When starting a new session:
-1. Claude Code will auto-load this file (it's named CLAUDE.md)
-2. Say which part you want to work on
-3. Check the "Known gaps" section first — fix criticals before adding features
+1. Claude Code will auto-load this file
+2. Check the Development roadmap section — work on the current phase
+3. Check Known gaps — fix criticals before adding features
+4. Run `claudeye-analyzer` readiness report to see what's ready
 
-Suggested next session: fix the 4 critical gaps listed above,
-then test the full hook → compress → embed → inject loop end to end.
+**Current priority:** Issue #1 (better-sqlite3) — unblocks everything else.
