@@ -233,6 +233,20 @@ Embeddings (optional, for semantic search):
 - [ ] Landing page + pricing (#14)
 - [ ] Local agent mode (#18)
 
+### Phase 5: Agent v1 (June-July 2026)
+- [ ] Pattern detection: repeat-fix detector, file hotspots (#19)
+- [ ] One agent, one use-case, full cycle through Claudeye (#20)
+- [ ] Feedback loop: system learns from its own actions (#21)
+- [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22)
+
+### Phase 6: Integrations (July-August 2026)
+- [ ] Read-first: GitLab, Jira, Slack, Gmail, Sentry (#23)
+
+### Phase 7: Autopilot (August+ 2026)
+- [ ] Partial automation with control: auto triage, reports, tasks (#24)
+
+**Strategy:** core -> value -> one agent -> learning -> scale
+
 All issues have readiness criteria — the daily analyzer checks them automatically.
 
 ---
