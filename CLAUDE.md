@@ -199,11 +199,20 @@ claudeye digest --generate            # generate now
 - #10 Jira/Linear import
 - #11 claudeye export
 
-### Phase 4: Team Prep (~May-June)
-- #12 Postgres + pgvector
-- #13 API auth + multi-user
+### Phase 4: Team Foundation (~May-June)
+- #12 Postgres + pgvector — team backend
+- #13 API auth + multi-user — JWT/OAuth
+- #34 Team Sync Layer — локальный SQLite → общая база (только агрегаты, не raw данные)
+- #35 Team Roles & Access — dev / tech lead / admin с разным уровнем видимости
 - #14 Landing page + pricing
 - #18 Local agent mode
+
+### Phase 4.5: Team UX (~June)
+- #36 Team Auto-Setup — `npx claudeye join <token>` онбординг за одну команду
+- #37 Team Dashboard — админка: friction по девам, инструменты, стандартизация, health
+- #38 Team CLAUDE.md — иерархия global → team → project → personal
+- #39 Team Analytics — агрегированный advisor: кто буксует, что стандартизировать, onboarding score
+- #40 Shared Knowledge Base — privacy-first обмен решениями между девами
 
 ### Phase 5: Agent v1 (~June-July)
 - #19 Pattern detection: повторяющиеся проблемы и hotspots
@@ -282,8 +291,19 @@ Node.js >= 20 required (ESM throughout).
 
 Personal tool first. Three-phase roadmap:
 1. **Personal** — validate memory + analytics + automation advisor for one developer
-2. **Team** — shared Postgres backend, team dashboard, per-seat pricing
+2. **Team** — shared backend, team dashboard, per-seat pricing
 3. **Platform** — marketplace for custom analyzers and integrations
+
+### Team-level vision
+Те же принципы что для одного дева, масштабированные на команду:
+- **Privacy-first** — raw данные (код, промпты) никогда не покидают машину дева. Наверх уходят только агрегаты: friction, модели, плагины, теги, метрики.
+- **Insight-driven, не слежка** — тех лид видит где команда буксует и какие инструменты работают. Не видит конкретные промпты и код.
+- **Иерархический CLAUDE.md** — global → team → project → personal. Унифицирует практики без потери личного контроля.
+- **Shared Knowledge Base** — дев решил проблему → расшарил решение → другой нашёл через поиск. Шаринг только добровольный.
+- **Онбординг за одну команду** — `npx claudeye join <token>` настраивает всё: хуки, sync, team CLAUDE.md.
+- **Team analytics** — friction по девам × проектам, ROI инструментов, onboarding score, стандартизация.
+
+Issues: #34 (Sync Layer), #35 (Roles), #36 (Auto-Setup), #37 (Dashboard), #38 (CLAUDE.md), #39 (Analytics), #40 (Knowledge Base).
 
 The analytics + advisor + automation layer (Parts 2-3) is the defensible product.
 Memory (Part 1) will eventually be commoditized by Anthropic native features.

@@ -77,6 +77,17 @@ Analyzes your entire dev workflow — not just Claude Code — and recommends wh
 Each recommendation includes: automation type (Scheduler / Hook / Agent / Script / MCP / GitHub Action),
 estimated time savings, and implementation complexity.
 
+### 4. Team Mode (coming later)
+
+Same principles, scaled to a team. Privacy-first — raw data never leaves dev machines.
+
+- **Aggregated metrics only** — friction scores, models, plugins, patterns flow up. Code and prompts stay local.
+- **Tech lead dashboard** — see where the team struggles, which tools actually work, what to standardize
+- **Hierarchical CLAUDE.md** — global → team → project → personal. Unified practices without losing individual control.
+- **Shared Knowledge Base** — dev solves a problem, shares the solution. Others find it through search. Sharing is always voluntary.
+- **One-command onboarding** — `npx claudeye join <token>` sets up hooks, sync, team config.
+- **Team analytics** — friction × developer × project heatmap, tool ROI, onboarding score for new members.
+
 ---
 
 ## Architecture
@@ -207,9 +218,9 @@ Embeddings (optional, for semantic search):
 - [x] AI compression via Claude CLI
 - [x] Analytics computation layer
 - [x] Git history import
-- [ ] Switch to better-sqlite3 for native FTS5 (#1)
+- [x] Switch to better-sqlite3 for native FTS5 (#1)
 - [ ] E2E hook testing (#2, #3)
-- [ ] First real git import on own repos (#4)
+- [x] First real git import on own repos (#4) — 6,866 commits from 19 repos
 
 ### Phase 2: Polish & Fix (April 2026, after 2 weeks dogfooding)
 - [ ] Retention policy (#5)
@@ -227,11 +238,20 @@ Embeddings (optional, for semantic search):
 - [ ] Jira/Linear import (#10)
 - [ ] Memory export as markdown (#11)
 
-### Phase 4: Team Prep (May-June 2026)
-- [ ] Postgres + pgvector (#12)
+### Phase 4: Team Foundation (May-June 2026)
+- [ ] Postgres + pgvector — team backend (#12)
 - [ ] API auth + multi-user (#13)
+- [ ] Team Sync Layer — local SQLite → shared DB, aggregates only (#34)
+- [ ] Team Roles & Access — dev / tech lead / admin (#35)
 - [ ] Landing page + pricing (#14)
 - [ ] Local agent mode (#18)
+
+### Phase 4.5: Team UX (June 2026)
+- [ ] Team Auto-Setup — `npx claudeye join <token>` (#36)
+- [ ] Team Dashboard — friction heatmap, tool ROI, standardization (#37)
+- [ ] Team CLAUDE.md — hierarchical: global → team → project → personal (#38)
+- [ ] Team Analytics — aggregated advisor for the whole team (#39)
+- [ ] Shared Knowledge Base — privacy-first knowledge sharing (#40)
 
 ### Phase 5: Agent v1 (June-July 2026)
 - [ ] Pattern detection: repeat-fix detector, file hotspots (#19)
@@ -256,7 +276,7 @@ Embeddings (optional, for semantic search):
 
 **Strategy:** core -> value -> one agent -> learning -> scale
 
-**Evolution:** memory tool -> self-improving system -> personal AI OS -> digital twin
+**Evolution:** memory tool -> self-improving system -> team platform -> personal AI OS -> digital twin
 
 All issues have readiness criteria — the daily analyzer checks them automatically.
 
