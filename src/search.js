@@ -68,14 +68,21 @@ export async function hybridSearch(query, project, {
  * Combines recent observations + hybrid search results.
  */
 export async function buildContext(userPrompt, project, opts = {}) {
+  // 1. Project-specific: recent + hybrid search
   const [recent, searched] = await Promise.all([
     getRecentObservations(project, 3),
     hybridSearch(userPrompt, project, { limit: 6, ...opts }),
   ]);
 
-  // Dedup: searched results may overlap with recent
-  const recentIds  = new Set(recent.map(o => o.id));
-  const dedupedSearch = searched.filter(o => !recentIds.has(o.id));
+  // 2. Cross-project: bring experience from other projects
+  const crossResults = await hybridSearch(userPrompt, null, { limit: 4, ...opts });
+
+  // Dedup
+  const seenIds = new Set([...recent.map(o => o.id), ...searched.map(o => o.id)]);
+  const dedupedSearch = searched.filter(o => !new Set(recent.map(r => r.id)).has(o.id));
+  const crossFiltered = crossResults
+    .filter(o => !seenIds.has(o.id) && o.project !== project)
+    .slice(0, 3);
 
   const lines = [];
 
@@ -91,6 +98,15 @@ export async function buildContext(userPrompt, project, opts = {}) {
     for (const obs of dedupedSearch) {
       const tags = JSON.parse(obs.tags || '[]').join(', ');
       lines.push(`- ${obs.summary}${tags ? ` [${tags}]` : ''}`);
+    }
+  }
+
+  if (crossFiltered.length) {
+    lines.push('\n## Cross-project context');
+    for (const obs of crossFiltered) {
+      const projName = obs.project?.split('/').pop() || 'unknown';
+      const tags = JSON.parse(obs.tags || '[]').join(', ');
+      lines.push(`- [${projName}] ${obs.summary}${tags ? ` [${tags}]` : ''}`);
     }
   }
 

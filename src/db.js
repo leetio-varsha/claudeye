@@ -136,43 +136,62 @@ export function saveEmbedding(observationId, float32Array) {
   `).run(observationId, buf);
 }
 
-export function getObservationsWithEmbeddings(project, limit = 500) {
+export function getObservationsWithEmbeddings(project = null, limit = 500) {
   const db = getDb();
+  if (project) {
+    return db.prepare(`
+      SELECT o.id, o.summary, o.tags, o.importance, o.created_at, o.project, e.vector
+      FROM observations o JOIN embeddings e ON e.observation_id = o.id
+      WHERE o.project = ? ORDER BY o.created_at DESC LIMIT ?
+    `).all(project, limit);
+  }
   return db.prepare(`
-    SELECT o.id, o.summary, o.tags, o.importance, o.created_at, e.vector
-    FROM observations o
-    JOIN embeddings e ON e.observation_id = o.id
-    WHERE o.project = ?
-    ORDER BY o.created_at DESC
-    LIMIT ?
-  `).all(project, limit);
+    SELECT o.id, o.summary, o.tags, o.importance, o.created_at, o.project, e.vector
+    FROM observations o JOIN embeddings e ON e.observation_id = o.id
+    ORDER BY o.created_at DESC LIMIT ?
+  `).all(limit);
 }
 
-export function getRecentObservations(project, limit = 10) {
+export function getRecentObservations(project = null, limit = 10) {
   const db = getDb();
+  if (project) {
+    return db.prepare(`
+      SELECT id, summary, tool, tags, importance, created_at, project
+      FROM observations WHERE project = ?
+      ORDER BY importance DESC, created_at DESC LIMIT ?
+    `).all(project, limit);
+  }
   return db.prepare(`
-    SELECT id, summary, tool, tags, importance, created_at
+    SELECT id, summary, tool, tags, importance, created_at, project
     FROM observations
-    WHERE project = ?
-    ORDER BY importance DESC, created_at DESC
-    LIMIT ?
-  `).all(project, limit);
+    ORDER BY importance DESC, created_at DESC LIMIT ?
+  `).all(limit);
 }
 
-export function ftsSearch(query, project, limit = 20) {
+export function ftsSearch(query, project = null, limit = 20) {
   const db = getDb();
-  // Sanitize query for FTS5
   const safe = query.replace(/[^\w\s]/g, ' ').trim();
   if (!safe) return [];
+  // Use OR to find documents matching ANY word (better recall for context injection)
+  const ftsQuery = safe.split(/\s+/).filter(Boolean).join(' OR ');
+  if (project) {
+    return db.prepare(`
+      SELECT o.id, o.summary, o.tags, o.importance, o.created_at, o.project,
+             bm25(fts_obs) AS fts_score
+      FROM fts_obs
+      JOIN observations o ON o.id = fts_obs.rowid
+      WHERE fts_obs MATCH ? AND o.project = ?
+      ORDER BY fts_score LIMIT ?
+    `).all(ftsQuery, project, limit);
+  }
   return db.prepare(`
-    SELECT o.id, o.summary, o.tags, o.importance, o.created_at,
+    SELECT o.id, o.summary, o.tags, o.importance, o.created_at, o.project,
            bm25(fts_obs) AS fts_score
     FROM fts_obs
     JOIN observations o ON o.id = fts_obs.rowid
-    WHERE fts_obs MATCH ? AND o.project = ?
-    ORDER BY fts_score
-    LIMIT ?
-  `).all(safe, project, limit);
+    WHERE fts_obs MATCH ?
+    ORDER BY fts_score LIMIT ?
+  `).all(ftsQuery, limit);
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
