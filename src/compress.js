@@ -12,27 +12,7 @@
  *   0.1  = noise (ls, cat, pwd)
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
-
-const SETTINGS_PATH = join(homedir(), '.claudeye', 'settings.json');
-
-function getSettings() {
-  if (!existsSync(SETTINGS_PATH)) return {};
-  try { return JSON.parse(readFileSync(SETTINGS_PATH, 'utf8')); }
-  catch { return {}; }
-}
-
-let _client = null;
-function getClient() {
-  if (_client) return _client;
-  const apiKey = getSettings().anthropicApiKey || process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('[mem] ANTHROPIC_API_KEY not set');
-  _client = new Anthropic({ apiKey });
-  return _client;
-}
+import { execFileSync } from 'child_process';
 
 const SYSTEM_PROMPT = `You are a coding session memory assistant. Your job is to compress tool usage events into structured, searchable observations.
 
@@ -67,22 +47,19 @@ export async function compressObservation({ tool, input, output, project }) {
   }
 
   try {
-    const client = getClient();
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      system: SYSTEM_PROMPT,
-      messages: [{
-        role: 'user',
-        content: `Project: ${project}
-Tool: ${tool}
-Input: ${truncatedInput}
-Output: ${truncatedOutput}`,
-      }],
-    });
+    const userMsg = `Project: ${project}\nTool: ${tool}\nInput: ${truncatedInput}\nOutput: ${truncatedOutput}`;
+    const prompt = `${SYSTEM_PROMPT}\n\n${userMsg}`;
 
-    const text = response.content[0]?.text?.trim() ?? '';
-    const parsed = JSON.parse(text);
+    const text = execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '300', prompt], {
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+
+    // Extract JSON from response (claude --print may wrap in markdown)
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON in response');
+    const parsed = JSON.parse(jsonMatch[0]);
 
     return {
       summary:    String(parsed.summary   || '').slice(0, 500),
@@ -109,20 +86,13 @@ export async function compressSession({ observations, project }) {
     .join('\n');
 
   try {
-    const client = getClient();
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
-      messages: [{
-        role: 'user',
-        content: `Summarize this coding session for project "${project}" in 3-5 sentences. Focus on: what was built/fixed, key decisions, any unresolved issues. Be specific.
+    const prompt = `Summarize this coding session for project "${project}" in 3-5 sentences. Focus on: what was built/fixed, key decisions, any unresolved issues. Be specific.\n\nSession observations:\n${topObs}`;
 
-Session observations:
-${topObs}`,
-      }],
-    });
-
-    return response.content[0]?.text?.trim() ?? null;
+    return execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '400', prompt], {
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || null;
   } catch {
     return `Session with ${observations.length} observations in ${project}.`;
   }

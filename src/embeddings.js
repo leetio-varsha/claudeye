@@ -20,7 +20,8 @@ function getSettings() {
 // ─── Embedding config ─────────────────────────────────────────────────────
 
 export function isEmbeddingEnabled() {
-  const key = getSettings().openaiApiKey || process.env.OPENAI_API_KEY;
+  const s = getSettings();
+  const key = s.openai_api_key || s.openaiApiKey || process.env.OPENAI_API_KEY;
   return !!key;
 }
 
@@ -33,7 +34,8 @@ export function isEmbeddingEnabled() {
 export async function embed(text) {
   const input = text.slice(0, 8000);
 
-  const openaiKey = getSettings().openaiApiKey || process.env.OPENAI_API_KEY;
+  const s = getSettings();
+  const openaiKey = s.openai_api_key || s.openaiApiKey || process.env.OPENAI_API_KEY;
   if (openaiKey) {
     return embedViaOpenAI(input, openaiKey);
   }

@@ -69,13 +69,13 @@ async function main() {
       importance,
     });
 
-    // Generate and store embedding (async, non-blocking)
-    embed(summary).then(vec => {
-      try { saveEmbedding(obsId, vec); }
-      catch (e) { console.error('[mem:save] embed store failed:', e.message); }
-    }).catch(e => {
+    // Generate and store embedding — must await before exit
+    try {
+      const vec = await embed(summary);
+      saveEmbedding(obsId, vec);
+    } catch (e) {
       console.error('[mem:save] embed failed:', e.message);
-    });
+    }
 
   } catch (err) {
     console.error('[mem:save] error:', err.message);
