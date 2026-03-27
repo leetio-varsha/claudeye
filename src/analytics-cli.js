@@ -9,10 +9,12 @@
  *   cmem digest [--generate] [--force]
  */
 
-import { program } from 'commander';
 import chalk from 'chalk';
 
-// ─── analytics ────────────────────────────────────────────────────────────
+/**
+ * Register analytics commands on the given Commander program instance.
+ */
+export function registerAnalyticsCommands(program) {
 
 program.command('analytics')
   .description('Usage analytics')
@@ -269,3 +271,5 @@ program.command('digest')
     console.log(digest.report);
     console.log('');
   });
+
+} // end registerAnalyticsCommands

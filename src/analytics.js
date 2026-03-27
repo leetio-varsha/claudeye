@@ -12,23 +12,27 @@ import { getDb } from './db.js';
 export function migrateAnalytics() {
   const db = getDb();
 
-  db.exec(`
-    -- Extend sessions
-    ALTER TABLE sessions ADD COLUMN model          TEXT;
-    ALTER TABLE sessions ADD COLUMN plugins        TEXT    DEFAULT '[]';
-    ALTER TABLE sessions ADD COLUMN skills         TEXT    DEFAULT '[]';
-    ALTER TABLE sessions ADD COLUMN duration_ms    INTEGER;
-    ALTER TABLE sessions ADD COLUMN token_input    INTEGER;
-    ALTER TABLE sessions ADD COLUMN token_output   INTEGER;
-    ALTER TABLE sessions ADD COLUMN friction_score REAL    DEFAULT 0;
-    ALTER TABLE sessions ADD COLUMN outcome        TEXT;
-  `);
+  // Helper: add column only if it doesn't exist yet
+  function addColumnIfMissing(table, column, type) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some(c => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  }
 
-  db.exec(`
-    -- Extend observations
-    ALTER TABLE observations ADD COLUMN retry_count INTEGER DEFAULT 0;
-    ALTER TABLE observations ADD COLUMN duration_ms INTEGER;
-  `);
+  // Extend sessions
+  addColumnIfMissing('sessions', 'model',          'TEXT');
+  addColumnIfMissing('sessions', 'plugins',        "TEXT DEFAULT '[]'");
+  addColumnIfMissing('sessions', 'skills',         "TEXT DEFAULT '[]'");
+  addColumnIfMissing('sessions', 'duration_ms',    'INTEGER');
+  addColumnIfMissing('sessions', 'token_input',    'INTEGER');
+  addColumnIfMissing('sessions', 'token_output',   'INTEGER');
+  addColumnIfMissing('sessions', 'friction_score', 'REAL DEFAULT 0');
+  addColumnIfMissing('sessions', 'outcome',        'TEXT');
+
+  // Extend observations
+  addColumnIfMissing('observations', 'retry_count', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('observations', 'duration_ms', 'INTEGER');
 
   db.exec(`
     -- Issue lifecycle tracking

@@ -14,6 +14,7 @@
 
 import { program } from 'commander';
 import chalk from 'chalk';
+import { registerAnalyticsCommands } from './src/analytics-cli.js';
 
 program
   .name('cmem')
@@ -233,5 +234,8 @@ program.command('import')
       spinner.fail(err.message);
     }
   });
+
+// Register analytics commands (analytics, advise, rate, digest)
+registerAnalyticsCommands(program);
 
 program.parse();

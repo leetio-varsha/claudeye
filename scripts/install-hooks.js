@@ -34,9 +34,15 @@ export default async function installHooks() {
   // Merge hooks — don't overwrite existing hooks from other plugins
   settings.hooks = settings.hooks || {};
 
+  // Check if any nested hook command matches our hook files
+  const isClaudeyeHook = (entry) => {
+    const cmds = (entry.hooks || []).map(h => h.command || '');
+    return cmds.some(c => c.includes('save-hook') || c.includes('inject-hook') || c.includes('summary-hook'));
+  };
+
   settings.hooks.PostToolUse = [
-    // Keep any existing non-mem hooks
-    ...(settings.hooks.PostToolUse || []).filter(h => !h.command?.includes('claude-mem')),
+    // Keep any existing non-claudeye hooks
+    ...(settings.hooks.PostToolUse || []).filter(h => !isClaudeyeHook(h)),
     {
       matcher: '*',
       hooks: [{ type: 'command', command: `node "${saveHook}"`, timeout: 30 }],
@@ -44,14 +50,14 @@ export default async function installHooks() {
   ];
 
   settings.hooks.UserPromptSubmit = [
-    ...(settings.hooks.UserPromptSubmit || []).filter(h => !h.command?.includes('claude-mem')),
+    ...(settings.hooks.UserPromptSubmit || []).filter(h => !isClaudeyeHook(h)),
     {
       hooks: [{ type: 'command', command: `node "${injectHook}"`, timeout: 15 }],
     },
   ];
 
   settings.hooks.Stop = [
-    ...(settings.hooks.Stop || []).filter(h => !h.command?.includes('claude-mem')),
+    ...(settings.hooks.Stop || []).filter(h => !isClaudeyeHook(h)),
     {
       hooks: [{ type: 'command', command: `node "${summaryHook}"`, timeout: 60 }],
     },
