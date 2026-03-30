@@ -235,6 +235,43 @@ program.command('import')
     }
   });
 
+// ─── reindex ─────────────────────────────────────────────────────────────
+
+program.command('reindex')
+  .description('Rebuild embeddings for observations (missing or degraded)')
+  .option('--force', 'Re-embed ALL observations, even those with 1536-dim vectors')
+  .option('-p, --project <path>', 'Scope to a specific project')
+  .option('-b, --batch <n>', 'Batch size', '50')
+  .option('--delay <ms>', 'Delay between batches in ms', '500')
+  .action(async (opts) => {
+    const { reindex } = await import('./src/reindex.js');
+    const ora = (await import('ora')).default;
+
+    const spinner = ora('Counting observations to reindex...').start();
+
+    try {
+      const result = await reindex({
+        force: opts.force || false,
+        project: opts.project || null,
+        batchSize: parseInt(opts.batch),
+        delayMs: parseInt(opts.delay),
+        onProgress: ({ done, total }) => {
+          spinner.text = `Reindexing embeddings... ${done}/${total}`;
+        },
+      });
+
+      if (result.total === 0) {
+        spinner.succeed('All observations already have 1536-dim embeddings. Nothing to do.');
+      } else {
+        spinner.succeed(
+          `Done! ${chalk.green(result.reindexed)} reindexed, ${chalk.yellow(result.skipped)} skipped, ${chalk.red(result.errors)} errors (${result.total} total)`
+        );
+      }
+    } catch (err) {
+      spinner.fail(err.message);
+    }
+  });
+
 // Register analytics commands (analytics, advise, rate, digest)
 registerAnalyticsCommands(program);
 
