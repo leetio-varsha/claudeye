@@ -3,10 +3,10 @@
  * or import and register them.
  *
  * New commands:
- *   cmem analytics [--project] [--plugins] [--models] [--issues] [--hotspots]
- *   cmem advise [--focus] [--days]
- *   cmem rate [session-id]
- *   cmem digest [--generate] [--force]
+ *   claudeye analytics [--project] [--plugins] [--models] [--issues] [--hotspots]
+ *   claudeye advise [--focus] [--days]
+ *   claudeye rate [session-id]
+ *   claudeye digest [--generate] [--force]
  */
 
 import chalk from 'chalk';
@@ -263,7 +263,7 @@ program.command('digest')
 
     const digest = getLatestDigest();
     if (!digest) {
-      console.log(chalk.yellow('\n  No digest yet. Run: cmem digest --generate\n'));
+      console.log(chalk.yellow('\n  No digest yet. Run: claudeye digest --generate\n'));
       return;
     }
 

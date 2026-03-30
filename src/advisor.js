@@ -49,7 +49,7 @@ export async function generateAdvice({ focus = null, days = 30, stream = true } 
   const isEmpty = stats.overview.total_sessions === 0;
 
   if (isEmpty) {
-    return '> Not enough data yet. Use Claude Code for a few sessions first, then run `cmem advise` again.';
+    return '> Not enough data yet. Use Claude Code for a few sessions first, then run `claudeye advise` again.';
   }
 
   const focusNote = focus ? `\n\nFocus especially on: ${focus}` : '';
