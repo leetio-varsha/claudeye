@@ -29,7 +29,7 @@ export async function reindex(opts = {}) {
   } = opts;
 
   if (!isEmbeddingEnabled()) {
-    throw new Error('No embedding API key configured. Run: cmem setup');
+    throw new Error('No embedding API key configured. Run: claudeye setup');
   }
 
   const db = getDb();

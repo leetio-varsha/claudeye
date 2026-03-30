@@ -117,7 +117,7 @@ getWeeklyTrend(n)       → last n weeks sparkline data
 
 Uses `claude -p` CLI (no API key needed).
 
-### On-demand: `cmem advise`
+### On-demand: `claudeye advise`
 1. Collect last 30 days of aggregated stats as JSON
 2. Build a structured prompt with the data
 3. Pipe through `claude -p --system "you are a senior dev advisor..."`
@@ -126,7 +126,7 @@ Uses `claude -p` CLI (no API key needed).
 ### Weekly digest: auto-runs Sunday night (launchd/cron)
 1. Same as above but scoped to last 7 days
 2. Stores result in `digests` table
-3. Shown on next `cmem stats` or viewer open
+3. Shown on next `claudeye stats` or viewer open
 
 ### Prompt structure for advisor:
 ```
@@ -148,20 +148,20 @@ DATA:
 ## CLI Commands
 
 ```bash
-cmem analytics                    # global overview
-cmem analytics --project entravel # per-project
-cmem analytics --plugins          # plugin effectiveness matrix
-cmem analytics --models           # model comparison
-cmem analytics --issues           # issue resolution metrics
-cmem analytics --hotspots         # complexity hotspots
+claudeye analytics                    # global overview
+claudeye analytics --project entravel # per-project
+claudeye analytics --plugins          # plugin effectiveness matrix
+claudeye analytics --models           # model comparison
+claudeye analytics --issues           # issue resolution metrics
+claudeye analytics --hotspots         # complexity hotspots
 
-cmem advise                       # on-demand Claude advice
-cmem advise --focus plugins       # focus on plugin usage
-cmem advise --focus workflow      # focus on workflow patterns
+claudeye advise                       # on-demand Claude advice
+claudeye advise --focus plugins       # focus on plugin usage
+claudeye advise --focus workflow      # focus on workflow patterns
 
-cmem rate [session-id]            # rate a session 1-5
-cmem digest                       # show latest weekly digest
-cmem digest --generate            # force regenerate
+claudeye rate [session-id]            # rate a session 1-5
+claudeye digest                       # show latest weekly digest
+claudeye digest --generate            # force regenerate
 ```
 
 ---

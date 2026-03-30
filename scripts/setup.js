@@ -49,6 +49,6 @@ export default async function setup() {
 
   console.log(chalk.green('\n  ✓ Settings saved to ~/.claudeye/settings.json (mode 600)\n'));
   console.log(chalk.bold('  Next steps:'));
-  console.log(chalk.gray('    1. Run: cmem install-hooks'));
+  console.log(chalk.gray('    1. Run: claudeye install-hooks'));
   console.log(chalk.gray('    2. Restart Claude Code\n'));
 }

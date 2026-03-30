@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * cli.js — cmem CLI
+ * cli.js — claudeye CLI
  *
  * Usage:
- *   cmem stats              — show database stats
- *   cmem search <query>     — search observations
- *   cmem recent [n]         — show recent observations
- *   cmem sessions           — list recent sessions
- *   cmem viewer             — open web viewer
- *   cmem setup              — first-time setup
- *   cmem clear [--project]  — clear data
+ *   claudeye stats              — show database stats
+ *   claudeye search <query>     — search observations
+ *   claudeye recent [n]         — show recent observations
+ *   claudeye sessions           — list recent sessions
+ *   claudeye viewer             — open web viewer
+ *   claudeye setup              — first-time setup
+ *   claudeye clear [--project]  — clear data
  */
 
 import { program } from 'commander';
@@ -17,8 +17,8 @@ import chalk from 'chalk';
 import { registerAnalyticsCommands } from './src/analytics-cli.js';
 
 program
-  .name('cmem')
-  .description('Personal Claude Code memory')
+  .name('claudeye')
+  .description('Personal memory & analytics for Claude Code')
   .version('1.0.0');
 
 // ─── stats ────────────────────────────────────────────────────────────────
