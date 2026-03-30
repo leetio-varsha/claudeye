@@ -166,6 +166,30 @@ program.command('install-hooks')
     await installHooks();
   });
 
+// ─── install-git-hooks ───────────────────────────────────────────────
+
+program.command('install-git-hooks')
+  .description('Install Claudeye post-commit hook in a git repo')
+  .argument('[repo]', 'Repository path', process.cwd())
+  .action(async (repo) => {
+    const { installGitHooks } = await import('./scripts/install-git-hooks.js');
+    console.log(chalk.bold('\n🔧 Installing git post-commit hook...\n'));
+    await installGitHooks(repo);
+    console.log(chalk.gray('\n  New commits will auto-import into mem.db\n'));
+  });
+
+// ─── uninstall-git-hooks ─────────────────────────────────────────────
+
+program.command('uninstall-git-hooks')
+  .description('Remove Claudeye post-commit hook from a git repo')
+  .argument('[repo]', 'Repository path', process.cwd())
+  .action(async (repo) => {
+    const { uninstallGitHooks } = await import('./scripts/install-git-hooks.js');
+    console.log(chalk.bold('\n🔧 Removing git post-commit hook...\n'));
+    await uninstallGitHooks(repo);
+    console.log('');
+  });
+
 // ─── clear ────────────────────────────────────────────────────────────────
 
 program.command('clear')
