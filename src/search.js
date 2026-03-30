@@ -15,6 +15,10 @@ import { embed, cosineSimilarity, bufToFloat32 } from './embeddings.js';
 
 const RRF_K = 60;
 
+// Minimum hybrid score for cross-project results to be shown.
+// Prevents low-relevance noise from unrelated projects.
+const MIN_CROSS_PROJECT_SCORE = 0.004;
+
 /**
  * Main hybrid search entry point.
  *
@@ -81,7 +85,7 @@ export async function buildContext(userPrompt, project, opts = {}) {
   const seenIds = new Set([...recent.map(o => o.id), ...searched.map(o => o.id)]);
   const dedupedSearch = searched.filter(o => !new Set(recent.map(r => r.id)).has(o.id));
   const crossFiltered = crossResults
-    .filter(o => !seenIds.has(o.id) && o.project !== project)
+    .filter(o => !seenIds.has(o.id) && o.project !== project && o.hybridScore >= MIN_CROSS_PROJECT_SCORE)
     .slice(0, 3);
 
   const lines = [];
@@ -102,7 +106,7 @@ export async function buildContext(userPrompt, project, opts = {}) {
   }
 
   if (crossFiltered.length) {
-    lines.push('\n## Cross-project context');
+    lines.push('\n## Cross-project context (reference only — verify before applying)');
     for (const obs of crossFiltered) {
       const projName = obs.project?.split('/').pop() || 'unknown';
       const tags = JSON.parse(obs.tags || '[]').join(', ');
