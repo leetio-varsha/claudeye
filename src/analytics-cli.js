@@ -250,7 +250,7 @@ program.command('digest')
   .action(async (opts) => {
     // ── Scheduler subcommands ──────────────────────────────
     if (opts.schedule) {
-      const { install } = await import('./scripts/digest-scheduler.js');
+      const { install } = await import('../scripts/digest-scheduler.js');
       const result = install();
       console.log(chalk.green('\n  ✅ Weekly digest scheduled!'));
       console.log(chalk.gray(`  Schedule: ${result.schedule}`));
@@ -259,7 +259,7 @@ program.command('digest')
       return;
     }
     if (opts.unschedule) {
-      const { uninstall } = await import('./scripts/digest-scheduler.js');
+      const { uninstall } = await import('../scripts/digest-scheduler.js');
       const result = uninstall();
       console.log(result.removed
         ? chalk.green('\n  ✅ Weekly digest unscheduled.\n')
@@ -267,7 +267,7 @@ program.command('digest')
       return;
     }
     if (opts.status) {
-      const { status } = await import('./scripts/digest-scheduler.js');
+      const { status } = await import('../scripts/digest-scheduler.js');
       const s = status();
       if (!s.installed) {
         console.log(chalk.yellow('\n  Not scheduled. Run: claudeye digest --schedule\n'));
