@@ -28,11 +28,19 @@ async function main() {
     process.exit(0);
   }
 
-  const { tool_name: tool, tool_input: input, tool_response: output, session_id: sessionId } = event;
+  const { tool_name: tool, tool_input: rawInput, tool_response: rawOutput, session_id: sessionId } = event;
 
   if (!tool || !sessionId) process.exit(0);
 
   const project = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+  // Strip <private>…</private> content before any processing (#6)
+  const stripPrivate = (s) => {
+    if (typeof s !== 'string') return s;
+    return s.replace(/<private>[\s\S]*?<\/private>/gi, '[REDACTED]');
+  };
+  const input  = stripPrivate(typeof rawInput  === 'string' ? rawInput  : JSON.stringify(rawInput));
+  const output = stripPrivate(typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput));
 
   try {
     const { saveObservation, saveEmbedding, upsertSession } = await import(srcDir + 'db.js');
@@ -46,27 +54,20 @@ async function main() {
     const SKIP_TOOLS = new Set(['TodoRead', 'mcp__mem__search']);
     if (SKIP_TOOLS.has(tool)) process.exit(0);
 
-    // AI compress
+    // AI compress (input/output already sanitized via stripPrivate above)
     const { summary, tags, importance } = await compressObservation({
-      tool,
-      input:   typeof input  === 'string' ? input  : JSON.stringify(input),
-      output:  typeof output === 'string' ? output : JSON.stringify(output),
-      project,
+      tool, input, output, project,
     });
 
     // Skip noise
     if (importance < 0.1) process.exit(0);
 
-    // Store observation
+    // Store observation (raw fields are already stripped of private content)
     const obsId = saveObservation({
-      sessionId,
-      project,
-      tool,
-      summary,
-      rawInput:  typeof input  === 'string' ? input  : JSON.stringify(input),
-      rawOutput: typeof output === 'string' ? output : JSON.stringify(output),
-      tags,
-      importance,
+      sessionId, project, tool, summary,
+      rawInput:  input,
+      rawOutput: output,
+      tags, importance,
     });
 
     // Generate and store embedding — must await before exit
