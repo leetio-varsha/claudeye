@@ -241,10 +241,45 @@ program.command('rate [session-id]')
 
 program.command('digest')
   .description('Show or generate weekly digest')
-  .option('--generate', 'Generate digest now')
-  .option('--force',    'Force regenerate even if exists')
-  .option('--list',     'List all past digests')
+  .option('--generate',    'Generate digest now')
+  .option('--force',       'Force regenerate even if exists')
+  .option('--list',        'List all past digests')
+  .option('--schedule',    'Install weekly launchd automation (Sunday 20:00)')
+  .option('--unschedule',  'Remove launchd automation')
+  .option('--status',      'Check if launchd automation is active')
   .action(async (opts) => {
+    // ── Scheduler subcommands ──────────────────────────────
+    if (opts.schedule) {
+      const { install } = await import('./scripts/digest-scheduler.js');
+      const result = install();
+      console.log(chalk.green('\n  ✅ Weekly digest scheduled!'));
+      console.log(chalk.gray(`  Schedule: ${result.schedule}`));
+      console.log(chalk.gray(`  Plist:    ${result.plist}`));
+      console.log(chalk.gray(`  Wrapper:  ${result.wrapper}\n`));
+      return;
+    }
+    if (opts.unschedule) {
+      const { uninstall } = await import('./scripts/digest-scheduler.js');
+      const result = uninstall();
+      console.log(result.removed
+        ? chalk.green('\n  ✅ Weekly digest unscheduled.\n')
+        : chalk.yellow(`\n  ${result.message}\n`));
+      return;
+    }
+    if (opts.status) {
+      const { status } = await import('./scripts/digest-scheduler.js');
+      const s = status();
+      if (!s.installed) {
+        console.log(chalk.yellow('\n  Not scheduled. Run: claudeye digest --schedule\n'));
+      } else {
+        console.log(chalk.green('\n  ✅ Scheduled'));
+        console.log(chalk.gray(`  Loaded: ${s.loaded}`));
+        console.log(chalk.gray(`  Plist:  ${s.plist}\n`));
+      }
+      return;
+    }
+
+    // ── Digest generation / display ────────────────────────
     const { generateWeeklyDigest, getLatestDigest, listDigests } = await import('./src/advisor.js');
 
     if (opts.list) {
