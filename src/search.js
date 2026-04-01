@@ -19,6 +19,11 @@ const RRF_K = 60;
 // Prevents low-relevance noise from unrelated projects.
 const MIN_CROSS_PROJECT_SCORE = 0.004;
 
+// Source-aware demotion: git-commit observations are 73% of the DB
+// but are less useful than real hook observations for context injection.
+// Apply a multiplier to their RRF score so they don't crowd out hook data.
+const GIT_COMMIT_DEMOTION = 0.3;
+
 /**
  * Main hybrid search entry point.
  *
@@ -60,6 +65,14 @@ export async function hybridSearch(query, project, {
     prev.score *= (0.5 + obs.importance * 0.5);
     scores.set(id, prev);
   });
+
+  // Apply source-aware demotion: git-commit data is bulk-imported and
+  // less relevant than real-time hook observations for context injection
+  for (const entry of scores.values()) {
+    if (entry.obs.tool === 'git-commit') {
+      entry.score *= GIT_COMMIT_DEMOTION;
+    }
+  }
 
   return [...scores.values()]
     .sort((a, b) => b.score - a.score)
