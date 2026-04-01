@@ -50,7 +50,9 @@ export async function compressObservation({ tool, input, output, project }) {
     const userMsg = `Project: ${project}\nTool: ${tool}\nInput: ${truncatedInput}\nOutput: ${truncatedOutput}`;
     const prompt = `${SYSTEM_PROMPT}\n\n${userMsg}`;
 
-    const text = execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '300', prompt], {
+    // Pass prompt via stdin to avoid ARG_MAX limits on large tool outputs (#52)
+    const text = execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '300', '-'], {
+      input: prompt,
       encoding: 'utf8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -88,7 +90,9 @@ export async function compressSession({ observations, project }) {
   try {
     const prompt = `Summarize this coding session for project "${project}" in 3-5 sentences. Focus on: what was built/fixed, key decisions, any unresolved issues. Be specific.\n\nSession observations:\n${topObs}`;
 
-    return execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '400', prompt], {
+    // Pass prompt via stdin to avoid ARG_MAX limits (#52)
+    return execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '400', '-'], {
+      input: prompt,
       encoding: 'utf8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe'],
