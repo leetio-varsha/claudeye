@@ -148,6 +148,83 @@ program.command('viewer')
     console.log(chalk.gray('  Press Ctrl+C to stop\n'));
   });
 
+// ─── health ──────────────────────────────────────────────────────────────
+
+program.command('health')
+  .description('Diagnostic check: DB, API keys, hooks, errors')
+  .action(async () => {
+    const { getDb, getStats, getErrorStats } = await import('./src/db.js');
+    const { isEmbeddingEnabled } = await import('./src/embeddings.js');
+    const { existsSync, statSync } = await import('fs');
+    const { join } = await import('path');
+    const { homedir } = await import('os');
+
+    const dbPath = join(homedir(), '.claudeye', 'mem.db');
+    const checks = [];
+
+    // DB check
+    try {
+      const db = getDb();
+      const stats = getStats();
+      const dbSize = existsSync(dbPath) ? (statSync(dbPath).size / 1024 / 1024).toFixed(1) : '?';
+      checks.push({ name: 'Database', ok: true, detail: `${stats.totalObservations} obs, ${stats.totalSessions} sessions, ${dbSize}MB` });
+    } catch (e) {
+      checks.push({ name: 'Database', ok: false, detail: e.message });
+    }
+
+    // Embeddings check
+    const embOk = isEmbeddingEnabled();
+    checks.push({ name: 'OpenAI Embeddings', ok: embOk, detail: embOk ? 'API key configured' : 'No API key — using FTS5 only' });
+
+    // Hooks check — hooks live in ~/.claude/settings.json
+    const claudeSettings = join(homedir(), '.claude', 'settings.json');
+    let hooksOk = false, hooksDetail = 'Not configured';
+    if (existsSync(claudeSettings)) {
+      try {
+        const { readFileSync } = await import('fs');
+        const cs = JSON.parse(readFileSync(claudeSettings, 'utf8'));
+        const hookCount = ['PostToolUse','UserPromptSubmit','Stop']
+          .reduce((n, k) => n + ((cs.hooks?.[k] || []).filter(h =>
+            (h.hooks || []).some(hh => (hh.command||'').includes('claudeye'))
+          ).length > 0 ? 1 : 0), 0);
+        hooksOk = hookCount >= 2;
+        hooksDetail = `${hookCount}/3 hook types active`;
+      } catch (e) { hooksDetail = 'Error reading: ' + e.message; }
+    }
+    checks.push({ name: 'Claude Code hooks', ok: hooksOk, detail: hooksDetail });
+
+    // Error budget
+    try {
+      const errors = getErrorStats(7);
+      const errOk = errors.total < 50;
+      checks.push({ name: 'Error budget (7d)', ok: errOk, detail: `${errors.total} errors` + (errors.byHook.length ? ' — ' + errors.byHook.slice(0,3).map(e => `${e.hook}:${e.error_type}(${e.count})`).join(', ') : '') });
+    } catch {
+      checks.push({ name: 'Error budget', ok: true, detail: '0 errors' });
+    }
+
+    // Disk space
+    try {
+      const { execSync } = await import('child_process');
+      const df = execSync('df -h ~/.claudeye 2>/dev/null', { encoding: 'utf8' });
+      const parts = df.split('\\n')[1]?.split(/\\s+/);
+      const avail = parts?.[3] || '?';
+      checks.push({ name: 'Disk space', ok: true, detail: `${avail} available` });
+    } catch {
+      checks.push({ name: 'Disk space', ok: true, detail: 'check skipped' });
+    }
+
+    console.log(chalk.bold('\\n  Claudeye Health Check\\n'));
+    for (const c of checks) {
+      const icon = c.ok ? chalk.green('✓') : chalk.red('✗');
+      console.log(`  ${icon} ${chalk.white(c.name)}: ${chalk.gray(c.detail)}`);
+    }
+
+    const allOk = checks.every(c => c.ok);
+    console.log(allOk
+      ? chalk.green('\\n  All checks passed.\\n')
+      : chalk.yellow('\\n  Some checks need attention.\\n'));
+  });
+
 // ─── setup ────────────────────────────────────────────────────────────────
 
 program.command('setup')
@@ -155,6 +232,107 @@ program.command('setup')
   .action(async () => {
     const { default: setup } = await import('./scripts/setup.js');
     await setup();
+  });
+
+// ─── init ────────────────────────────────────────────────────────────────
+
+program.command('init')
+  .description('One-command setup: configure, install hooks, import git history')
+  .option('--skip-import', 'Skip git history import')
+  .action(async () => {
+    const { existsSync, readFileSync, writeFileSync, mkdirSync } = await import('fs');
+    const { join } = await import('path');
+    const { homedir } = await import('os');
+    const { execSync } = await import('child_process');
+
+    console.log(chalk.bold('\n  Claudeye Init\n'));
+
+    // Step 1: Prerequisites
+    console.log(chalk.gray('  Checking prerequisites...'));
+    const nodeVer = parseInt(process.version.slice(1));
+    if (nodeVer < 20) {
+      console.log(chalk.red(`  ✗ Node ${process.version} — need >= 20`));
+      process.exit(1);
+    }
+    console.log(chalk.green(`  ✓ Node ${process.version}`));
+
+    try { execSync('git --version', { stdio: 'ignore' }); console.log(chalk.green('  ✓ git installed')); }
+    catch { console.log(chalk.red('  ✗ git not found')); process.exit(1); }
+
+    try { execSync('claude --version', { stdio: 'ignore' }); console.log(chalk.green('  ✓ Claude Code installed')); }
+    catch { console.log(chalk.yellow('  ⚠ Claude Code not found — hooks will install but won\'t run until Claude Code is available')); }
+
+    // Step 2: Ensure ~/.claudeye exists
+    const dataDir = join(homedir(), '.claudeye');
+    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+
+    // Step 3: Settings / API key
+    const settingsPath = join(dataDir, 'settings.json');
+    let settings = {};
+    if (existsSync(settingsPath)) {
+      try { settings = JSON.parse(readFileSync(settingsPath, 'utf8')); } catch {}
+    }
+    const hasKey = settings.openai_api_key || settings.openaiApiKey || process.env.OPENAI_API_KEY;
+    if (hasKey) {
+      console.log(chalk.green('  ✓ OpenAI API key configured'));
+    } else {
+      console.log(chalk.yellow('  ⚠ No OpenAI API key — search will use FTS5 only (still works!)'));
+      console.log(chalk.gray('    To add later: add "openai_api_key" to ~/.claudeye/settings.json'));
+    }
+
+    // Step 4: Initialize DB
+    console.log(chalk.gray('\\n  Initializing database...'));
+    const { getDb, getStats } = await import('./src/db.js');
+    getDb();
+    console.log(chalk.green('  ✓ Database ready'));
+
+    // Step 5: Install Claude Code hooks
+    console.log(chalk.gray('\\n  Installing Claude Code hooks...'));
+    try {
+      const { default: installHooks } = await import('./scripts/install-hooks.js');
+      await installHooks();
+    } catch (e) {
+      console.log(chalk.yellow('  ⚠ Hook install issue: ' + e.message));
+    }
+
+    // Step 6: Detect git repo and import
+    const cwd = process.cwd();
+    let isGitRepo = false;
+    try { execSync('git rev-parse --git-dir', { cwd, stdio: 'ignore' }); isGitRepo = true; } catch {}
+
+    if (isGitRepo && !program.opts().skipImport) {
+      console.log(chalk.gray('\\n  Importing git history from ' + cwd + '...'));
+      try {
+        const { importGitCommits } = await import('./src/git-import.js');
+        const count = await importGitCommits(cwd, { limit: 200, silent: true });
+        console.log(chalk.green(`  ✓ Imported ${count} commits`));
+
+        // Install git post-commit hook for this repo
+        try {
+          const { installGitHook } = await import('./scripts/install-git-hooks.js');
+          installGitHook(cwd);
+          console.log(chalk.green('  ✓ Git post-commit hook installed'));
+        } catch (e) {
+          console.log(chalk.yellow('  ⚠ Git hook: ' + e.message));
+        }
+      } catch (e) {
+        console.log(chalk.yellow('  ⚠ Import: ' + e.message));
+      }
+    } else if (!isGitRepo) {
+      console.log(chalk.gray('\\n  Not a git repo — skipping import'));
+    } else {
+      console.log(chalk.gray('\\n  Skipping git import (--skip-import)'));
+    }
+
+    // Step 7: Summary
+    const stats = getStats();
+    console.log(chalk.bold('\\n  Setup complete!'));
+    console.log(chalk.gray(`  ${stats.totalObservations} observations, ${stats.totalSessions} sessions\\n`));
+    console.log(chalk.cyan('  Next steps:'));
+    console.log(chalk.gray('    claudeye health     — check everything works'));
+    console.log(chalk.gray('    claudeye viewer     — open web dashboard'));
+    console.log(chalk.gray('    claudeye search <q> — search your memory'));
+    console.log(chalk.gray('    claudeye analytics  — view usage analytics\\n'));
   });
 
 // ─── install-hooks ────────────────────────────────────────────────────────

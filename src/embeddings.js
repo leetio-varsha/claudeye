@@ -44,27 +44,38 @@ export async function embed(text) {
   return keywordFallbackEmbed(input);
 }
 
-async function embedViaOpenAI(text, apiKey) {
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-3-small',
-      input: text,
-      dimensions: 1536,
-    }),
-  });
+async function embedViaOpenAI(text, apiKey, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const res = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-small',
+        input: text,
+        dimensions: 1536,
+      }),
+    });
 
-  if (!res.ok) {
+    if (res.ok) {
+      const data = await res.json();
+      return new Float32Array(data.data[0].embedding);
+    }
+
+    // Retry on transient errors (429, 500, 502, 503, 504)
+    const status = res.status;
+    if ([429, 500, 502, 503, 504].includes(status) && attempt < retries) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000); // 1s, 2s, 4s
+      console.error(`[mem:embed] OpenAI ${status}, retry ${attempt}/${retries} in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+
     const err = await res.text();
-    throw new Error(`[mem:embed] OpenAI error: ${err}`);
+    throw new Error(`[mem:embed] OpenAI ${status}: ${err}`);
   }
-
-  const data = await res.json();
-  return new Float32Array(data.data[0].embedding);
 }
 
 /**
