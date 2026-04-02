@@ -32,6 +32,13 @@ async function main() {
 
   const project = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
+  // Global timeout: never block Claude Code for more than 5 seconds (#55)
+  const TIMEOUT_MS = 5000;
+  const timeout = setTimeout(() => {
+    console.error('[mem:inject] timeout after ' + TIMEOUT_MS + 'ms — skipping injection');
+    process.exit(0);
+  }, TIMEOUT_MS);
+
   try {
     const { upsertSession } = await import(srcDir + 'db.js');
     const { buildContext }  = await import(srcDir + 'search.js');
@@ -48,6 +55,7 @@ async function main() {
     // Exit cleanly — don't block Claude Code on memory failure
   }
 
+  clearTimeout(timeout);
   process.exit(0);
 }
 
