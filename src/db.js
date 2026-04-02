@@ -27,6 +27,7 @@ export function getDb() {
   _db.pragma('journal_mode = WAL');
   _db.pragma('synchronous = NORMAL');
   _db.pragma('foreign_keys = ON');
+  _db.pragma('busy_timeout = 5000');  // Wait up to 5s on locked DB instead of failing
 
   migrate(_db);
   // Run analytics schema migration (adds columns + tables for digests, issues, etc.)
@@ -87,6 +88,17 @@ function _migrateAnalytics(db) {
         note       TEXT,
         created_at TEXT    NOT NULL DEFAULT (datetime('now'))
       );
+
+      -- Error budget tracking (#31)
+      CREATE TABLE IF NOT EXISTS hook_errors (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        hook       TEXT    NOT NULL,
+        error_type TEXT    NOT NULL,
+        message    TEXT,
+        project    TEXT,
+        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hook_errors_created ON hook_errors(created_at DESC);
     `);
   } catch (err) {
     console.error('[mem:db] analytics migration failed:', err.message);
@@ -292,6 +304,39 @@ export function closeSession(id, summary) {
     UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?
   `).run(summary, id);
 }
+
+// ─── Error tracking ────────────────────────────────────────────────────────
+
+export function logHookError(hook, errorType, message, project = null) {
+  try {
+    getDb().prepare(`
+      INSERT INTO hook_errors (hook, error_type, message, project)
+      VALUES (?, ?, ?, ?)
+    `).run(hook, errorType, (message || '').slice(0, 1000), project);
+  } catch {
+    // If DB itself is broken, just stderr
+    console.error(`[mem:error] ${new Date().toISOString()} ${hook} ${errorType}: ${message}`);
+  }
+}
+
+export function getErrorStats(days = 7) {
+  const db = getDb();
+  return {
+    byHook: db.prepare(`
+      SELECT hook, error_type, COUNT(*) as count
+      FROM hook_errors WHERE created_at >= date('now', '-' || ? || ' days')
+      GROUP BY hook, error_type ORDER BY count DESC
+    `).all(days),
+    recent: db.prepare(`
+      SELECT * FROM hook_errors ORDER BY created_at DESC LIMIT 10
+    `).all(),
+    total: db.prepare(`
+      SELECT COUNT(*) as n FROM hook_errors WHERE created_at >= date('now', '-' || ? || ' days')
+    `).get(days).n,
+  };
+}
+
+// ─── Stats ──────────────────────────────────────────────────────────────────
 
 export function getStats() {
   const db = getDb();

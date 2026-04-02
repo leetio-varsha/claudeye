@@ -40,7 +40,7 @@ async function main() {
   }, TIMEOUT_MS);
 
   try {
-    const { upsertSession } = await import(srcDir + 'db.js');
+    const { upsertSession, logHookError } = await import(srcDir + 'db.js');
     const { buildContext }  = await import(srcDir + 'search.js');
 
     upsertSession(sessionId, project);
@@ -51,7 +51,7 @@ async function main() {
       process.stdout.write(context + '\n\n');
     }
   } catch (err) {
-    console.error('[mem:inject] error:', err.message);
+    try { logHookError('inject-hook', 'general', err.message, project); } catch {}
     // Exit cleanly — don't block Claude Code on memory failure
   }
 

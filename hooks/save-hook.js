@@ -43,7 +43,7 @@ async function main() {
   const output = stripPrivate(typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput));
 
   try {
-    const { saveObservation, saveEmbedding, upsertSession } = await import(srcDir + 'db.js');
+    const { saveObservation, saveEmbedding, upsertSession, logHookError } = await import(srcDir + 'db.js');
     const { compressObservation }                           = await import(srcDir + 'compress.js');
     const { embed }                                         = await import(srcDir + 'embeddings.js');
 
@@ -75,11 +75,11 @@ async function main() {
       const vec = await embed(summary);
       saveEmbedding(obsId, vec);
     } catch (e) {
-      console.error('[mem:save] embed failed:', e.message);
+      logHookError('save-hook', 'embed_failed', e.message, project);
     }
 
   } catch (err) {
-    console.error('[mem:save] error:', err.message);
+    try { logHookError('save-hook', 'general', err.message, project); } catch {}
     // Always exit 0 — never block Claude Code
   }
 
