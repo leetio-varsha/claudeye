@@ -29,7 +29,68 @@ export function getDb() {
   _db.pragma('foreign_keys = ON');
 
   migrate(_db);
+  // Run analytics schema migration (adds columns + tables for digests, issues, etc.)
+  _migrateAnalytics(_db);
   return _db;
+}
+
+/**
+ * Lazy-import migrateAnalytics to avoid circular deps.
+ * Falls back silently if analytics.js isn't available (e.g. minimal install).
+ */
+function _migrateAnalytics(db) {
+  try {
+    // Inline the analytics migration here to avoid async import issues.
+    // This mirrors analytics.js migrateAnalytics() but runs synchronously at DB init.
+    const addColumnIfMissing = (table, column, type) => {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+      if (!cols.some(c => c.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      }
+    };
+
+    addColumnIfMissing('sessions', 'model',          'TEXT');
+    addColumnIfMissing('sessions', 'plugins',        "TEXT DEFAULT '[]'");
+    addColumnIfMissing('sessions', 'skills',         "TEXT DEFAULT '[]'");
+    addColumnIfMissing('sessions', 'duration_ms',    'INTEGER');
+    addColumnIfMissing('sessions', 'token_input',    'INTEGER');
+    addColumnIfMissing('sessions', 'token_output',   'INTEGER');
+    addColumnIfMissing('sessions', 'friction_score', 'REAL DEFAULT 0');
+    addColumnIfMissing('sessions', 'outcome',        'TEXT');
+    addColumnIfMissing('observations', 'retry_count', 'INTEGER DEFAULT 0');
+    addColumnIfMissing('observations', 'duration_ms', 'INTEGER');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS issues (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        project       TEXT    NOT NULL,
+        title         TEXT    NOT NULL,
+        status        TEXT    NOT NULL DEFAULT 'open',
+        opened_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        resolved_at   TEXT,
+        session_ids   TEXT    NOT NULL DEFAULT '[]',
+        obs_ids       TEXT    NOT NULL DEFAULT '[]',
+        complexity    REAL,
+        resolution_ms INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS digests (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_start  TEXT    NOT NULL UNIQUE,
+        report      TEXT    NOT NULL,
+        raw_stats   TEXT    NOT NULL,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS session_ratings (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT    NOT NULL REFERENCES sessions(id),
+        rating     INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+        note       TEXT,
+        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  } catch (err) {
+    console.error('[mem:db] analytics migration failed:', err.message);
+  }
 }
 
 export function migrate(db = getDb()) {
