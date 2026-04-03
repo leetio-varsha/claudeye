@@ -165,9 +165,17 @@ program.command('health')
     // DB check
     try {
       const db = getDb();
+      const { getDbMetrics } = await import('./src/db.js');
       const stats = getStats();
-      const dbSize = existsSync(dbPath) ? (statSync(dbPath).size / 1024 / 1024).toFixed(1) : '?';
-      checks.push({ name: 'Database', ok: true, detail: `${stats.totalObservations} obs, ${stats.totalSessions} sessions, ${dbSize}MB` });
+      const metrics = getDbMetrics();
+      const sizeWarn = metrics.fileSizeMB > 100;
+      checks.push({
+        name: 'Database',
+        ok: !sizeWarn,
+        detail: `${stats.totalObservations} obs, ${stats.totalSessions} sessions, ${metrics.fileSizeMB}MB`
+          + (sizeWarn ? ` ⚠️  >100MB — run ${chalk.yellow('claudeye cleanup')}` : '')
+          + ` | git-commit: ${metrics.gitCommitCount}`
+      });
     } catch (e) {
       checks.push({ name: 'Database', ok: false, detail: e.message });
     }
@@ -365,6 +373,66 @@ program.command('uninstall-git-hooks')
     const { uninstallGitHooks } = await import('./scripts/install-git-hooks.js');
     console.log(chalk.bold('\n🔧 Removing git post-commit hook...\n'));
     await uninstallGitHooks(repo);
+    console.log('');
+  });
+
+// ─── cleanup (retention) ─────────────────────────────────────────────────
+
+program.command('cleanup')
+  .description('Tiered retention cleanup: remove old low-value observations, reclaim disk space')
+  .option('--dry-run', 'Show what would be deleted/compacted without changes')
+  .option('--no-vacuum', 'Skip VACUUM (faster, but does not reclaim disk space)')
+  .action(async (opts) => {
+    const { cleanup, compact, getDbMetrics } = await import('./src/db.js');
+    const ora = (await import('ora')).default;
+
+    const metrics = getDbMetrics();
+    console.log(chalk.bold('\n  Claudeye Cleanup\n'));
+    console.log(`  DB size: ${chalk.cyan(metrics.fileSizeMB + 'MB')} | Observations: ${chalk.cyan(metrics.obsCount)} | Embeddings: ${chalk.cyan(metrics.embCount)} | git-commit: ${chalk.cyan(metrics.gitCommitCount)}\n`);
+
+    // Step 1: Compact — strip raw_input/raw_output from old low-value observations
+    const compactSpinner = ora(opts.dryRun ? 'Calculating compact...' : 'Compacting raw data...').start();
+    const compactCounts = compact({ dryRun: opts.dryRun });
+
+    if (compactCounts.total > 0) {
+      if (opts.dryRun) {
+        compactSpinner.info(`Would compact ${chalk.yellow(compactCounts.total)} items:`);
+      } else {
+        compactSpinner.succeed(`Compacted ${chalk.green(compactCounts.total)} items.`);
+      }
+      if (compactCounts.embGit) console.log(`    ${compactCounts.embGit} git-commit embeddings pruned (~${(compactCounts.embGit * 6 / 1024).toFixed(1)}MB)`);
+      if (compactCounts.embLow) console.log(`    ${compactCounts.embLow} low-importance embeddings pruned (~${(compactCounts.embLow * 6 / 1024).toFixed(1)}MB)`);
+      if (compactCounts.rawCompacted) console.log(`    ${compactCounts.rawCompacted} observations raw data stripped`);
+    } else {
+      compactSpinner.succeed('Nothing to compact.');
+    }
+
+    // Step 2: Retention — delete old observations by tiered importance
+    const retSpinner = ora(opts.dryRun ? 'Calculating retention cleanup...' : 'Running retention cleanup...').start();
+    const counts = cleanup({ dryRun: opts.dryRun, vacuum: false });
+
+    if (counts.total > 0) {
+      if (opts.dryRun) {
+        retSpinner.info(`Would delete ${chalk.yellow(counts.total)} observations:`);
+      } else {
+        retSpinner.succeed(`Deleted ${chalk.green(counts.total)} observations.`);
+      }
+      if (counts.lowImportance) console.log(`    ${counts.lowImportance} low importance (<0.3, >60 days)`);
+      if (counts.medImportance) console.log(`    ${counts.medImportance} medium importance (0.3–0.7, >180 days)`);
+      if (counts.highImportance) console.log(`    ${counts.highImportance} high importance (≥0.7, >365 days)`);
+      if (counts.gitCommit) console.log(`    ${counts.gitCommit} old git-commit (importance <0.5, >30 days, beyond top 200/project)`);
+    } else {
+      retSpinner.succeed('Nothing to delete — all data within retention policy.');
+    }
+
+    // Step 3: VACUUM to reclaim disk space
+    if (opts.vacuum !== false && !opts.dryRun && (compactCounts.total > 0 || counts.total > 0)) {
+      const vacSpinner = ora('Running VACUUM to reclaim disk space...').start();
+      const { getDb } = await import('./src/db.js');
+      getDb().exec('VACUUM');
+      const after = getDbMetrics();
+      vacSpinner.succeed(`VACUUM done. DB size: ${chalk.cyan(metrics.fileSizeMB + 'MB')} → ${chalk.green(after.fileSizeMB + 'MB')}`);
+    }
     console.log('');
   });
 
