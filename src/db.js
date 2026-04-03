@@ -9,7 +9,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -334,6 +334,222 @@ export function getErrorStats(days = 7) {
       SELECT COUNT(*) as n FROM hook_errors WHERE created_at >= date('now', '-' || ? || ' days')
     `).get(days).n,
   };
+}
+
+// ─── Cleanup / Retention ────────────────────────────────────────────────────
+
+/**
+ * Tiered retention cleanup.
+ *
+ * Policy:
+ *  - importance < 0.3  → keep 60 days
+ *  - importance 0.3–0.7 → keep 180 days
+ *  - importance >= 0.7  → keep 365 days
+ *  - git-commit with importance < 0.5 → keep newest 200 per project, delete rest older than 30 days
+ *
+ * Embeddings cascade-delete via FK. FTS5 syncs via triggers.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun  — if true, return counts without deleting
+ * @param {boolean} opts.vacuum  — if true, run VACUUM after cleanup (reclaims disk space)
+ * @returns {{ lowImportance: number, medImportance: number, highImportance: number, gitCommit: number, total: number }}
+ */
+export function cleanup({ dryRun = false, vacuum = false } = {}) {
+  const db = getDb();
+
+  const counts = {
+    lowImportance: 0,
+    medImportance: 0,
+    highImportance: 0,
+    gitCommit: 0,
+    total: 0,
+  };
+
+  // Count candidates per tier
+  counts.lowImportance = db.prepare(`
+    SELECT COUNT(*) as n FROM observations
+    WHERE importance < 0.3
+      AND created_at < datetime('now', '-60 days')
+  `).get().n;
+
+  counts.medImportance = db.prepare(`
+    SELECT COUNT(*) as n FROM observations
+    WHERE importance >= 0.3 AND importance < 0.7
+      AND created_at < datetime('now', '-180 days')
+  `).get().n;
+
+  counts.highImportance = db.prepare(`
+    SELECT COUNT(*) as n FROM observations
+    WHERE importance >= 0.7
+      AND created_at < datetime('now', '-365 days')
+  `).get().n;
+
+  // Git-commit: keep newest 200 per project, delete rest older than 30 days
+  counts.gitCommit = db.prepare(`
+    SELECT COUNT(*) as n FROM observations
+    WHERE tool = 'git-commit'
+      AND importance < 0.5
+      AND created_at < datetime('now', '-30 days')
+      AND id NOT IN (
+        SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (PARTITION BY project ORDER BY created_at DESC) as rn
+          FROM observations WHERE tool = 'git-commit'
+        ) WHERE rn <= 200
+      )
+  `).get().n;
+
+  counts.total = counts.lowImportance + counts.medImportance + counts.highImportance + counts.gitCommit;
+
+  if (dryRun || counts.total === 0) return counts;
+
+  // Execute deletions in a transaction
+  const run = db.transaction(() => {
+    db.prepare(`
+      DELETE FROM observations
+      WHERE importance < 0.3
+        AND created_at < datetime('now', '-60 days')
+    `).run();
+
+    db.prepare(`
+      DELETE FROM observations
+      WHERE importance >= 0.3 AND importance < 0.7
+        AND created_at < datetime('now', '-180 days')
+    `).run();
+
+    db.prepare(`
+      DELETE FROM observations
+      WHERE importance >= 0.7
+        AND created_at < datetime('now', '-365 days')
+    `).run();
+
+    db.prepare(`
+      DELETE FROM observations
+      WHERE tool = 'git-commit'
+        AND importance < 0.5
+        AND created_at < datetime('now', '-30 days')
+        AND id NOT IN (
+          SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (PARTITION BY project ORDER BY created_at DESC) as rn
+            FROM observations WHERE tool = 'git-commit'
+          ) WHERE rn <= 200
+        )
+    `).run();
+  });
+  run();
+
+  if (vacuum) {
+    db.exec('VACUUM');
+  }
+
+  return counts;
+}
+
+/**
+ * Compact: strip raw data and prune embeddings from old low-value observations.
+ *
+ * Main savings come from embeddings (6KB each = 64% of total DB size).
+ * Observations stay searchable via FTS5 — only vector search is affected.
+ *
+ * Policy:
+ *  - git-commit embeddings older than 7 days, importance < 0.5 → DELETE embedding
+ *    (vector search already caps git-commit at 50 newest, so old ones are never hit)
+ *  - Low importance (<0.5) embeddings older than 30 days → DELETE embedding
+ *  - raw_input/raw_output for git-commit >7 days → NULL
+ *  - raw_input/raw_output for importance <0.5 >14 days → NULL
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun
+ * @returns {{ embeddingsPruned: number, rawCompacted: number, total: number }}
+ */
+export function compact({ dryRun = false } = {}) {
+  const db = getDb();
+
+  // Count embedding prune candidates
+  // Git-commit: vector search caps at 50/project (GIT_CAP in getObservationsWithEmbeddings),
+  // so embeddings beyond the newest 50 per project are NEVER used — safe to prune all.
+  const gitEmbCount = db.prepare(`
+    SELECT COUNT(*) as n FROM embeddings WHERE observation_id IN (
+      SELECT id FROM (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY project ORDER BY created_at DESC) as rn
+        FROM observations WHERE tool = 'git-commit'
+      ) WHERE rn > 50
+    )
+  `).get().n;
+
+  const lowEmbCount = db.prepare(`
+    SELECT COUNT(*) as n FROM embeddings e
+    JOIN observations o ON o.id = e.observation_id
+    WHERE o.tool != 'git-commit'
+      AND o.importance < 0.5
+      AND o.created_at < datetime('now', '-30 days')
+  `).get().n;
+
+  // Count raw data compaction candidates
+  const rawCount = db.prepare(`
+    SELECT COUNT(*) as n FROM observations
+    WHERE (
+      (tool = 'git-commit' AND created_at < datetime('now', '-7 days'))
+      OR (importance < 0.5 AND created_at < datetime('now', '-14 days'))
+    )
+    AND (raw_input IS NOT NULL OR raw_output IS NOT NULL)
+  `).get().n;
+
+  const embeddingsPruned = gitEmbCount + lowEmbCount;
+  const total = embeddingsPruned + rawCount;
+
+  if (dryRun || total === 0) return { embeddingsPruned, embGit: gitEmbCount, embLow: lowEmbCount, rawCompacted: rawCount, total };
+
+  const run = db.transaction(() => {
+    // Prune git-commit embeddings beyond newest 50 per project
+    db.prepare(`
+      DELETE FROM embeddings WHERE observation_id IN (
+        SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (PARTITION BY project ORDER BY created_at DESC) as rn
+          FROM observations WHERE tool = 'git-commit'
+        ) WHERE rn > 50
+      )
+    `).run();
+
+    db.prepare(`
+      DELETE FROM embeddings WHERE observation_id IN (
+        SELECT o.id FROM observations o
+        WHERE o.tool != 'git-commit'
+          AND o.importance < 0.5
+          AND o.created_at < datetime('now', '-30 days')
+      )
+    `).run();
+
+    // Strip raw data
+    db.prepare(`
+      UPDATE observations SET raw_input = NULL, raw_output = NULL
+      WHERE (
+        (tool = 'git-commit' AND created_at < datetime('now', '-7 days'))
+        OR (importance < 0.5 AND created_at < datetime('now', '-14 days'))
+      )
+      AND (raw_input IS NOT NULL OR raw_output IS NOT NULL)
+    `).run();
+  });
+  run();
+
+  return { embeddingsPruned, embGit: gitEmbCount, embLow: lowEmbCount, rawCompacted: rawCount, total };
+}
+
+/**
+ * Returns DB size metrics for health/monitoring.
+ */
+export function getDbMetrics() {
+  const db = getDb();
+
+  let fileSizeMB = 0;
+  try {
+    fileSizeMB = +(statSync(DB_PATH).size / 1024 / 1024).toFixed(1);
+  } catch { /* file may not exist */ }
+
+  const obsCount = db.prepare('SELECT COUNT(*) as n FROM observations').get().n;
+  const embCount = db.prepare('SELECT COUNT(*) as n FROM embeddings').get().n;
+  const gitCommitCount = db.prepare("SELECT COUNT(*) as n FROM observations WHERE tool = 'git-commit'").get().n;
+
+  return { fileSizeMB, obsCount, embCount, gitCommitCount };
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
