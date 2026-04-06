@@ -129,6 +129,8 @@ Importance scale:
 
 **Decision Memory (#25):** compress.js extracts `decision_rationale` from observations containing architectural choices, technology decisions, or trade-offs. Decisions are auto-tagged with `"decision"`, boosted to importance ≥ 0.8, prioritized in inject-hook context, and browsable via `claudeye decisions`.
 
+**Session Handoff:** inject-hook monitors session length. At 100 prompts — soft warning. At 200 prompts — strong recommendation to start a new session + ready-to-paste handoff block with: what was done, key decisions, unresolved issues, files touched. Also available manually via `claudeye handoff`.
+
 ---
 
 ## Friction score
@@ -178,6 +180,8 @@ claudeye digest --generate            # generate now
 # Decision Memory
 claudeye decisions                    # decisions in current project
 claudeye decisions --all              # all projects
+claudeye handoff                      # generate handoff for new session
+claudeye handoff -s <session-id>      # handoff for specific session
 ```
 
 ---
