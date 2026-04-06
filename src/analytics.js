@@ -5,7 +5,7 @@
  * Fast even with thousands of sessions.
  */
 
-import { getDb } from './db.js';
+import { getDb, getEffortStats } from './db.js';
 
 // NOTE: Schema migration for analytics lives in db.js (_migrateAnalytics),
 // called automatically from getDb(). Do not duplicate DDL here.
@@ -308,6 +308,7 @@ export function buildAdvisorPayload(days = 30) {
   const models  = getModelComparison();
   const issues  = getIssueMetrics();
   const hotspots = getComplexityHotspots();
+  const effort  = getEffortStats(days);
 
   // Summarize for prompt (keep token count manageable)
   return {
@@ -345,5 +346,12 @@ export function buildAdvisorPayload(days = 30) {
     },
     hotspots: hotspots.hotFiles.slice(0, 10),
     top_tags:  global.topTags.slice(0, 10),
+    effort_analysis: effort.total > 0 ? {
+      total_classified:    effort.total,
+      suboptimal_count:    effort.suboptimal,
+      suboptimal_percent:  effort.suboptimalPercent,
+      distribution:        effort.distribution,
+      by_project:          effort.byProject.slice(0, 10),
+    } : null,
   };
 }

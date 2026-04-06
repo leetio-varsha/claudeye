@@ -164,7 +164,7 @@ async function main() {
   }, TIMEOUT_MS);
 
   try {
-    const { upsertSession, logHookError, getDb } = await import(srcDir + 'db.js');
+    const { upsertSession, logHookError, getDb, saveEffortClassification } = await import(srcDir + 'db.js');
     const { buildContext }  = await import(srcDir + 'search.js');
 
     upsertSession(sessionId, project);
@@ -173,6 +173,26 @@ async function main() {
 
     if (context) {
       process.stdout.write(context + '\n\n');
+    }
+
+    // Effort classification (#63) — rule-based, zero-latency
+    if (!process.env.CLAUDEYE_NO_EFFORT_ADVISOR) {
+      try {
+        const { classifyEffort } = await import(srcDir + 'effort.js');
+        const classification = classifyEffort(prompt);
+        if (classification && classification.confidence >= 0.7) {
+          saveEffortClassification({
+            sessionId,
+            project,
+            effort: classification.effort,
+            confidence: classification.confidence,
+            reason: classification.reason,
+            promptWordCount: prompt.trim().split(/\s+/).length,
+          });
+        }
+      } catch {
+        // Non-critical — don't break the hook
+      }
     }
 
     // Session length warning + handoff
