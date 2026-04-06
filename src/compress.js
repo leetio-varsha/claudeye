@@ -12,7 +12,35 @@
  *   0.1  = noise (ls, cat, pwd)
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
+import { existsSync, readdirSync } from 'fs';
+
+// Resolve claude binary at module load time — hooks run with minimal PATH
+function resolveClaude() {
+  // Dynamic: find latest version under claude-code-vm/
+  let vmBin = null;
+  try {
+    const vmDir = `${process.env.HOME}/Library/Application Support/Claude/claude-code-vm`;
+    const versions = readdirSync(vmDir).sort().reverse();
+    if (versions.length) vmBin = `${vmDir}/${versions[0]}/claude`;
+  } catch {}
+
+  const candidates = [
+    process.env.CLAUDE_BIN,
+    vmBin,
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    'claude',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      if (c === 'claude') { execSync('which claude', { stdio: 'ignore' }); return c; }
+      if (existsSync(c)) return c;
+    } catch {}
+  }
+  return 'claude';
+}
+const CLAUDE_BIN = resolveClaude();
 
 const SYSTEM_PROMPT = `You are a coding session memory assistant. Your job is to compress tool usage events into structured, searchable observations.
 
@@ -53,7 +81,7 @@ export async function compressObservation({ tool, input, output, project }) {
     const prompt = `${SYSTEM_PROMPT}\n\n${userMsg}`;
 
     // Pass prompt via stdin to avoid ARG_MAX limits on large tool outputs (#52)
-    const text = execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '300', '-'], {
+    const text = execFileSync(CLAUDE_BIN, ['--print', '-m', 'haiku', '--max-tokens', '300', '-'], {
       input: prompt,
       encoding: 'utf8',
       timeout: 30000,
