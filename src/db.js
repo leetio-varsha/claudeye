@@ -88,6 +88,20 @@ function _migrateAnalytics(db) {
         created_at TEXT    NOT NULL DEFAULT (datetime('now'))
       );
 
+      -- Effort classifications (#63)
+      CREATE TABLE IF NOT EXISTS effort_classifications (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id      TEXT    NOT NULL,
+        project         TEXT    NOT NULL,
+        suggested_effort TEXT   NOT NULL CHECK(suggested_effort IN ('low', 'medium', 'high')),
+        confidence      REAL   NOT NULL DEFAULT 0.5,
+        reason          TEXT,
+        prompt_word_count INTEGER,
+        created_at      TEXT   NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_effort_session ON effort_classifications(session_id);
+      CREATE INDEX IF NOT EXISTS idx_effort_created ON effort_classifications(created_at DESC);
+
       -- Error budget tracking (#31)
       CREATE TABLE IF NOT EXISTS hook_errors (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -362,6 +376,65 @@ export function closeOrphanedSessions({ maxAgeHours = 4, dryRun = false } = {}) 
   }
 
   return { importSessions: importCount, realSessions: realCount, total: importCount + realCount };
+}
+
+// ─── Effort classifications (#63) ────────────────────────────────────────────
+
+export function saveEffortClassification({ sessionId, project, effort, confidence, reason, promptWordCount }) {
+  try {
+    getDb().prepare(`
+      INSERT INTO effort_classifications (session_id, project, suggested_effort, confidence, reason, prompt_word_count)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(sessionId, project, effort, confidence, reason || null, promptWordCount || null);
+  } catch {
+    // Non-critical — don't break the hook
+  }
+}
+
+export function getEffortStats(days = 30) {
+  const db = getDb();
+
+  const distribution = db.prepare(`
+    SELECT suggested_effort, COUNT(*) as count, AVG(confidence) as avg_confidence
+    FROM effort_classifications
+    WHERE created_at >= date('now', '-' || ? || ' days')
+    GROUP BY suggested_effort
+    ORDER BY count DESC
+  `).all(days);
+
+  const byProject = db.prepare(`
+    SELECT
+      project,
+      suggested_effort,
+      COUNT(*) as count
+    FROM effort_classifications
+    WHERE created_at >= date('now', '-' || ? || ' days')
+    GROUP BY project, suggested_effort
+    ORDER BY project, count DESC
+  `).all(days);
+
+  const dailyTrend = db.prepare(`
+    SELECT
+      date(created_at) as day,
+      suggested_effort,
+      COUNT(*) as count
+    FROM effort_classifications
+    WHERE created_at >= date('now', '-' || ? || ' days')
+    GROUP BY day, suggested_effort
+    ORDER BY day ASC
+  `).all(days);
+
+  const total = distribution.reduce((sum, d) => sum + d.count, 0);
+  const suboptimal = distribution.filter(d => d.suggested_effort !== 'high').reduce((sum, d) => sum + d.count, 0);
+
+  return {
+    distribution,
+    byProject,
+    dailyTrend,
+    total,
+    suboptimal,
+    suboptimalPercent: total > 0 ? +((suboptimal / total) * 100).toFixed(1) : 0,
+  };
 }
 
 // ─── Error tracking ────────────────────────────────────────────────────────
