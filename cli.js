@@ -616,6 +616,117 @@ program.command('decisions')
     }
   });
 
+// ─── handoff ─────────────────────────────────────────────────────────────
+
+program.command('handoff')
+  .description('Generate a session handoff summary — paste into a new session to continue seamlessly')
+  .option('-p, --project <path>', 'Filter by project', process.cwd())
+  .option('-s, --session <id>', 'Specific session ID (default: latest)')
+  .action(async (opts) => {
+    const { getDb } = await import('./src/db.js');
+    const db = getDb();
+
+    // Find the target session
+    let session;
+    if (opts.session) {
+      session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(opts.session);
+    } else {
+      session = db.prepare(`
+        SELECT * FROM sessions
+        WHERE project = ? AND id NOT LIKE 'import-git-%'
+        ORDER BY started_at DESC LIMIT 1
+      `).get(opts.project);
+    }
+
+    if (!session) {
+      console.log(chalk.yellow('\n  No session found for this project.\n'));
+      return;
+    }
+
+    const proj = session.project.replace(process.env.HOME, '~').split('/').pop();
+
+    // Gather session data
+    const recentObs = db.prepare(`
+      SELECT summary, tool, importance, tags
+      FROM observations
+      WHERE session_id = ? AND importance >= 0.5
+      ORDER BY importance DESC, created_at DESC
+      LIMIT 10
+    `).all(session.id);
+
+    const decisions = db.prepare(`
+      SELECT decision_rationale
+      FROM observations
+      WHERE session_id = ? AND decision_rationale IS NOT NULL
+      ORDER BY importance DESC LIMIT 5
+    `).all(session.id);
+
+    const errors = db.prepare(`
+      SELECT summary FROM observations
+      WHERE session_id = ? AND tags LIKE '%error%'
+      ORDER BY created_at DESC LIMIT 5
+    `).all(session.id);
+
+    const files = db.prepare(`
+      SELECT DISTINCT
+        CASE WHEN raw_input LIKE '%/%' THEN raw_input ELSE NULL END as file_hint
+      FROM observations
+      WHERE session_id = ? AND tool IN ('Edit', 'Write') AND raw_input IS NOT NULL
+      ORDER BY created_at DESC LIMIT 10
+    `).all(session.id).filter(f => f.file_hint);
+
+    const obsCount = db.prepare('SELECT COUNT(*) as n FROM observations WHERE session_id = ?').get(session.id).n;
+
+    console.log(chalk.bold(`\n  Session Handoff — ${proj}\n`));
+    console.log(chalk.gray(`  Session: ${session.id.slice(0, 8)}...`));
+    console.log(chalk.gray(`  Started: ${session.started_at}  Prompts: ${session.prompt_count}  Observations: ${obsCount}\n`));
+
+    // Build the handoff text
+    const lines = [];
+    lines.push(`Продолжаю работу над ${proj}.`);
+    lines.push('');
+
+    if (recentObs.length) {
+      lines.push('Что было сделано:');
+      for (const o of recentObs.slice(0, 7)) {
+        lines.push(`- ${o.summary.slice(0, 150)}`);
+      }
+      lines.push('');
+    }
+
+    if (decisions.length) {
+      lines.push('Ключевые решения:');
+      for (const d of decisions) {
+        lines.push(`- ${d.decision_rationale}`);
+      }
+      lines.push('');
+    }
+
+    if (errors.length) {
+      lines.push('Нерешённые проблемы:');
+      for (const e of errors) {
+        lines.push(`- ${e.summary.slice(0, 150)}`);
+      }
+      lines.push('');
+    }
+
+    if (files.length) {
+      lines.push('Файлы:');
+      for (const f of files.slice(0, 5)) {
+        const pathMatch = f.file_hint.match(/[\/\w.-]+\.\w+/);
+        if (pathMatch) lines.push(`- ${pathMatch[0]}`);
+      }
+      lines.push('');
+    }
+
+    const handoff = lines.join('\n');
+
+    // Output the handoff as a copyable block
+    console.log(chalk.cyan('  ── Copy this into your new session ──────────────\n'));
+    console.log(handoff);
+    console.log(chalk.cyan('  ────────────────────────────────────────────────\n'));
+  });
+
 // Register analytics commands (analytics, advise, rate, digest)
 registerAnalyticsCommands(program);
 
