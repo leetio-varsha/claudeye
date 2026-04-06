@@ -27,8 +27,11 @@ async function main() {
   const project = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
   try {
-    const { getDb, closeSession } = await import(srcDir + 'db.js');
+    const { getDb, closeSession, logHookError } = await import(srcDir + 'db.js');
     const { compressSession }     = await import(srcDir + 'compress.js');
+
+    // Log that Stop hook was called — helps debug #60
+    logHookError('summary-hook', 'info', `Stop event received for session ${sessionId}`, project);
 
     const db = getDb();
     const observations = db.prepare(`

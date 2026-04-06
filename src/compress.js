@@ -18,14 +18,16 @@ const SYSTEM_PROMPT = `You are a coding session memory assistant. Your job is to
 
 Given a tool name, its input, and its output, produce a JSON object with:
 - "summary": 1-3 sentences describing what happened and why it matters. Be specific: include file names, function names, errors, decisions. Write as if explaining to a developer returning to this project after 2 weeks.
-- "tags": array of 2-5 lowercase tags (e.g. ["bugfix", "auth", "database", "api", "config", "refactor", "security"])
+- "tags": array of 2-5 lowercase tags (e.g. ["bugfix", "auth", "database", "api", "config", "refactor", "security", "decision"])
 - "importance": float 0.0–1.0 (1.0 = critical decision/fix, 0.5 = routine edit, 0.1 = noise like 'ls')
+- "decision_rationale": if this event contains an architectural decision, technology choice, design trade-off, or explicit "why" reasoning — extract it as a 1-2 sentence rationale. Examples: "Chose better-sqlite3 over sql.js because sandbox can compile native modules", "Switched from REST to WebSocket for real-time updates due to polling overhead". If no decision is present, set to null.
 
 Respond ONLY with valid JSON. No markdown, no explanation.
 
 Rules:
 - Skip noise: if the tool is "Bash" and command is just ls/pwd/cat/echo, set importance ≤ 0.1
 - Highlight errors and fixes: if there's an error in the output, importance ≥ 0.8
+- If a decision rationale is found, add "decision" to tags and set importance ≥ 0.8
 - Be specific about file paths and function names
 - Extract the "so what" — why does this matter for the project?`;
 
@@ -63,10 +65,19 @@ export async function compressObservation({ tool, input, output, project }) {
     if (!jsonMatch) throw new Error('No JSON in response');
     const parsed = JSON.parse(jsonMatch[0]);
 
+    const tags = Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8) : [];
+    let importance = Math.min(1, Math.max(0, parseFloat(parsed.importance) || 0.5));
+    const decisionRationale = parsed.decision_rationale ? String(parsed.decision_rationale).slice(0, 500) : null;
+
+    // Importance boost for decisions (#25)
+    if (decisionRationale && importance < 0.8) importance = 0.8;
+    if (decisionRationale && !tags.includes('decision')) tags.push('decision');
+
     return {
       summary:    String(parsed.summary   || '').slice(0, 500),
-      tags:       Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8) : [],
-      importance: Math.min(1, Math.max(0, parseFloat(parsed.importance) || 0.5)),
+      tags,
+      importance,
+      decisionRationale,
     };
   } catch (err) {
     // Fallback: simple rule-based compression

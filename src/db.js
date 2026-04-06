@@ -60,6 +60,7 @@ function _migrateAnalytics(db) {
     addColumnIfMissing('sessions', 'outcome',        'TEXT');
     addColumnIfMissing('observations', 'retry_count', 'INTEGER DEFAULT 0');
     addColumnIfMissing('observations', 'duration_ms', 'INTEGER');
+    addColumnIfMissing('observations', 'decision_rationale', 'TEXT');  // #25 Decision Memory
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS issues (
@@ -185,17 +186,18 @@ export function migrate(db = getDb()) {
 
 // ─── Observations ────────────────────────────────────────────────────────────
 
-export function saveObservation({ sessionId, project, tool, summary, rawInput, rawOutput, tags = [], importance = 0.5 }) {
+export function saveObservation({ sessionId, project, tool, summary, rawInput, rawOutput, tags = [], importance = 0.5, decisionRationale = null }) {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO observations (session_id, project, tool, summary, raw_input, raw_output, tags, importance)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO observations (session_id, project, tool, summary, raw_input, raw_output, tags, importance, decision_rationale)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(sessionId, project, tool, summary,
     rawInput?.slice(0, 2000) ?? null,
     rawOutput?.slice(0, 2000) ?? null,
     JSON.stringify(tags),
-    importance
+    importance,
+    decisionRationale
   );
   return result.lastInsertRowid;
 }
@@ -303,6 +305,65 @@ export function closeSession(id, summary) {
   getDb().prepare(`
     UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?
   `).run(summary, id);
+}
+
+// ─── Orphaned session cleanup (#60) ────────────────────────────────────────
+
+/**
+ * Close sessions that were never ended (Stop hook didn't fire).
+ * - import-git sessions: close immediately with summary
+ * - Real sessions older than maxAgeHours: close with "[auto-closed]" summary
+ *
+ * Called from `claudeye cleanup` and as fallback from save-hook/inject-hook.
+ *
+ * @param {object} opts
+ * @param {number} opts.maxAgeHours — close real sessions older than this (default 4)
+ * @param {boolean} opts.dryRun
+ * @returns {{ importSessions: number, realSessions: number, total: number }}
+ */
+export function closeOrphanedSessions({ maxAgeHours = 4, dryRun = false } = {}) {
+  const db = getDb();
+
+  // Count import-git sessions that were never closed
+  const importCount = db.prepare(`
+    SELECT COUNT(*) as n FROM sessions
+    WHERE id LIKE 'import-git-%' AND ended_at IS NULL
+  `).get().n;
+
+  // Count real sessions older than maxAgeHours
+  const realCount = db.prepare(`
+    SELECT COUNT(*) as n FROM sessions
+    WHERE id NOT LIKE 'import-git-%'
+      AND ended_at IS NULL
+      AND started_at < datetime('now', '-' || ? || ' hours')
+  `).get(maxAgeHours).n;
+
+  if (dryRun) return { importSessions: importCount, realSessions: realCount, total: importCount + realCount };
+
+  if (importCount > 0) {
+    db.prepare(`
+      UPDATE sessions
+      SET ended_at = started_at, summary = '[auto-closed] Git import session'
+      WHERE id LIKE 'import-git-%' AND ended_at IS NULL
+    `).run();
+  }
+
+  if (realCount > 0) {
+    // For real sessions, set ended_at to last observation time or started_at + 1h
+    db.prepare(`
+      UPDATE sessions
+      SET ended_at = COALESCE(
+        (SELECT MAX(created_at) FROM observations WHERE session_id = sessions.id),
+        datetime(started_at, '+1 hour')
+      ),
+      summary = '[auto-closed] Session not ended by Stop hook'
+      WHERE id NOT LIKE 'import-git-%'
+        AND ended_at IS NULL
+        AND started_at < datetime('now', '-' || ? || ' hours')
+    `).run(maxAgeHours);
+  }
+
+  return { importSessions: importCount, realSessions: realCount, total: importCount + realCount };
 }
 
 // ─── Error tracking ────────────────────────────────────────────────────────

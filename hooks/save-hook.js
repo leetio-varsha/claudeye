@@ -55,7 +55,7 @@ async function main() {
     if (SKIP_TOOLS.has(tool)) process.exit(0);
 
     // AI compress (input/output already sanitized via stripPrivate above)
-    const { summary, tags, importance } = await compressObservation({
+    const { summary, tags, importance, decisionRationale } = await compressObservation({
       tool, input, output, project,
     });
 
@@ -67,8 +67,15 @@ async function main() {
       sessionId, project, tool, summary,
       rawInput:  input,
       rawOutput: output,
-      tags, importance,
+      tags, importance, decisionRationale,
     });
+
+    // Opportunistic: close orphaned sessions older than 4h (#60)
+    // Lightweight check — runs at most once per session
+    try {
+      const { closeOrphanedSessions } = await import(srcDir + 'db.js');
+      closeOrphanedSessions({ maxAgeHours: 4 });
+    } catch { /* non-critical */ }
 
     // Generate and store embedding — must await before exit
     try {
