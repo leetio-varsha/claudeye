@@ -727,6 +727,33 @@ program.command('handoff')
     console.log(chalk.cyan('  ────────────────────────────────────────────────\n'));
   });
 
+// ─── insights ────────────────────────────────────────────────────────────
+
+program.command('insights')
+  .description('Daily proactive insights: anomalies, quota alerts, friction patterns')
+  .option('--days <n>', 'Lookback period in days', '1')
+  .option('--no-notify', 'Skip macOS notification')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    const { runInsights, formatReport } = await import('./scripts/daily-insights.js');
+
+    console.log(chalk.bold('\n  Claudeye Daily Insights\n'));
+
+    const result = await runInsights({
+      days: parseInt(opts.days),
+      notify: opts.notify !== false,
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify(result.alerts, null, 2));
+    } else {
+      console.log(formatReport(result));
+      const { critAlerts, warnAlerts, insightAlerts } = result;
+      const total = critAlerts.length + warnAlerts.length + insightAlerts.length;
+      console.log(chalk.gray(`  ${total} alerts: ${critAlerts.length} critical, ${warnAlerts.length} warnings, ${insightAlerts.length} insights\n`));
+    }
+  });
+
 // Register analytics commands (analytics, advise, rate, digest)
 registerAnalyticsCommands(program);
 
