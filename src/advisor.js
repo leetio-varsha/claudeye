@@ -59,13 +59,15 @@ export async function generateAdvice({ focus = null, days = 30, stream = true } 
 DATA:
 ${JSON.stringify(stats, null, 2)}`;
 
+  // Pass prompt via stdin to avoid ARG_MAX limits on large payloads (#62)
+  const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
+
   if (stream) {
     // Stream directly to terminal via claude CLI
     const result = spawnSync('claude', [
-      '--print',
-      '--system', SYSTEM_PROMPT,
-      userPrompt,
+      '--print', '-',
     ], {
+      input: fullPrompt,
       stdio: ['pipe', 'inherit', 'pipe'],
       encoding: 'utf8',
       timeout: 120_000,
@@ -78,10 +80,9 @@ ${JSON.stringify(stats, null, 2)}`;
   } else {
     // Return as string (for digest storage)
     const result = spawnSync('claude', [
-      '--print',
-      '--system', SYSTEM_PROMPT,
-      userPrompt,
+      '--print', '-',
     ], {
+      input: fullPrompt,
       encoding: 'utf8',
       timeout: 120_000,
     });

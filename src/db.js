@@ -36,13 +36,11 @@ export function getDb() {
 }
 
 /**
- * Lazy-import migrateAnalytics to avoid circular deps.
- * Falls back silently if analytics.js isn't available (e.g. minimal install).
+ * Analytics schema migration — runs synchronously at DB init.
+ * This is the single source of truth for analytics DDL (#58).
  */
 function _migrateAnalytics(db) {
   try {
-    // Inline the analytics migration here to avoid async import issues.
-    // This mirrors analytics.js migrateAnalytics() but runs synchronously at DB init.
     const addColumnIfMissing = (table, column, type) => {
       const cols = db.prepare(`PRAGMA table_info(${table})`).all();
       if (!cols.some(c => c.name === column)) {

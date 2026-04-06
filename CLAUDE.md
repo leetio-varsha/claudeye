@@ -267,8 +267,10 @@ memory tool -> self-improving system -> personal AI OS -> digital twin
 - ~~Unclosed sessions (57%)~~ — root cause: import-git sessions + orphan cleanup added (#60)
 
 ### Active
-- **@anthropic-ai/sdk in package.json** — unused, should remove (#58)
-- **migrateAnalytics duplication** — db.js and analytics.js have divergent schemas (#58)
+- ~~**@anthropic-ai/sdk in package.json**~~ — removed (#58)
+- ~~**migrateAnalytics duplication**~~ — deduplicated, single source in db.js (#58)
+- ~~**db scoping bug in health command**~~ — fixed (#61)
+- ~~**advisor.js ARG_MAX risk**~~ — switched to stdin (#62)
 
 ---
 
