@@ -7,69 +7,8 @@
 
 import { getDb } from './db.js';
 
-// ─── Schema migration for analytics ──────────────────────────────────────
-
-export function migrateAnalytics() {
-  const db = getDb();
-
-  // Helper: add column only if it doesn't exist yet
-  function addColumnIfMissing(table, column, type) {
-    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
-    if (!cols.some(c => c.name === column)) {
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-    }
-  }
-
-  // Extend sessions
-  addColumnIfMissing('sessions', 'model',          'TEXT');
-  addColumnIfMissing('sessions', 'plugins',        "TEXT DEFAULT '[]'");
-  addColumnIfMissing('sessions', 'skills',         "TEXT DEFAULT '[]'");
-  addColumnIfMissing('sessions', 'duration_ms',    'INTEGER');
-  addColumnIfMissing('sessions', 'token_input',    'INTEGER');
-  addColumnIfMissing('sessions', 'token_output',   'INTEGER');
-  addColumnIfMissing('sessions', 'friction_score', 'REAL DEFAULT 0');
-  addColumnIfMissing('sessions', 'outcome',        'TEXT');
-
-  // Extend observations
-  addColumnIfMissing('observations', 'retry_count', 'INTEGER DEFAULT 0');
-  addColumnIfMissing('observations', 'duration_ms', 'INTEGER');
-
-  db.exec(`
-    -- Issue lifecycle tracking
-    CREATE TABLE IF NOT EXISTS issues (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      project       TEXT    NOT NULL,
-      title         TEXT    NOT NULL,
-      status        TEXT    NOT NULL DEFAULT 'open',
-      opened_at     TEXT    NOT NULL DEFAULT (datetime('now')),
-      resolved_at   TEXT,
-      session_ids   TEXT    NOT NULL DEFAULT '[]',
-      obs_ids       TEXT    NOT NULL DEFAULT '[]',
-      complexity    REAL,
-      resolution_ms INTEGER
-    );
-
-    -- Weekly digests cache
-    CREATE TABLE IF NOT EXISTS digests (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      week_start  TEXT    NOT NULL UNIQUE,
-      report      TEXT    NOT NULL,
-      raw_stats   TEXT    NOT NULL,
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-
-    -- Session quality ratings
-    CREATE TABLE IF NOT EXISTS session_ratings (
-      session_id  TEXT    PRIMARY KEY,
-      rating      INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
-      note        TEXT,
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_issues_project ON issues(project);
-    CREATE INDEX IF NOT EXISTS idx_issues_status  ON issues(status);
-  `);
-}
+// NOTE: Schema migration for analytics lives in db.js (_migrateAnalytics),
+// called automatically from getDb(). Do not duplicate DDL here.
 
 // ─── Global stats ─────────────────────────────────────────────────────────
 

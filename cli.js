@@ -161,10 +161,10 @@ program.command('health')
 
     const dbPath = join(homedir(), '.claudeye', 'mem.db');
     const checks = [];
+    const db = getDb();
 
     // DB check
     try {
-      const db = getDb();
       const { getDbMetrics } = await import('./src/db.js');
       const stats = getStats();
       const metrics = getDbMetrics();
