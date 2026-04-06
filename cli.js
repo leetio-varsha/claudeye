@@ -201,6 +201,17 @@ program.command('health')
     }
     checks.push({ name: 'Claude Code hooks', ok: hooksOk, detail: hooksDetail });
 
+    // Orphaned sessions (#60)
+    try {
+      const totalSessions = db.prepare('SELECT COUNT(*) as n FROM sessions').get().n;
+      const unclosed = db.prepare("SELECT COUNT(*) as n FROM sessions WHERE ended_at IS NULL AND id NOT LIKE 'import-git-%'").get().n;
+      const unclosedPct = totalSessions > 0 ? Math.round(unclosed / totalSessions * 100) : 0;
+      const sessOk = unclosedPct < 30;
+      checks.push({ name: 'Session closure', ok: sessOk, detail: `${unclosed} unclosed of ${totalSessions} (${unclosedPct}%)` + (!sessOk ? ` — run ${chalk.yellow('claudeye cleanup')}` : '') });
+    } catch {
+      checks.push({ name: 'Session closure', ok: true, detail: 'check skipped' });
+    }
+
     // Error budget
     try {
       const errors = getErrorStats(7);
@@ -383,12 +394,28 @@ program.command('cleanup')
   .option('--dry-run', 'Show what would be deleted/compacted without changes')
   .option('--no-vacuum', 'Skip VACUUM (faster, but does not reclaim disk space)')
   .action(async (opts) => {
-    const { cleanup, compact, getDbMetrics } = await import('./src/db.js');
+    const { cleanup, compact, getDbMetrics, closeOrphanedSessions } = await import('./src/db.js');
     const ora = (await import('ora')).default;
 
     const metrics = getDbMetrics();
     console.log(chalk.bold('\n  Claudeye Cleanup\n'));
     console.log(`  DB size: ${chalk.cyan(metrics.fileSizeMB + 'MB')} | Observations: ${chalk.cyan(metrics.obsCount)} | Embeddings: ${chalk.cyan(metrics.embCount)} | git-commit: ${chalk.cyan(metrics.gitCommitCount)}\n`);
+
+    // Step 0: Close orphaned sessions (#60)
+    const orphanSpinner = ora(opts.dryRun ? 'Checking orphaned sessions...' : 'Closing orphaned sessions...').start();
+    const orphanCounts = closeOrphanedSessions({ dryRun: opts.dryRun });
+
+    if (orphanCounts.total > 0) {
+      if (opts.dryRun) {
+        orphanSpinner.info(`Would close ${chalk.yellow(orphanCounts.total)} orphaned sessions:`);
+      } else {
+        orphanSpinner.succeed(`Closed ${chalk.green(orphanCounts.total)} orphaned sessions.`);
+      }
+      if (orphanCounts.importSessions) console.log(`    ${orphanCounts.importSessions} import-git sessions`);
+      if (orphanCounts.realSessions) console.log(`    ${orphanCounts.realSessions} real sessions (>4h without Stop hook)`);
+    } else {
+      orphanSpinner.succeed('No orphaned sessions.');
+    }
 
     // Step 1: Compact — strip raw_input/raw_output from old low-value observations
     const compactSpinner = ora(opts.dryRun ? 'Calculating compact...' : 'Compacting raw data...').start();
@@ -539,6 +566,53 @@ program.command('reindex')
       }
     } catch (err) {
       spinner.fail(err.message);
+    }
+  });
+
+// ─── decisions (#25) ─────────────────────────────────────────────────────
+
+program.command('decisions')
+  .description('List architectural decisions recorded in this project')
+  .option('-p, --project <path>', 'Filter by project', process.cwd())
+  .option('-n, --limit <n>', 'Max results', '20')
+  .option('--all', 'Show decisions across all projects')
+  .action(async (opts) => {
+    const { getDb } = await import('./src/db.js');
+    const db = getDb();
+    const limit = parseInt(opts.limit);
+
+    let rows;
+    if (opts.all) {
+      rows = db.prepare(`
+        SELECT summary, decision_rationale, project, importance, created_at
+        FROM observations
+        WHERE decision_rationale IS NOT NULL
+        ORDER BY importance DESC, created_at DESC
+        LIMIT ?
+      `).all(limit);
+    } else {
+      rows = db.prepare(`
+        SELECT summary, decision_rationale, project, importance, created_at
+        FROM observations
+        WHERE decision_rationale IS NOT NULL AND project = ?
+        ORDER BY importance DESC, created_at DESC
+        LIMIT ?
+      `).all(opts.project, limit);
+    }
+
+    if (!rows.length) {
+      console.log(chalk.yellow('\n  No decisions recorded yet.'));
+      console.log(chalk.gray('  Decisions are auto-extracted when Claude Code makes architectural choices.\n'));
+      return;
+    }
+
+    console.log(chalk.bold(`\n  Decisions${opts.all ? ' (all projects)' : ''}\n`));
+    for (const r of rows) {
+      const proj = r.project.replace(process.env.HOME, '~').split('/').pop();
+      const imp = r.importance >= 0.9 ? chalk.red('●') : chalk.yellow('●');
+      console.log(`  ${imp} ${chalk.white(r.decision_rationale)}`);
+      console.log(`    ${chalk.gray(r.summary.slice(0, 100))}`);
+      console.log(`    ${chalk.gray(r.created_at)}  ${chalk.cyan(proj)}\n`);
     }
   });
 

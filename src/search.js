@@ -10,7 +10,7 @@
  * RRF score = Σ 1 / (k + rank_i)  where k=60 (standard)
  */
 
-import { ftsSearch, getObservationsWithEmbeddings, getRecentObservations } from './db.js';
+import { ftsSearch, getObservationsWithEmbeddings, getRecentObservations, getDb } from './db.js';
 import { embed, cosineSimilarity, bufToFloat32 } from './embeddings.js';
 
 const RRF_K = 60;
@@ -72,6 +72,11 @@ export async function hybridSearch(query, project, {
     if (entry.obs.tool === 'git-commit') {
       entry.score *= GIT_COMMIT_DEMOTION;
     }
+    // Decision boost (#25): observations with decisions are high-value context
+    const tags = JSON.parse(entry.obs.tags || '[]');
+    if (tags.includes('decision')) {
+      entry.score *= 1.5;
+    }
   }
 
   return [...scores.values()]
@@ -101,10 +106,29 @@ export async function buildContext(userPrompt, project, opts = {}) {
     .filter(o => !seenIds.has(o.id) && o.project !== project && o.hybridScore >= MIN_CROSS_PROJECT_SCORE)
     .slice(0, 3);
 
+  // 3. Fetch recent decisions for this project (#25 Decision Memory)
+  let decisions = [];
+  try {
+    decisions = getDb().prepare(`
+      SELECT summary, decision_rationale, created_at
+      FROM observations
+      WHERE project = ? AND decision_rationale IS NOT NULL
+      ORDER BY importance DESC, created_at DESC
+      LIMIT 5
+    `).all(project);
+  } catch { /* decision_rationale column may not exist yet */ }
+
   const lines = [];
 
+  if (decisions.length) {
+    lines.push('## Key decisions (project context)');
+    for (const d of decisions) {
+      lines.push(`- ${d.decision_rationale}`);
+    }
+  }
+
   if (recent.length) {
-    lines.push('## Recent session context');
+    lines.push('\n## Recent session context');
     for (const obs of recent) {
       lines.push(`- ${obs.summary}`);
     }

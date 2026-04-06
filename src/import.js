@@ -4,7 +4,7 @@
  * generates embeddings, stores in mem.db
  */
 import { execSync } from 'child_process';
-import { getDb, saveObservation, upsertSession, saveEmbedding } from './db.js';
+import { getDb, saveObservation, upsertSession, closeSession, saveEmbedding } from './db.js';
 import { compressObservation as compress } from './compress.js';
 import { embed } from './embeddings.js';
 
@@ -94,7 +94,7 @@ export async function importGit(repoPath, opts = {}) {
           ).trim().slice(0, 1000);
         } catch {}
 
-        const compressed = await compress('git-commit', `${msg}\n\n${diffStat}`, '');
+        const compressed = await compress({ tool: 'git-commit', input: `${msg}\n\n${diffStat}`, output: '', project: repoPath });
         if (compressed) {
           summary = compressed.summary || summary;
           tags = [...tags, ...(compressed.tags || [])];
@@ -136,6 +136,9 @@ export async function importGit(repoPath, opts = {}) {
       db.prepare('INSERT INTO import_sources (source, path, last_hash) VALUES (?, ?, ?)').run('git', repoPath, firstHash);
     }
   }
+
+  // Close the import session so it doesn't show up as orphaned (#60)
+  closeSession(sessionId, `Git import: ${imported} commits from ${repoPath.split('/').pop()}`);
 
   return { imported, skipped, total: lines.length };
 }

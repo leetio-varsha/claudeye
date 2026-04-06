@@ -121,10 +121,13 @@ Noise fast-path: bash commands matching `/^(ls|pwd|echo|cat|which|clear)/` skip 
 
 Importance scale:
 - `0.9+` — architectural decisions, security fixes, breaking changes
+- `0.8`  — decisions with rationale (auto-boosted by Decision Memory #25)
 - `0.7`  — feature implementation, schema changes, bug fixes
 - `0.5`  — routine code edits
 - `0.3`  — reads, searches
 - `< 0.1` — noise, discarded
+
+**Decision Memory (#25):** compress.js extracts `decision_rationale` from observations containing architectural choices, technology decisions, or trade-offs. Decisions are auto-tagged with `"decision"`, boosted to importance ≥ 0.8, prioritized in inject-hook context, and browsable via `claudeye decisions`.
 
 ---
 
@@ -171,6 +174,10 @@ claudeye advise --focus plugins       # focused advice
 claudeye rate [session-id]            # rate session 1-5
 claudeye digest                       # show latest digest
 claudeye digest --generate            # generate now
+
+# Decision Memory
+claudeye decisions                    # decisions in current project
+claudeye decisions --all              # all projects
 ```
 
 ---
@@ -244,17 +251,20 @@ memory tool -> self-improving system -> personal AI OS -> digital twin
 
 ---
 
-## Known gaps (critical — fix before heavy dogfooding)
+## Known gaps
 
-### Critical
-- ~~sql.js lacks FTS5~~ — RESOLVED: using better-sqlite3 with native FTS5.
-- **Hook payload format unverified** — need to log real stdin. Issue #3.
-- **analytics-cli.js wiring** — may not be imported in cli.js correctly.
+### Resolved
+- ~~sql.js lacks FTS5~~ — using better-sqlite3 with native FTS5 (#1)
+- ~~Hook payload format unverified~~ — validated (#3)
+- ~~analytics-cli.js wiring~~ — fixed (#54)
+- ~~`<private>` tag support~~ — implemented (#6)
+- ~~Retention policy~~ — tiered retention + compact (#59)
+- ~~Dashboard analytics~~ — redesigned with actionable insights (#7)
+- ~~Unclosed sessions (57%)~~ — root cause: import-git sessions + orphan cleanup added (#60)
 
-### Important
-- **`<private>` tag support** — Issue #6
-- **Retention policy** — Issue #5
-- **Web dashboard analytics tabs** — Issue #7
+### Active
+- **@anthropic-ai/sdk in package.json** — unused, should remove (#58)
+- **migrateAnalytics duplication** — db.js and analytics.js have divergent schemas (#58)
 
 ---
 
@@ -322,4 +332,4 @@ When starting a new session:
 3. Check Known gaps — fix criticals before adding features
 4. Run `claudeye-analyzer` readiness report to see what's ready
 
-**Current priority:** Issues #2, #3, #4 — test hooks and validate payloads.
+**Current priority:** Phase 2.5 (Advisor Foundation) — #17 structured output, then #15/#16. Also #49 (scheduler health check), #57 (generate-claude-md).
