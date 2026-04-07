@@ -219,10 +219,42 @@ function fallbackCompress(tool, input, output) {
   }
 
   if (hasError) {
-    summary    += ` → ERROR: ${(output || '').slice(0, 80)}`;
+    const reason = extractErrorReason(output);
+    summary    += ` → ERROR: ${reason.slice(0, 120)}`;
     importance  = Math.max(importance, 0.8);
     if (!tags.includes('error')) tags.push('error');
   }
 
   return { summary, tags, importance };
+}
+
+/**
+ * Best-effort extraction of a human-readable reason from a tool's raw output.
+ * Tool results often arrive as JSON envelopes like
+ *   {"type":"text","file":{"filePath":"...","content":"..."}}
+ * or contain an embedded "Error: ..." line. Pull something useful instead of
+ * dumping the wrapper.
+ */
+function extractErrorReason(output) {
+  const text = String(output || '');
+  if (!text) return '(no output)';
+  // 1. JSON envelopes
+  try {
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) {
+      const o = JSON.parse(m[0]);
+      const cand = o.message || o.error || (o.file && (o.file.error || o.file.message));
+      if (cand && typeof cand === 'string') return cand.trim();
+      if (o?.file?.filePath && /not\s*found|ENOENT|does not exist/i.test(text)) {
+        return `file not found: ${o.file.filePath}`;
+      }
+    }
+  } catch {}
+  // 2. Error: ... line
+  const err = text.match(/(?:^|\n)\s*(?:Error|ENOENT|EACCES|TypeError|ReferenceError)[^\n]{0,160}/);
+  if (err) return err[0].trim();
+  // 3. First non-JSON line
+  const firstLine = text.split('\n').find(l => l.trim() && !l.trim().startsWith('{'));
+  if (firstLine) return firstLine.trim();
+  return text.slice(0, 120);
 }
