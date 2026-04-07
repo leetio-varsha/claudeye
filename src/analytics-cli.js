@@ -158,7 +158,7 @@ program.command('advise')
   .option('--focus <area>', 'Focus area: plugins|workflow|issues|models')
   .option('--days <n>', 'Lookback period in days', '30')
   .action(async (opts) => {
-    const { generateAdvice } = await import('./src/advisor.js');
+    const { generateAdvice } = await import('./advisor.js');
     const ora = (await import('ora')).default;
 
     console.log(chalk.bold('\n🧠 Analyzing your Claude Code usage...\n'));
@@ -280,7 +280,7 @@ program.command('digest')
     }
 
     // ── Digest generation / display ────────────────────────
-    const { generateWeeklyDigest, getLatestDigest, listDigests } = await import('./src/advisor.js');
+    const { generateWeeklyDigest, getLatestDigest, listDigests } = await import('./advisor.js');
 
     if (opts.list) {
       const digests = listDigests();
