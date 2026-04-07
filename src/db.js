@@ -456,14 +456,16 @@ export function getErrorStats(days = 7) {
   return {
     byHook: db.prepare(`
       SELECT hook, error_type, COUNT(*) as count
-      FROM hook_errors WHERE created_at >= date('now', '-' || ? || ' days')
+      FROM hook_errors
+      WHERE created_at >= date('now', '-' || ? || ' days')
+        AND error_type != 'info'
       GROUP BY hook, error_type ORDER BY count DESC
     `).all(days),
     recent: db.prepare(`
       SELECT * FROM hook_errors ORDER BY created_at DESC LIMIT 10
     `).all(),
     total: db.prepare(`
-      SELECT COUNT(*) as n FROM hook_errors WHERE created_at >= date('now', '-' || ? || ' days')
+      SELECT COUNT(*) as n FROM hook_errors WHERE created_at >= date('now', '-' || ? || ' days') AND error_type != 'info'
     `).get(days).n,
   };
 }
