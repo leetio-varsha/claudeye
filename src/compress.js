@@ -156,12 +156,73 @@ function isNoise(tool, input) {
   return false;
 }
 
+function parseToolInput(input) {
+  try { return JSON.parse(input); } catch { return null; }
+}
+
+function shortPath(p) {
+  if (!p) return '';
+  const parts = String(p).split('/');
+  return parts.slice(-2).join('/');
+}
+
 function fallbackCompress(tool, input, output) {
   const hasError = /error|Error|exception|failed|FAILED/i.test(output);
-  const summary  = `[${tool}] ${input.slice(0, 150)}${output ? ` → ${output.slice(0, 100)}` : ''}`;
-  return {
-    summary,
-    tags:       [tool.toLowerCase(), hasError ? 'error' : 'general'],
-    importance: hasError ? 0.8 : 0.4,
-  };
+  const parsed   = parseToolInput(input);
+  let summary, tags, importance;
+
+  switch (tool) {
+    case 'Edit': {
+      const file    = shortPath(parsed?.file_path);
+      const snippet = (parsed?.old_string || '').slice(0, 60).replace(/\s+/g, ' ').trim();
+      summary    = `Edited ${file}: replaced "${snippet}…"`;
+      tags       = ['edit', file.split('.').pop() || 'code'];
+      importance = 0.5;
+      break;
+    }
+    case 'Write': {
+      const file  = shortPath(parsed?.file_path);
+      const lines = (parsed?.content || '').split('\n').length;
+      summary    = `Wrote ${file} (${lines} lines)`;
+      tags       = ['write', file.split('.').pop() || 'code'];
+      importance = 0.6;
+      break;
+    }
+    case 'Read': {
+      const file   = shortPath(parsed?.file_path);
+      const offset = parsed?.offset ? ` at line ${parsed.offset}` : '';
+      summary    = `Read ${file}${offset}`;
+      tags       = ['read'];
+      importance = 0.3;
+      break;
+    }
+    case 'Grep': {
+      const pattern = (parsed?.pattern || '').slice(0, 50);
+      const path    = shortPath(parsed?.path || parsed?.glob);
+      summary    = `Searched for "${pattern}"${path ? ` in ${path}` : ''}`;
+      tags       = ['search'];
+      importance = 0.3;
+      break;
+    }
+    case 'Bash': {
+      const cmd  = (input || '').slice(0, 100).trim();
+      summary    = `Ran: ${cmd}`;
+      tags       = ['bash', hasError ? 'error' : 'general'];
+      importance = hasError ? 0.8 : 0.3;
+      break;
+    }
+    default: {
+      summary    = `[${tool}] ${(input || '').slice(0, 100)}`;
+      tags       = [tool.toLowerCase(), 'general'];
+      importance = 0.4;
+    }
+  }
+
+  if (hasError) {
+    summary    += ` → ERROR: ${(output || '').slice(0, 80)}`;
+    importance  = Math.max(importance, 0.8);
+    if (!tags.includes('error')) tags.push('error');
+  }
+
+  return { summary, tags, importance };
 }
