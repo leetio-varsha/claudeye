@@ -618,6 +618,47 @@ program.command('decisions')
 
 // ─── handoff ─────────────────────────────────────────────────────────────
 
+/**
+ * Strip wrapped tool-result JSON noise from an error summary so the handoff
+ * shows a meaningful reason instead of "→ ERROR: {"type":"text","file":..."
+ */
+function cleanErrorSummary(summary, rawOutput) {
+  if (!summary) return '';
+  let head = summary;
+  let tail = '';
+  const arrowIdx = summary.indexOf('→ ERROR:');
+  if (arrowIdx !== -1) {
+    head = summary.slice(0, arrowIdx).trim();
+    tail = summary.slice(arrowIdx + '→ ERROR:'.length).trim();
+  }
+  // Try to extract a real message from raw_output JSON; fall back to tail.
+  let msg = extractErrorMessage(rawOutput) || extractErrorMessage(tail) || tail;
+  // Drop wrapper noise like {"type":"text","file":{...}}
+  if (msg && /^\s*\{.*"type"\s*:\s*"text".*"filePath"/.test(msg)) {
+    msg = msg.replace(/^.*"filePath"\s*:\s*"([^"]+)".*$/, 'file not accessible: $1');
+  }
+  msg = (msg || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+  if (!msg) return head;
+  return `${head} — ${msg}`;
+}
+
+function extractErrorMessage(text) {
+  if (!text) return '';
+  // Find JSON object and try to pull message/error/text fields.
+  try {
+    const m = String(text).match(/\{[\s\S]*\}/);
+    if (m) {
+      const o = JSON.parse(m[0]);
+      const cand = o.message || o.error || o.text || (o.file && o.file.error);
+      if (cand && typeof cand === 'string') return cand;
+    }
+  } catch {}
+  // Look for "Error: ..." patterns.
+  const errMatch = String(text).match(/(?:Error|ENOENT|EACCES)[^\n]{0,160}/);
+  if (errMatch) return errMatch[0];
+  return '';
+}
+
 program.command('handoff')
   .description('Generate a session handoff summary — paste into a new session to continue seamlessly')
   .option('-p, --project <path>', 'Filter by project', process.cwd())
@@ -645,11 +686,14 @@ program.command('handoff')
 
     const proj = session.project.replace(process.env.HOME, '~').split('/').pop();
 
-    // Gather session data
+    // Gather session data — exclude errors from "what was done" so they only
+    // appear in the dedicated "unresolved problems" section (no duplication).
     const recentObs = db.prepare(`
       SELECT summary, tool, importance, tags
       FROM observations
-      WHERE session_id = ? AND importance >= 0.5
+      WHERE session_id = ?
+        AND importance >= 0.5
+        AND (tags IS NULL OR tags NOT LIKE '%error%')
       ORDER BY importance DESC, created_at DESC
       LIMIT 10
     `).all(session.id);
@@ -662,18 +706,34 @@ program.command('handoff')
     `).all(session.id);
 
     const errors = db.prepare(`
-      SELECT summary FROM observations
+      SELECT summary, raw_output FROM observations
       WHERE session_id = ? AND tags LIKE '%error%'
       ORDER BY created_at DESC LIMIT 5
     `).all(session.id);
 
-    const files = db.prepare(`
-      SELECT DISTINCT
-        CASE WHEN raw_input LIKE '%/%' THEN raw_input ELSE NULL END as file_hint
+    const fileRows = db.prepare(`
+      SELECT raw_input, tool
       FROM observations
       WHERE session_id = ? AND tool IN ('Edit', 'Write') AND raw_input IS NOT NULL
-      ORDER BY created_at DESC LIMIT 10
-    `).all(session.id).filter(f => f.file_hint);
+      ORDER BY created_at DESC LIMIT 30
+    `).all(session.id);
+
+    // Extract clean absolute file paths from raw_input JSON, dedupe.
+    const seenFiles = new Set();
+    const files = [];
+    for (const row of fileRows) {
+      let p = null;
+      try {
+        const parsed = JSON.parse(row.raw_input);
+        p = parsed?.file_path || parsed?.filePath || parsed?.path;
+      } catch {}
+      if (!p || typeof p !== 'string') continue;
+      if (!p.startsWith('/')) continue;        // skip relative junk
+      if (seenFiles.has(p)) continue;
+      seenFiles.add(p);
+      files.push(p);
+      if (files.length >= 5) break;
+    }
 
     const obsCount = db.prepare('SELECT COUNT(*) as n FROM observations WHERE session_id = ?').get(session.id).n;
 
@@ -704,17 +764,20 @@ program.command('handoff')
 
     if (errors.length) {
       lines.push('Нерешённые проблемы:');
+      const seenErr = new Set();
       for (const e of errors) {
-        lines.push(`- ${e.summary.slice(0, 150)}`);
+        const clean = cleanErrorSummary(e.summary, e.raw_output);
+        if (!clean || seenErr.has(clean)) continue;
+        seenErr.add(clean);
+        lines.push(`- ${clean}`);
       }
       lines.push('');
     }
 
     if (files.length) {
       lines.push('Файлы:');
-      for (const f of files.slice(0, 5)) {
-        const pathMatch = f.file_hint.match(/[\/\w.-]+\.\w+/);
-        if (pathMatch) lines.push(`- ${pathMatch[0]}`);
+      for (const f of files) {
+        lines.push(`- ${f}`);
       }
       lines.push('');
     }
