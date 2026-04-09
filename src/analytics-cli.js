@@ -157,21 +157,34 @@ program.command('advise')
   .description('Get AI-powered workflow recommendations')
   .option('--focus <area>', 'Focus area: plugins|workflow|issues|models')
   .option('--days <n>', 'Lookback period in days', '30')
+  .option('--json', 'Structured JSON output (#17)')
   .action(async (opts) => {
     const { generateAdvice } = await import('./advisor.js');
     const ora = (await import('ora')).default;
+    const format = opts.json ? 'json' : 'markdown';
 
     console.log(chalk.bold('\n🧠 Analyzing your Claude Code usage...\n'));
     const spinner = ora('Running analysis').start();
 
     try {
       spinner.stop();
-      await generateAdvice({
+      const result = await generateAdvice({
         focus:  opts.focus || null,
         days:   parseInt(opts.days),
-        stream: true,
+        stream: format !== 'json',
+        format,
       });
-      console.log('');
+
+      if (format === 'json') {
+        console.log(JSON.stringify(result, null, 2));
+        // Summary line
+        if (result.findings?.length) {
+          const high = result.findings.filter(f => f.priority === 'high').length;
+          console.log(chalk.gray(`\n  ${result.findings.length} findings (${high} high priority) | health: ${result.health_score ?? '?'}\n`));
+        }
+      } else {
+        console.log('');
+      }
     } catch (err) {
       spinner.fail(err.message);
       if (err.message.includes('claude')) {

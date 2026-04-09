@@ -26,12 +26,41 @@ Rules:
 - If a plugin/model is underperforming vs baseline, say so clearly.
 - Structure your response with these sections:
   ## 🔍 Key Patterns
-  ## ⚡ Top 3 Recommendations  
+  ## ⚡ Top 3 Recommendations
   ## 🔌 Plugin & Model Insights
   ## 🐛 Issue Resolution Analysis
   ## 🎯 One Big Change
 
 Keep total response under 600 words. Dense, useful, no fluff.`;
+
+// Structured JSON output prompt (#17)
+const SYSTEM_PROMPT_JSON = `You are a senior developer advisor analyzing Claude Code usage patterns.
+
+Respond ONLY with a valid JSON object. No markdown, no explanation, no code fences.
+
+JSON schema:
+{
+  "findings": [
+    {
+      "category": "workflow" | "plugins" | "models" | "issues" | "performance" | "friction",
+      "title": "short title (under 80 chars)",
+      "description": "2-3 sentence explanation with specific numbers",
+      "priority": "high" | "medium" | "low",
+      "tasks": ["actionable step 1", "actionable step 2"],
+      "actionable": true | false,
+      "metric": "optional: the key number behind this finding"
+    }
+  ],
+  "summary": "one-sentence summary of the most important insight",
+  "health_score": 0.0-1.0
+}
+
+Rules:
+- Return 3-7 findings, ordered by priority.
+- Reference specific numbers from the data. Never give generic advice.
+- Be direct and opinionated.
+- Every finding with actionable=true must have at least one task.
+- health_score: 0.0 = critical issues, 1.0 = everything great.`;
 
 // ─── On-demand advice ─────────────────────────────────────────────────────
 
@@ -43,16 +72,21 @@ Keep total response under 600 words. Dense, useful, no fluff.`;
  * @param {string} opts.focus  — optional focus area: 'plugins'|'workflow'|'issues'
  * @param {number} opts.days   — lookback period in days
  * @param {boolean} opts.stream — stream to stdout vs return string
+ * @param {'markdown'|'json'} opts.format — output format (default 'markdown')
  */
-export async function generateAdvice({ focus = null, days = 30, stream = true } = {}) {
+export async function generateAdvice({ focus = null, days = 30, stream = true, format = 'markdown' } = {}) {
   const stats   = buildAdvisorPayload(days);
   const isEmpty = stats.overview.total_sessions === 0;
 
   if (isEmpty) {
+    if (format === 'json') {
+      return { findings: [], summary: 'Not enough data yet.', health_score: null };
+    }
     return '> Not enough data yet. Use Claude Code for a few sessions first, then run `claudeye advise` again.';
   }
 
   const focusNote = focus ? `\n\nFocus especially on: ${focus}` : '';
+  const systemPrompt = format === 'json' ? SYSTEM_PROMPT_JSON : SYSTEM_PROMPT;
 
   const userPrompt = `Analyze my Claude Code usage for the last ${days} days.${focusNote}
 
@@ -60,9 +94,9 @@ DATA:
 ${JSON.stringify(stats, null, 2)}`;
 
   // Pass prompt via stdin to avoid ARG_MAX limits on large payloads (#62)
-  const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
+  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
-  if (stream) {
+  if (stream && format !== 'json') {
     // Stream directly to terminal via claude CLI
     const result = spawnSync('claude', [
       '--print', '-',
@@ -78,7 +112,7 @@ ${JSON.stringify(stats, null, 2)}`;
     }
     return null; // output already streamed
   } else {
-    // Return as string (for digest storage)
+    // Return as string (for digest storage) or JSON
     const result = spawnSync('claude', [
       '--print', '-',
     ], {
@@ -90,8 +124,73 @@ ${JSON.stringify(stats, null, 2)}`;
     if (result.status !== 0) {
       throw new Error(`Claude CLI failed: ${result.stderr}`);
     }
+
+    if (format === 'json') {
+      return parseAdvisorJSON(result.stdout);
+    }
     return result.stdout;
   }
+}
+
+/**
+ * Parse and validate structured JSON from advisor output (#17).
+ * Handles common LLM quirks: code fences, preamble text, trailing commas.
+ *
+ * @param {string} raw — raw CLI output
+ * @param {number} retries — not used yet, reserved for future retry logic
+ * @returns {object} — validated advisor response
+ */
+function parseAdvisorJSON(raw) {
+  let text = raw.trim();
+
+  // Strip markdown code fences if present
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+
+  // Try to extract JSON object if wrapped in text
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) text = jsonMatch[0];
+
+  try {
+    const parsed = JSON.parse(text);
+    return validateAdvisorResponse(parsed);
+  } catch (e) {
+    // Return a structured error instead of crashing
+    return {
+      findings: [],
+      summary: 'Failed to parse advisor response as JSON.',
+      health_score: null,
+      _parseError: e.message,
+      _raw: raw.slice(0, 500),
+    };
+  }
+}
+
+/**
+ * Validate and normalize advisor JSON response.
+ */
+function validateAdvisorResponse(obj) {
+  const result = {
+    findings: [],
+    summary: obj.summary || '',
+    health_score: typeof obj.health_score === 'number' ? Math.max(0, Math.min(1, obj.health_score)) : null,
+  };
+
+  if (Array.isArray(obj.findings)) {
+    for (const f of obj.findings) {
+      if (!f.title || !f.category) continue; // skip malformed
+      result.findings.push({
+        category: String(f.category || 'unknown'),
+        title: String(f.title || '').slice(0, 200),
+        description: String(f.description || ''),
+        priority: ['high', 'medium', 'low'].includes(f.priority) ? f.priority : 'medium',
+        tasks: Array.isArray(f.tasks) ? f.tasks.map(String) : [],
+        actionable: Boolean(f.actionable),
+        metric: f.metric ? String(f.metric) : undefined,
+      });
+    }
+  }
+
+  return result;
 }
 
 // ─── Weekly digest ────────────────────────────────────────────────────────
