@@ -262,6 +262,18 @@ export function createServer(port = 47777) {
     res.json({ repeating, hotFiles, hardSessions });
   });
 
+  // ─── Heatmap endpoint (#56) ─────────────────────────────────────────────
+
+  app.get('/api/insights/heatmap', async (req, res) => {
+    try {
+      const { generateProjectHeatmap } = await import('../scripts/weekly-project-report.js');
+      const days = safeInt(req.query.days, { min: 1, max: 90, def: 7 });
+      res.json(generateProjectHeatmap({ days }));
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── Chart data endpoints (legacy, used by Details tab) ───────────────
 
   app.get('/api/charts/activity', (req, res) => {

@@ -718,7 +718,14 @@ export function getDbMetrics() {
   const embCount = db.prepare('SELECT COUNT(*) as n FROM embeddings').get().n;
   const gitCommitCount = db.prepare("SELECT COUNT(*) as n FROM observations WHERE tool = 'git-commit'").get().n;
 
-  return { fileSizeMB, obsCount, embCount, gitCommitCount };
+  // Embedding dimension distribution (#53)
+  const embDims = db.prepare(`
+    SELECT length(vector) / 4 as dims, COUNT(*) as n
+    FROM embeddings
+    GROUP BY dims ORDER BY n DESC
+  `).all();
+
+  return { fileSizeMB, obsCount, embCount, gitCommitCount, embDims };
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
