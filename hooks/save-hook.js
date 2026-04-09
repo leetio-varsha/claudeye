@@ -74,7 +74,8 @@ async function main() {
     // Lightweight check — runs at most once per session
     try {
       const { closeOrphanedSessions } = await import(srcDir + 'db.js');
-      closeOrphanedSessions({ maxAgeHours: 4 });
+      const { computeFrictionScore } = await import(srcDir + 'analytics.js');
+      closeOrphanedSessions({ maxAgeHours: 4, computeFriction: computeFrictionScore });
     } catch { /* non-critical */ }
 
     // Generate and store embedding — must await before exit

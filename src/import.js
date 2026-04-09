@@ -3,8 +3,9 @@
  * Reads local git log, AI-compresses rich commits,
  * generates embeddings, stores in mem.db
  */
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { getDb, saveObservation, upsertSession, closeSession, saveEmbedding } from './db.js';
+import { computeFrictionScore } from './analytics.js';
 import { compressObservation as compress } from './compress.js';
 import { embed } from './embeddings.js';
 
@@ -39,15 +40,15 @@ export async function importGit(repoPath, opts = {}) {
     'SELECT last_hash FROM import_sources WHERE source = ? AND path = ?'
   ).get('git', repoPath);
 
-  // Build git log command
-  let cmd = `git -C "${repoPath}" log --format="%H%x00%ai%x00%an%x00%s"`;
-  if (since) cmd += ` --since="${since}"`;
-  if (existing?.last_hash) cmd += ` ${existing.last_hash}..HEAD`;
-  if (limit) cmd += ` -n ${limit}`;
+  // Build git log args (use execFileSync to prevent command injection — #69)
+  const gitArgs = ['-C', repoPath, 'log', '--format=%H%x00%ai%x00%an%x00%s'];
+  if (since) gitArgs.push(`--since=${since}`);
+  if (existing?.last_hash) gitArgs.push(`${existing.last_hash}..HEAD`);
+  if (limit) gitArgs.push('-n', String(limit));
 
   let output;
   try {
-    output = execSync(cmd, { encoding: 'utf8', maxBuffer: 100 * 1024 * 1024 }).trim();
+    output = execFileSync('git', gitArgs, { encoding: 'utf8', maxBuffer: 100 * 1024 * 1024 }).trim();
   } catch (e) {
     console.error(`Failed to read git log from ${repoPath}:`, e.message);
     return { imported: 0, skipped: 0, error: e.message };
@@ -88,8 +89,7 @@ export async function importGit(repoPath, opts = {}) {
       try {
         let diffStat = '';
         try {
-          diffStat = execSync(
-            `git -C "${repoPath}" show --stat --no-patch --format="" ${hash}`,
+          diffStat = execFileSync('git', ['-C', repoPath, 'show', '--stat', '--no-patch', '--format=', hash],
             { encoding: 'utf8' }
           ).trim().slice(0, 1000);
         } catch {}
@@ -138,7 +138,7 @@ export async function importGit(repoPath, opts = {}) {
   }
 
   // Close the import session so it doesn't show up as orphaned (#60)
-  closeSession(sessionId, `Git import: ${imported} commits from ${repoPath.split('/').pop()}`);
+  closeSession(sessionId, `Git import: ${imported} commits from ${repoPath.split('/').pop()}`, { computeFriction: computeFrictionScore });
 
   return { imported, skipped, total: lines.length };
 }

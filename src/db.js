@@ -313,10 +313,18 @@ export function upsertSession(id, project) {
   `).run(id, project);
 }
 
-export function closeSession(id, summary) {
-  getDb().prepare(`
-    UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?
-  `).run(summary, id);
+export function closeSession(id, summary, { computeFriction = null } = {}) {
+  const db = getDb();
+  if (computeFriction) {
+    const score = computeFriction(id);
+    db.prepare(`
+      UPDATE sessions SET ended_at = datetime('now'), summary = ?, friction_score = ? WHERE id = ?
+    `).run(summary, score, id);
+  } else {
+    db.prepare(`
+      UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?
+    `).run(summary, id);
+  }
 }
 
 // ─── Orphaned session cleanup (#60) ────────────────────────────────────────
@@ -333,7 +341,7 @@ export function closeSession(id, summary) {
  * @param {boolean} opts.dryRun
  * @returns {{ importSessions: number, realSessions: number, total: number }}
  */
-export function closeOrphanedSessions({ maxAgeHours = 4, dryRun = false } = {}) {
+export function closeOrphanedSessions({ maxAgeHours = 4, dryRun = false, computeFriction = null } = {}) {
   const db = getDb();
 
   // Count import-git sessions that were never closed
@@ -353,26 +361,53 @@ export function closeOrphanedSessions({ maxAgeHours = 4, dryRun = false } = {}) 
   if (dryRun) return { importSessions: importCount, realSessions: realCount, total: importCount + realCount };
 
   if (importCount > 0) {
-    db.prepare(`
-      UPDATE sessions
-      SET ended_at = started_at, summary = '[auto-closed] Git import session'
-      WHERE id LIKE 'import-git-%' AND ended_at IS NULL
-    `).run();
+    // Compute friction for each import session before closing
+    if (computeFriction) {
+      const ids = db.prepare(`SELECT id FROM sessions WHERE id LIKE 'import-git-%' AND ended_at IS NULL`).all();
+      const stmt = db.prepare(`UPDATE sessions SET ended_at = started_at, summary = '[auto-closed] Git import session', friction_score = ? WHERE id = ?`);
+      for (const { id } of ids) stmt.run(computeFriction(id), id);
+    } else {
+      db.prepare(`
+        UPDATE sessions
+        SET ended_at = started_at, summary = '[auto-closed] Git import session'
+        WHERE id LIKE 'import-git-%' AND ended_at IS NULL
+      `).run();
+    }
   }
 
   if (realCount > 0) {
-    // For real sessions, set ended_at to last observation time or started_at + 1h
-    db.prepare(`
-      UPDATE sessions
-      SET ended_at = COALESCE(
-        (SELECT MAX(created_at) FROM observations WHERE session_id = sessions.id),
-        datetime(started_at, '+1 hour')
-      ),
-      summary = '[auto-closed] Session not ended by Stop hook'
-      WHERE id NOT LIKE 'import-git-%'
-        AND ended_at IS NULL
-        AND started_at < datetime('now', '-' || ? || ' hours')
-    `).run(maxAgeHours);
+    if (computeFriction) {
+      // Compute friction per session before closing
+      const ids = db.prepare(`
+        SELECT id FROM sessions
+        WHERE id NOT LIKE 'import-git-%' AND ended_at IS NULL
+          AND started_at < datetime('now', '-' || ? || ' hours')
+      `).all(maxAgeHours);
+      const stmt = db.prepare(`
+        UPDATE sessions
+        SET ended_at = COALESCE(
+          (SELECT MAX(created_at) FROM observations WHERE session_id = ?),
+          datetime(started_at, '+1 hour')
+        ),
+        summary = '[auto-closed] Session not ended by Stop hook',
+        friction_score = ?
+        WHERE id = ?
+      `);
+      for (const { id } of ids) stmt.run(id, computeFriction(id), id);
+    } else {
+      // For real sessions, set ended_at to last observation time or started_at + 1h
+      db.prepare(`
+        UPDATE sessions
+        SET ended_at = COALESCE(
+          (SELECT MAX(created_at) FROM observations WHERE session_id = sessions.id),
+          datetime(started_at, '+1 hour')
+        ),
+        summary = '[auto-closed] Session not ended by Stop hook'
+        WHERE id NOT LIKE 'import-git-%'
+          AND ended_at IS NULL
+          AND started_at < datetime('now', '-' || ? || ' hours')
+      `).run(maxAgeHours);
+    }
   }
 
   return { importSessions: importCount, realSessions: realCount, total: importCount + realCount };

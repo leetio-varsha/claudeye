@@ -395,6 +395,7 @@ program.command('cleanup')
   .option('--no-vacuum', 'Skip VACUUM (faster, but does not reclaim disk space)')
   .action(async (opts) => {
     const { cleanup, compact, getDbMetrics, closeOrphanedSessions } = await import('./src/db.js');
+    const { computeFrictionScore } = await import('./src/analytics.js');
     const ora = (await import('ora')).default;
 
     const metrics = getDbMetrics();
@@ -403,7 +404,7 @@ program.command('cleanup')
 
     // Step 0: Close orphaned sessions (#60)
     const orphanSpinner = ora(opts.dryRun ? 'Checking orphaned sessions...' : 'Closing orphaned sessions...').start();
-    const orphanCounts = closeOrphanedSessions({ dryRun: opts.dryRun });
+    const orphanCounts = closeOrphanedSessions({ dryRun: opts.dryRun, computeFriction: computeFrictionScore });
 
     if (orphanCounts.total > 0) {
       if (opts.dryRun) {
@@ -415,6 +416,27 @@ program.command('cleanup')
       if (orphanCounts.realSessions) console.log(`    ${orphanCounts.realSessions} real sessions (>4h without Stop hook)`);
     } else {
       orphanSpinner.succeed('No orphaned sessions.');
+    }
+
+    // Step 0.5: Backfill friction_score for existing sessions (#68)
+    const { getDb } = await import('./src/db.js');
+    const db = getDb();
+    const zeroFriction = db.prepare(`
+      SELECT s.id FROM sessions s
+      WHERE s.friction_score = 0
+        AND EXISTS (SELECT 1 FROM observations o WHERE o.session_id = s.id)
+    `).all();
+    if (zeroFriction.length > 0 && !opts.dryRun) {
+      const frictionSpinner = ora('Backfilling friction scores...').start();
+      const upd = db.prepare('UPDATE sessions SET friction_score = ? WHERE id = ?');
+      let updated = 0;
+      for (const { id } of zeroFriction) {
+        const score = computeFrictionScore(id);
+        if (score > 0) { upd.run(score, id); updated++; }
+      }
+      frictionSpinner.succeed(`Backfilled friction_score for ${chalk.green(updated)}/${zeroFriction.length} sessions.`);
+    } else if (zeroFriction.length > 0) {
+      console.log(`  Would backfill friction_score for ${chalk.yellow(zeroFriction.length)} sessions.`);
     }
 
     // Step 1: Compact — strip raw_input/raw_output from old low-value observations
