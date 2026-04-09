@@ -26,12 +26,21 @@ program
 program.command('stats')
   .description('Show memory database statistics')
   .action(async () => {
-    const { getStats } = await import('./src/db.js');
+    const { getStats, getDbMetrics } = await import('./src/db.js');
     const stats = getStats();
+    const metrics = getDbMetrics();
 
     console.log(chalk.bold('\n📊 Claude Mem Stats\n'));
     console.log(`  Total observations: ${chalk.cyan(stats.totalObservations)}`);
     console.log(`  Total sessions:     ${chalk.cyan(stats.totalSessions)}`);
+    console.log(`  Embeddings:         ${chalk.cyan(metrics.embCount)}`);
+
+    // Embedding dimension distribution (#53)
+    if (metrics.embDims.length > 0) {
+      const parts = metrics.embDims.map(d => `${d.dims}-dim: ${d.n}`).join(', ');
+      const mixed = metrics.embDims.length > 1;
+      console.log(`  Embedding dims:     ${mixed ? chalk.yellow(parts + " ⚠ mixed — run 'claudeye reindex'") : chalk.green(parts)}`);
+    }
 
     if (stats.projects.length) {
       console.log(chalk.bold('\n  Projects:'));
@@ -810,6 +819,24 @@ program.command('handoff')
     console.log(chalk.cyan('  ── Copy this into your new session ──────────────\n'));
     console.log(handoff);
     console.log(chalk.cyan('  ────────────────────────────────────────────────\n'));
+  });
+
+// ─── heatmap (#56) ───────────────────────────────────────────────────────
+
+program.command('heatmap')
+  .description('Cross-project friction heatmap: compare friction across projects')
+  .option('--days <n>', 'Lookback period in days', '7')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    const { generateProjectHeatmap, formatHeatmap } = await import('./scripts/weekly-project-report.js');
+    const days = Math.max(1, Math.min(90, parseInt(opts.days) || 7));
+    const data = generateProjectHeatmap({ days });
+
+    if (opts.json) {
+      console.log(JSON.stringify(data, null, 2));
+    } else {
+      console.log(chalk.bold(formatHeatmap(data)));
+    }
   });
 
 // ─── insights ────────────────────────────────────────────────────────────

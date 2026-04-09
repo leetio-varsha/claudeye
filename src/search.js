@@ -176,14 +176,22 @@ async function runVectorSearch(query, project) {
     const queryVec = await embed(query);
     const rows     = getObservationsWithEmbeddings(project, 300);
 
-    return rows
+    let dimMismatchCount = 0;
+    const results = rows
       .map(row => {
         const vec = bufToFloat32(row.vector);
+        if (queryVec.length !== vec.length) { dimMismatchCount++; return null; }
         const sim = cosineSimilarity(queryVec, vec);
         return { ...row, vectorScore: sim };
       })
+      .filter(Boolean)
       .sort((a, b) => b.vectorScore - a.vectorScore)
       .slice(0, 30);
+
+    if (dimMismatchCount > 0) {
+      console.error(`[mem:vector] ${dimMismatchCount}/${rows.length} embeddings skipped (dimension mismatch) — run 'claudeye reindex'`);
+    }
+    return results;
   } catch (err) {
     console.error('[mem:vector] search failed:', err.message);
     return [];

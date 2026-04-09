@@ -116,8 +116,20 @@ function keywordFallbackEmbed(text) {
 
 // ─── Similarity ───────────────────────────────────────────────────────────
 
+let _dimMismatchWarned = 0;
+const DIM_MISMATCH_WARN_LIMIT = 5;
+
 export function cosineSimilarity(a, b) {
-  if (a.length !== b.length) return 0;
+  if (a.length !== b.length) {
+    if (_dimMismatchWarned < DIM_MISMATCH_WARN_LIMIT) {
+      console.error(`[mem:embed] ⚠ dimension mismatch: ${a.length} vs ${b.length} — run 'claudeye reindex' to fix`);
+      _dimMismatchWarned++;
+      if (_dimMismatchWarned === DIM_MISMATCH_WARN_LIMIT) {
+        console.error('[mem:embed] (suppressing further mismatch warnings)');
+      }
+    }
+    return 0;
+  }
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
     dot += a[i] * b[i];
