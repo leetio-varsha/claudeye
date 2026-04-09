@@ -821,6 +821,65 @@ program.command('handoff')
     console.log(chalk.cyan('  ────────────────────────────────────────────────\n'));
   });
 
+// ─── generate-claude-md (#57) ────────────────────────────────────────────
+
+program.command('generate-claude-md')
+  .description('Auto-generate CLAUDE.md hints from high-importance observations')
+  .option('-p, --project <path>', 'Project path (default: current directory)')
+  .option('--days <n>', 'Lookback period in days', '30')
+  .option('--dry-run', 'Show suggestions without writing')
+  .option('--all', 'Generate for all eligible projects')
+  .action(async (opts) => {
+    const { generateClaudeMd, getEligibleProjects } = await import('./scripts/generate-claude-md.js');
+    const ora = (await import('ora')).default;
+    const days = parseInt(opts.days) || 30;
+
+    if (opts.all) {
+      const projects = getEligibleProjects({ days });
+      if (!projects.length) {
+        console.log(chalk.yellow('\n  No projects with enough high-importance data.\n'));
+        return;
+      }
+      console.log(chalk.bold(`\n  Generating CLAUDE.md for ${projects.length} projects...\n`));
+      for (const p of projects) {
+        const spinner = ora(`${p.project.split('/').pop()} (${p.high_imp_count} high-imp obs)`).start();
+        try {
+          const result = await generateClaudeMd(p.project, { days, dryRun: opts.dryRun });
+          if (result) {
+            spinner.succeed(`${p.project.split('/').pop()}: ${opts.dryRun ? 'preview' : 'updated'}`);
+            if (opts.dryRun) console.log(chalk.gray(result.split('\n').map(l => '    ' + l).join('\n')));
+          } else {
+            spinner.info(`${p.project.split('/').pop()}: not enough data`);
+          }
+        } catch (err) {
+          spinner.fail(`${p.project.split('/').pop()}: ${err.message}`);
+        }
+      }
+      console.log('');
+    } else {
+      const project = opts.project || process.cwd();
+      const spinner = ora('Analyzing observations...').start();
+      try {
+        spinner.stop();
+        console.log(chalk.bold('\n  Generating CLAUDE.md hints...\n'));
+        const result = await generateClaudeMd(project, { days, dryRun: opts.dryRun });
+        if (result) {
+          if (opts.dryRun) {
+            console.log(chalk.cyan('  ── Suggested additions ──────────────────────\n'));
+            console.log(result);
+            console.log(chalk.cyan('\n  ────────────────────────────────────────────\n'));
+          } else {
+            console.log(chalk.green(`  ✓ Updated CLAUDE.md\n`));
+          }
+        } else {
+          console.log(chalk.yellow('  Not enough high-importance observations for this project.\n'));
+        }
+      } catch (err) {
+        console.log(chalk.red(`  Error: ${err.message}\n`));
+      }
+    }
+  });
+
 // ─── heatmap (#56) ───────────────────────────────────────────────────────
 
 program.command('heatmap')
