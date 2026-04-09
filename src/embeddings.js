@@ -46,22 +46,39 @@ export async function embed(text) {
 
 async function embedViaOpenAI(text, apiKey, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
-    const res = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'text-embedding-3-small',
-        input: text,
-        dimensions: 1536,
-      }),
-    });
+    let res;
+    try {
+      res = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'text-embedding-3-small',
+          input: text,
+          dimensions: 1536,
+        }),
+        signal: AbortSignal.timeout(30_000), // 30s timeout (#71)
+      });
+    } catch (netErr) {
+      // Network error (DNS, timeout, connection refused)
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+        console.error(`[mem:embed] Network error: ${netErr.message}, retry ${attempt}/${retries} in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw new Error(`[mem:embed] Network error after ${retries} retries: ${netErr.message}`);
+    }
 
     if (res.ok) {
-      const data = await res.json();
-      return new Float32Array(data.data[0].embedding);
+      try {
+        const data = await res.json();
+        return new Float32Array(data.data[0].embedding);
+      } catch (parseErr) {
+        throw new Error(`[mem:embed] Failed to parse OpenAI response: ${parseErr.message}`);
+      }
     }
 
     // Retry on transient errors (429, 500, 502, 503, 504)
@@ -73,7 +90,7 @@ async function embedViaOpenAI(text, apiKey, retries = 3) {
       continue;
     }
 
-    const err = await res.text();
+    const err = await res.text().catch(() => '(unreadable body)');
     throw new Error(`[mem:embed] OpenAI ${status}: ${err}`);
   }
 }

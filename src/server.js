@@ -10,6 +10,21 @@ import { getDb, getStats } from './db.js';
 
 const __dir = new URL('.', import.meta.url).pathname;
 
+// ─── Input validation helpers (#70) ───────────────────────────────────────
+
+/** Parse an integer query param within [min, max], returning `def` on bad input */
+function safeInt(val, { min = 0, max = 1000, def = 0 } = {}) {
+  const n = parseInt(val, 10);
+  if (!Number.isFinite(n)) return def;
+  return Math.max(min, Math.min(max, n));
+}
+
+/** Sanitize a string query param: limit length, strip control chars */
+function safeStr(val, maxLen = 500) {
+  if (typeof val !== 'string') return undefined;
+  return val.slice(0, maxLen).replace(/[\x00-\x1f]/g, '');
+}
+
 export function createServer(port = 47777) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -31,9 +46,9 @@ export function createServer(port = 47777) {
 
   app.get('/api/observations', (req, res) => {
     const db      = getDb();
-    const project = req.query.project;
-    const limit   = Math.min(200, parseInt(req.query.limit) || 50);
-    const offset  = parseInt(req.query.offset) || 0;
+    const project = safeStr(req.query.project);
+    const limit   = safeInt(req.query.limit, { min: 1, max: 200, def: 50 });
+    const offset  = safeInt(req.query.offset, { min: 0, max: 100000, def: 0 });
 
     const where = project ? 'WHERE project = ?' : '';
     const params = project ? [project, limit, offset] : [limit, offset];
@@ -88,7 +103,7 @@ export function createServer(port = 47777) {
   // Friction hotspots: projects and tools with highest error rates
   app.get('/api/insights/friction', (req, res) => {
     const db = getDb();
-    const days = Math.min(90, parseInt(req.query.days) || 7);
+    const days = safeInt(req.query.days, { min: 1, max: 90, def: 7 });
 
     // Projects ranked by friction (avg importance of high-imp observations)
     const projects = db.prepare(`
@@ -122,7 +137,7 @@ export function createServer(port = 47777) {
   // Time & focus: activity by hour, project switching, session lengths
   app.get('/api/insights/time', (req, res) => {
     const db = getDb();
-    const days = Math.min(90, parseInt(req.query.days) || 7);
+    const days = safeInt(req.query.days, { min: 1, max: 90, def: 7 });
 
     // Activity by hour (hook observations only)
     const byHour = db.prepare(`
@@ -251,7 +266,7 @@ export function createServer(port = 47777) {
 
   app.get('/api/charts/activity', (req, res) => {
     const db = getDb();
-    const days = Math.min(90, parseInt(req.query.days) || 30);
+    const days = safeInt(req.query.days, { min: 1, max: 90, def: 30 });
     const rows = db.prepare(`
       SELECT date(created_at) as day,
              SUM(CASE WHEN tool = 'git-commit' THEN 1 ELSE 0 END) as git_commits,
@@ -307,7 +322,8 @@ export function createServer(port = 47777) {
   });
 
   app.get('/api/search', async (req, res) => {
-    const { query, project } = req.query;
+    const query = safeStr(req.query.query, 200);
+    const project = safeStr(req.query.project);
     if (!query) return res.status(400).json({ error: 'query required' });
     try {
       const { hybridSearch } = await import('./search.js');
@@ -316,6 +332,12 @@ export function createServer(port = 47777) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // ─── Global error handler (#70) ────────────────────────────────────────
+  app.use((err, req, res, _next) => {
+    console.error('[server] Unhandled error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
   });
 
   // ─── Viewer UI ────────────────────────────────────────────────────────

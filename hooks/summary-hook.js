@@ -29,6 +29,7 @@ async function main() {
   try {
     const { getDb, closeSession } = await import(srcDir + 'db.js');
     const { compressSession }     = await import(srcDir + 'compress.js');
+    const { computeFrictionScore } = await import(srcDir + 'analytics.js');
 
     const db = getDb();
     const observations = db.prepare(`
@@ -43,7 +44,7 @@ async function main() {
     }
 
     const summary = await compressSession({ observations, project });
-    if (summary) closeSession(sessionId, summary);
+    if (summary) closeSession(sessionId, summary, { computeFriction: computeFrictionScore });
 
     console.error(`[mem:summary] session closed with ${observations.length} observations`);
   } catch (err) {
