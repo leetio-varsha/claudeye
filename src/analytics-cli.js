@@ -123,14 +123,25 @@ program.command('analytics')
 
     // Global overview
     const stats = getGlobalStats();
+    const { getSourceBreakdown } = await import('./src/analytics.js');
     const o     = stats.overview;
     console.log(chalk.bold('\n📊 Global Analytics\n'));
     console.log(`  Sessions:      ${chalk.cyan(o.total_sessions || 0)}`);
-    console.log(`  Observations:  ${chalk.cyan(o.total_observations || 0)}`);
+    console.log(`  Observations:  ${chalk.cyan(o.total_observations || 0)} ${chalk.gray('(excluding git-import)')}`);
     console.log(`  Projects:      ${chalk.cyan(o.total_projects || 0)}`);
     console.log(`  Avg friction:  ${chalk.yellow((o.avg_friction || 0).toFixed(2))}`);
     console.log(`  Avg session:   ${chalk.cyan((o.avg_session_min || 0).toFixed(1))} min`);
     if (o.total_tokens) console.log(`  Total tokens:  ${chalk.gray(o.total_tokens.toLocaleString())}`);
+
+    // Source breakdown
+    const { breakdown } = getSourceBreakdown();
+    if (breakdown.length) {
+      console.log(chalk.bold('\n  Data sources:'));
+      const srcIcons = { hook: '🪝', import: '📥', mcp: '🔌' };
+      for (const s of breakdown) {
+        console.log(`    ${srcIcons[s.source] || '•'} ${s.source.padEnd(8)} ${chalk.cyan(s.count)} obs (${s.percent}%)`);
+      }
+    }
 
     if (stats.byProject.length) {
       console.log(chalk.bold('\n  By project:'));
