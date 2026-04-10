@@ -60,13 +60,25 @@ claudeye/
 │   ├── search.js               # hybridSearch(), buildContext() — RRF fusion
 │   ├── analytics.js            # all analytics computations (pure SQLite)
 │   ├── advisor.js              # Claude CLI advisor, weekly digest, issue detection
-│   ├── analytics-cli.js        # CLI commands: analytics, advise, rate, digest
+│   ├── analytics-cli.js        # CLI commands: analytics, advise, rate, digest, patterns, auto-issues
+│   ├── patterns.js             # pattern detection: repeat-fixes, hotspots, time sinks, cross-session
+│   ├── auto-issues.js          # auto-create GitHub issues from pattern findings (#15)
+│   ├── automation-advisor.js   # workflow automation recommendations with ROI scoring (#16)
 │   ├── import.js               # Import dispatcher (git implemented, notion/jira stubs)
 │   └── server.js               # Express web viewer, localhost:47777
 │
-└── scripts/
-    ├── setup.js                # interactive first-time config
-    └── install-hooks.js        # patches ~/.claude/settings.json
+├── scripts/
+│   ├── setup.js                # interactive first-time config
+│   ├── install-hooks.js        # patches ~/.claude/settings.json
+│   ├── backfill-friction.js    # one-time friction score recalculation for old sessions
+│   ├── digest-standalone.js    # self-contained digest generator (bypasses TCC)
+│   ├── digest-scheduler.js     # launchd agent for weekly digest
+│   └── daily-insights.js       # daily anomaly detection (quota, friction, hook health)
+│
+└── test/
+    ├── db.test.js              # database CRUD + FTS search tests
+    ├── patterns.test.js        # pattern detection SQL tests
+    └── effort.test.js          # effort classification tests
 ```
 
 ---
@@ -182,76 +194,113 @@ claudeye decisions                    # decisions in current project
 claudeye decisions --all              # all projects
 claudeye handoff                      # generate handoff for new session
 claudeye handoff -s <session-id>      # handoff for specific session
+
+# Pattern Detection & Automation
+claudeye patterns                     # repeat-fixes, hotspots, time sinks
+claudeye patterns --json              # structured output
+claudeye automation-advice            # workflow automation recommendations
+claudeye automation-advice --json     # structured JSON output
+claudeye auto-issues --dry-run        # preview auto-created GitHub issues
+claudeye auto-issues                  # create issues from detected patterns
+claudeye backfill-friction            # recalculate friction for old sessions
+claudeye insights                     # daily anomaly detection
+
+# Testing
+npm test                              # run all tests (node:test)
 ```
 
 ---
 
 ## Development roadmap
 
-### Phase 1: Dogfooding Foundation (now — week of March 26)
-- #1 Switch to better-sqlite3 for native FTS5 ✅ DONE
-- #2 E2E test hook lifecycle (after #1)
-- #3 Validate hook stdin payloads (after #1)
-- #4 First real git import (after #1)
+### Phase 1: Dogfooding Foundation (March 2026) ✅
+- [x] Core memory hooks (save, inject, summarize)
+- [x] Hybrid FTS5 + vector search with RRF
+- [x] AI compression via Claude CLI
+- [x] Analytics computation layer
+- [x] Git history import
+- [x] Switch to better-sqlite3 for native FTS5 (#1)
+- [x] E2E hook testing (#2, #3) ← #1
+- [x] First real git import on own repos (#4) — 6,866 commits from 19 repos ← #1
 
-### Phase 2: Polish & Fix (~April 9, after 2 weeks dogfooding)
-- #5 Retention policy
-- #6 Private tag support
-- #7 Dashboard polish (Chart.js)
-- #8 Weekly digest launchd automation
+### Phase 2: Polish & Fix (April 2026) ✅
+- [x] Retention policy + tiered storage (#5, #59)
+- [x] Private tag support (#6)
+- [x] Dashboard polish with Chart.js (#7)
+- [x] Weekly digest automation (#8)
+- [x] Hardening: timeouts, retries, graceful degradation (#31)
+- [x] Onboarding UX: `claudeye init` (#32)
+- [x] Decision Memory: capture why, not just what (#25)
+- [x] Post-commit hook: auto git import (#50)
+- [x] Daily proactive insights: anomalies, quota alerts (#49)
+- [x] Effort advisor: rule-based prompt classification (#63)
 
-### Phase 2.5: Advisor Foundation (~April 9-16)
-- #17 Structured advisor output (JSON) — foundation for #15 and #16
-- #15 Auto-issues from advisor (after #17)
-- #16 Automation advisor — full workflow analysis (after #17)
+### Phase 2.5: Advisor Foundation (April 2026) ✅
+- [x] Structured advisor output — JSON format (#17)
+- [x] Cross-project friction heatmap (#56)
+- [x] `claudeye generate-claude-md` — auto-generate CLAUDE.md from observations (#57)
+- [x] Pattern detection: repeat-fixes, hotspots, time sinks (#19)
+- [x] Auto-issues from advisor (#15) ← #17
+- [x] Automation advisor — full workflow analysis (#16) ← #17, #19
+- [x] Weekly digest TCC fix — standalone script (#65)
+- [x] Backfill friction scores for historical sessions (#73)
+- [x] npm test — node:test runner with 29 tests (#72)
+- [ ] GitHub Actions CI — automated tests on push (#66) ← #72
+- [ ] Tool distribution anomaly — git-commit 50% of observations (#67)
+- [ ] DB auto-compact and monitoring (#74)
 
-### Phase 3: Import Layer (~April 23)
-- #9 Notion import
-- #10 Jira/Linear import
-- #11 claudeye export
+### Phase 3: Agent v1 (April-May 2026) ← CURRENT
+- [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
+- [ ] One agent, one use-case, full cycle through Claudeye (#20) ← #15, #16
+- [ ] Feedback loop: system learns from its own actions (#21) ← #20
+- [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20
 
-### Phase 4: Team Foundation (~May-June)
-- #12 Postgres + pgvector — team backend
-- #13 API auth + multi-user — JWT/OAuth
-- #34 Team Sync Layer — локальный SQLite → общая база (только агрегаты, не raw данные)
-- #35 Team Roles & Access — dev / tech lead / admin с разным уровнем видимости
-- #14 Landing page + pricing
-- #18 Local agent mode
+### Phase 4: Import Layer & Integrations (May 2026)
+- [ ] Notion import (#9)
+- [ ] Jira/Linear import (#10)
+- [ ] Memory export as markdown (#11)
+- [ ] Read-first integrations: GitLab, Jira, Slack, Gmail, Sentry (#23)
 
-### Phase 4.5: Team UX (~June)
-- #36 Team Auto-Setup — `npx claudeye join <token>` онбординг за одну команду
-- #37 Team Dashboard — админка: friction по девам, инструменты, стандартизация, health
-- #38 Team CLAUDE.md — иерархия global → team → project → personal
-- #39 Team Analytics — агрегированный advisor: кто буксует, что стандартизировать, onboarding score
-- #40 Shared Knowledge Base — privacy-first обмен решениями между девами
+### Phase 5: Team Foundation (May-June 2026)
+- [ ] Postgres + pgvector — team backend (#12)
+- [ ] API auth + multi-user (#13) ← #12
+- [ ] Team Sync Layer — local SQLite → shared DB, aggregates only (#34) ← #12, #13
+- [ ] Team Roles & Access — dev / tech lead / admin (#35) ← #13
+- [ ] Landing page + pricing (#14)
+- [ ] Multi-provider embeddings: OpenAI + Anthropic/Voyage + fallback (#41)
 
-### Phase 5: Agent v1 (~June-July)
-- #19 Pattern detection: повторяющиеся проблемы и hotspots
-- #20 Agent v1: один use-case через Claudeye (PR review / bug triage / cross-repo / meeting->tasks)
-- #21 Feedback loop: система учится на своей работе
-- #22 Routing + Control: анти-хаос (1 агент, строгий контекст, kill switch)
+### Phase 5.5: Team UX (June 2026)
+- [ ] Team Auto-Setup — `npx claudeye join <token>` (#36) ← #34, #35
+- [ ] Team Dashboard — friction heatmap, tool ROI, standardization (#37) ← #34, #35
+- [ ] Team CLAUDE.md — hierarchical: global → team → project → personal (#38) ← #34
+- [ ] Team Analytics — aggregated advisor for the whole team (#39) ← #34
+- [ ] Shared Knowledge Base — privacy-first knowledge sharing (#40) ← #34
 
-### Phase 6: Integrations (~July-August)
-- #23 Read-first интеграции: GitLab, Jira, Slack, Gmail, Sentry
+### Phase 6: Autopilot (July+ 2026)
+- [ ] Partial automation with control: auto triage, reports, tasks (#24)
 
-### Phase 7: Autopilot (~August+)
-- #24 Частичная автоматизация с контролем (авто triage, отчёты, таски)
+### Phase 7: Digital Twin (Q4 2026+)
+- [ ] Developer model: style, decisions, partial delegation (#29)
 
-### Phase 8: Digital Twin (~Q4 2026+)
-- #29 Модель разработчика: стиль, решения, delegation
+### Cross-phase (gradual)
+- [ ] Knowledge Graph: entity relationships (#26)
+- [ ] Personal AI OS: unified memory, entry, control (#27)
+- [ ] Self-Improving Workflow Engine: coach + optimizer (#28)
+- [ ] Shared read-only viewer: share dashboard by link (#33)
+- [ ] Scalability: hot/cold storage, L2 compression, vector index (#30)
 
-### Cross-phase (постепенно)
-- #25 Decision Memory: сохранять почему, а не только что (Phase 2.5, малой кровью)
-- #26 Knowledge Graph: связи между сущностями (Phase 5, нужно 500+ observations)
-- #27 Personal AI OS: единая память, единый вход, единый контроль (Phase 3-4)
-- #28 Self-Improving Workflow Engine: coach + optimizer (Phase 5)
+### Dependency graph (key chains)
+```
+#17 (Structured advisor) → #15 (Auto-issues), #16 (Automation advisor) → #18, #20 (Agent)
+#20 (Agent v1) → #21 (Feedback loop) → #22 (Routing)
+#12 (Postgres) → #13 (Auth) → #34 (Sync) → #35 (Roles) → #36-#40 (Team UX)
+```
 
 Each issue has readiness criteria — scheduler checks them daily.
 
-**Общая стратегия:** ядро -> польза -> один агент -> обучение -> масштаб
+**Стратегия:** core → value → one agent → learning → scale
 
-**Эволюция продукта:**
-memory tool -> self-improving system -> personal AI OS -> digital twin
+**Эволюция:** memory tool → self-improving system → team platform → personal AI OS → digital twin
 
 ---
 
@@ -267,10 +316,9 @@ memory tool -> self-improving system -> personal AI OS -> digital twin
 - ~~Unclosed sessions (57%)~~ — root cause: import-git sessions + orphan cleanup added (#60)
 
 ### Active
-- ~~**@anthropic-ai/sdk in package.json**~~ — removed (#58)
-- ~~**migrateAnalytics duplication**~~ — deduplicated, single source in db.js (#58)
-- ~~**db scoping bug in health command**~~ — fixed (#61)
-- ~~**advisor.js ARG_MAX risk**~~ — switched to stdin (#62)
+- **GitHub Actions CI** — tests pass locally, need CI pipeline (#66)
+- **Tool distribution anomaly** — git-commit is 50% of observations, skews analytics (#67)
+- **DB auto-compact** — no automated VACUUM + old data cleanup (#74)
 
 ---
 
@@ -338,4 +386,4 @@ When starting a new session:
 3. Check Known gaps — fix criticals before adding features
 4. Run `claudeye-analyzer` readiness report to see what's ready
 
-**Current priority:** Phase 2.5 (Advisor Foundation) — #17 structured output, then #15/#16. Also #49 (scheduler health check), #57 (generate-claude-md).
+**Current priority:** Phase 3 (Agent v1) — #18 local agent mode, #20 one agent one use-case. Also remaining Phase 2.5 items: #66 (CI), #67 (tool distribution), #74 (DB compact).

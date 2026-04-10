@@ -63,7 +63,7 @@ Raw usage data turned into actionable insight.
 - **Issue resolution time** — how long do bugs actually take to fix?
 - **Weekly digest** — Claude analyzes your patterns and tells you what to change
 
-### 3. Automation Advisor (coming soon)
+### 3. Automation Advisor
 
 Analyzes your entire dev workflow — not just Claude Code — and recommends what to automate.
 
@@ -136,9 +136,21 @@ claudeye analytics --hotspots                 # most complex files/areas
 # Advisor
 claudeye advise                               # AI-powered workflow recommendations
 claudeye advise --focus plugins               # focused on plugin usage
+claudeye advise --json                        # structured JSON output
 claudeye rate                                 # rate a session 1-5
 claudeye digest                               # latest weekly digest
 claudeye digest --generate                    # generate now
+
+# Pattern Detection & Automation
+claudeye patterns                             # repeat-fixes, hotspots, time sinks
+claudeye patterns --json                      # structured output
+claudeye automation-advice                    # workflow automation recommendations
+claudeye auto-issues --dry-run                # preview auto-created GitHub issues
+claudeye auto-issues                          # create issues from detected patterns
+claudeye backfill-friction                    # recalculate friction for old sessions
+
+# Testing
+npm test                                      # run all tests (node:test)
 ```
 
 ---
@@ -274,34 +286,45 @@ Embeddings (optional, for semantic search):
 - [x] Daily proactive insights: anomalies, quota alerts (#49)
 - [x] Effort advisor: rule-based prompt classification (#63)
 
-### Phase 2.5: Advisor Foundation (April 2026)
+### Phase 2.5: Advisor Foundation (April 2026) ✅
 
 - [x] Structured advisor output — JSON format (#17)
 - [x] Cross-project friction heatmap (#56)
 - [x] `claudeye generate-claude-md` — auto-generate CLAUDE.md from observations (#57)
-- [ ] Auto-issues from advisor (#15) ← #17
-- [ ] Automation advisor — full workflow analysis (#16) ← #17
-- [ ] Weekly digest never ran — 0 digests for 12 days of data (#65)
-- [ ] GitHub Actions CI — no automated tests on push (#66)
+- [x] Pattern detection: repeat-fixes, hotspots, time sinks (#19)
+- [x] Auto-issues from advisor (#15) ← #17
+- [x] Automation advisor — full workflow analysis (#16) ← #17, #19
+- [x] Weekly digest TCC fix — standalone script (#65)
+- [x] Backfill friction scores for historical sessions (#73)
+- [x] npm test — node:test runner with 29 tests (#72)
+- [ ] GitHub Actions CI — automated tests on push (#66) ← #72
 - [ ] Tool distribution anomaly — git-commit 50% of observations (#67)
+- [ ] DB auto-compact and monitoring (#74)
 
-### Phase 3: Import Layer (late April 2026)
+### Phase 3: Agent v1 (April-May 2026)
+
+- [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
+- [ ] One agent, one use-case, full cycle through Claudeye (#20) ← #15, #16
+- [ ] Feedback loop: system learns from its own actions (#21) ← #20
+- [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20
+
+### Phase 4: Import Layer & Integrations (May 2026)
 
 - [ ] Notion import (#9)
 - [ ] Jira/Linear import (#10)
 - [ ] Memory export as markdown (#11)
+- [ ] Read-first integrations: GitLab, Jira, Slack, Gmail, Sentry (#23)
 
-### Phase 4: Team Foundation (May-June 2026)
+### Phase 5: Team Foundation (May-June 2026)
 
 - [ ] Postgres + pgvector — team backend (#12)
 - [ ] API auth + multi-user (#13) ← #12
 - [ ] Team Sync Layer — local SQLite → shared DB, aggregates only (#34) ← #12, #13
 - [ ] Team Roles & Access — dev / tech lead / admin (#35) ← #13
 - [ ] Landing page + pricing (#14)
-- [ ] Local agent mode (#18)
 - [ ] Multi-provider embeddings: OpenAI + Anthropic/Voyage + fallback (#41)
 
-### Phase 4.5: Team UX (June 2026)
+### Phase 5.5: Team UX (June 2026)
 
 All items depend on Team Sync Layer (#34) + Team Roles (#35):
 
@@ -311,22 +334,11 @@ All items depend on Team Sync Layer (#34) + Team Roles (#35):
 - [ ] Team Analytics — aggregated advisor for the whole team (#39) ← #34 (needs 2+ weeks of team data)
 - [ ] Shared Knowledge Base — privacy-first knowledge sharing (#40) ← #34
 
-### Phase 5: Agent v1 (June-July 2026)
-
-- [ ] Pattern detection: repeat-fix detector, file hotspots (#19)
-- [ ] One agent, one use-case, full cycle through Claudeye (#20)
-- [ ] Feedback loop: system learns from its own actions (#21) ← #20
-- [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22)
-
-### Phase 6: Integrations (July-August 2026)
-
-- [ ] Read-first: GitLab, Jira, Slack, Gmail, Sentry (#23)
-
-### Phase 7: Autopilot (August+ 2026)
+### Phase 6: Autopilot (July+ 2026)
 
 - [ ] Partial automation with control: auto triage, reports, tasks (#24)
 
-### Phase 8: Digital Twin (Q4 2026+)
+### Phase 7: Digital Twin (Q4 2026+)
 
 - [ ] Developer model: style, decisions, partial delegation (#29)
 
@@ -341,9 +353,9 @@ All items depend on Team Sync Layer (#34) + Team Roles (#35):
 ### Dependency graph (key chains)
 
 ```
+#17 (Structured advisor) → #15 (Auto-issues), #16 (Automation advisor) → #18, #20 (Agent)
+#20 (Agent v1) → #21 (Feedback loop) → #22 (Routing)
 #12 (Postgres) → #13 (Auth) → #34 (Sync) → #35 (Roles) → #36-#40 (Team UX)
-#17 (Structured advisor) → #15 (Auto-issues), #16 (Automation advisor)
-#20 (Agent v1) → #21 (Feedback loop)
 ```
 
 **Strategy:** core → value → one agent → learning → scale
