@@ -898,6 +898,45 @@ program.command('heatmap')
     }
   });
 
+// ─── backfill-friction (#73) ─────────────────────────────────────────────
+
+program.command('backfill-friction')
+  .description('Recalculate friction_score for sessions with missing data')
+  .option('--dry-run', 'Preview without writing changes')
+  .action(async (opts) => {
+    const { getDb } = await import('./src/db.js');
+    const { computeFrictionScore } = await import('./src/analytics.js');
+    const db = getDb();
+
+    const sessions = db.prepare(`
+      SELECT s.id, s.project, s.friction_score, COUNT(o.id) as obs_count
+      FROM sessions s JOIN observations o ON o.session_id = s.id
+      WHERE s.friction_score = 0 OR s.friction_score IS NULL
+      GROUP BY s.id ORDER BY s.started_at DESC
+    `).all();
+
+    console.log(chalk.bold(`\n  Found ${sessions.length} sessions to backfill${opts.dryRun ? ' (DRY RUN)' : ''}\n`));
+    if (!sessions.length) { console.log(chalk.green('  Nothing to backfill.\n')); return; }
+
+    const update = db.prepare('UPDATE sessions SET friction_score = ? WHERE id = ?');
+    let updated = 0;
+
+    for (const s of sessions) {
+      const score = computeFrictionScore(s.id);
+      if (score === 0) continue;
+      if (opts.dryRun) {
+        const short = s.project.replace(process.env.HOME, '~');
+        console.log(`  ${s.id.slice(0, 12)}  ${short.padEnd(45)}  ${s.obs_count} obs  → ${chalk.yellow(score.toFixed(3))}`);
+      } else {
+        update.run(score, s.id);
+      }
+      updated++;
+    }
+
+    console.log(chalk.bold(`\n  Updated: ${updated}\n`));
+    if (opts.dryRun) console.log(chalk.yellow('  ⚠️  Dry run — no changes written.\n'));
+  });
+
 // ─── insights ────────────────────────────────────────────────────────────
 
 program.command('insights')
