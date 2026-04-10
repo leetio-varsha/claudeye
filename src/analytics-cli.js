@@ -151,6 +151,56 @@ program.command('analytics')
     console.log('');
   });
 
+// ─── automation-advice (#16) ─────────────────────────────────────────────
+
+program.command('automation-advice')
+  .description('Analyze workflows and recommend automations')
+  .option('--days <n>', 'Lookback period in days', '14')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    const { getAutomationRecommendations } = await import('./automation-advisor.js');
+    const days = parseInt(opts.days) || 14;
+    const result = getAutomationRecommendations({ days });
+
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    const { recommendations, summary } = result;
+
+    console.log(chalk.bold(`\n  🤖 Automation Opportunities (${days} days)\n`));
+    console.log(`  ${summary.total} рекомендаций | потенциальная экономия: ${chalk.green(summary.total_time_saved + ' мин/неделю')}\n`);
+
+    if (!recommendations.length) {
+      console.log(chalk.green('  Всё уже оптимально! Нет явных возможностей для автоматизации.\n'));
+      return;
+    }
+
+    // Group by category
+    const categories = {};
+    for (const r of recommendations) {
+      if (!categories[r.category]) categories[r.category] = [];
+      categories[r.category].push(r);
+    }
+
+    const catIcons = {
+      'task-management': '📋', 'code-review': '🔍', monitoring: '📊',
+      documentation: '📝', communication: '💬',
+    };
+
+    for (const [cat, recs] of Object.entries(categories)) {
+      console.log(chalk.bold(`  ${catIcons[cat] || '•'} ${cat.replace(/-/g, ' ').toUpperCase()}`));
+      for (const r of recs) {
+        const roiColor = r.roi >= 5 ? chalk.green : r.roi >= 2 ? chalk.yellow : chalk.gray;
+        console.log(`    ${r.type_icon} ${r.title}`);
+        console.log(`      ${chalk.dim(r.description)}`);
+        console.log(`      ${chalk.cyan('→')} ${r.action}  ${roiColor(`ROI: ${r.roi}`)}  ${chalk.dim(`~${r.time_saved} мин/нед`)}`);
+        console.log('');
+      }
+    }
+  });
+
 // ─── auto-issues (#15) ──────────────────────────────────────────────────
 
 program.command('auto-issues')
