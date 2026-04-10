@@ -151,6 +151,60 @@ program.command('analytics')
     console.log('');
   });
 
+// ─── auto-issues (#15) ──────────────────────────────────────────────────
+
+program.command('auto-issues')
+  .description('Auto-create GitHub issues from detected patterns & advisor findings')
+  .option('--days <n>', 'Lookback period in days', '14')
+  .option('--dry-run', 'Preview issues without creating them')
+  .option('--with-advisor', 'Also include AI advisor findings (runs claudeye advise --json)')
+  .action(async (opts) => {
+    const { runAutoIssues } = await import('./auto-issues.js');
+    const days = parseInt(opts.days) || 14;
+
+    console.log(chalk.bold(`\n  🤖 Auto-Issues (${days} days)${opts.dryRun ? ' — DRY RUN' : ''}\n`));
+
+    // Optionally get advisor findings
+    let advisorFindings = null;
+    if (opts.withAdvisor) {
+      try {
+        const { generateAdvice } = await import('./advisor.js');
+        const ora = (await import('ora')).default;
+        const spinner = ora('Running AI advisor...').start();
+        const result = await generateAdvice({ days, stream: false, format: 'json' });
+        spinner.stop();
+        advisorFindings = result?.findings;
+        console.log(chalk.gray(`  Advisor returned ${advisorFindings?.length || 0} findings\n`));
+      } catch (e) {
+        console.log(chalk.yellow(`  Advisor unavailable: ${e.message}\n`));
+      }
+    }
+
+    try {
+      const result = await runAutoIssues({ dryRun: opts.dryRun, days, advisorFindings });
+
+      if (!result.issues.length) {
+        console.log(chalk.green(`  ${result.message}\n`));
+        return;
+      }
+
+      for (const issue of result.issues) {
+        const icon = issue.status === 'created' ? '✅' : issue.status === 'skipped' ? '⏭️' : issue.status === 'dry-run' ? '📝' : '❌';
+        const num = issue.number ? chalk.gray(`#${issue.number}`) : '';
+        const reason = issue.reason ? chalk.gray(` (${issue.reason})`) : '';
+        console.log(`  ${icon} ${issue.title} ${num}${reason}`);
+      }
+
+      console.log(chalk.bold(`\n  ${result.message}\n`));
+    } catch (err) {
+      console.log(chalk.red(`  Error: ${err.message}\n`));
+      if (err.message.includes('auto_issues_repo')) {
+        console.log(chalk.yellow('  Add to ~/.claudeye/settings.json:'));
+        console.log(chalk.gray('  { "auto_issues_repo": "owner/repo", "auto_issues_project_id": "Project #N" }\n'));
+      }
+    }
+  });
+
 // ─── patterns (#19) ─────────────────────────────────────────────────────
 
 program.command('patterns')
