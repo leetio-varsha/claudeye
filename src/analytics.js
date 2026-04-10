@@ -7,6 +7,7 @@
 
 import { getDb, getEffortStats } from './db.js';
 import { detectAllPatterns } from './patterns.js';
+import { getAutomationRecommendations } from './automation-advisor.js';
 
 // NOTE: Schema migration for analytics lives in db.js (_migrateAnalytics),
 // called automatically from getDb(). Do not duplicate DDL here.
@@ -362,6 +363,17 @@ export function buildAdvisorPayload(days = 30) {
         return {
           findings: p.findings.slice(0, 10),
           summary:  p.summary,
+        };
+      } catch { return null; }
+    })(),
+
+    // Automation recommendations (#16)
+    automation: (() => {
+      try {
+        const a = getAutomationRecommendations({ days });
+        return {
+          recommendations: a.recommendations.slice(0, 5),
+          summary:         a.summary,
         };
       } catch { return null; }
     })(),
