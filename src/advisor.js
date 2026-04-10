@@ -24,8 +24,9 @@ Rules:
 - Reference specific numbers from the data. Never give generic advice.
 - Be direct and opinionated. Say what you think, not what sounds safe.
 - If a plugin/model is underperforming vs baseline, say so clearly.
+- ALWAYS start with concrete patterns (repeat-fixes, hotspots, time sinks) if present in data.patterns
 - Structure your response with these sections:
-  ## 🔍 Key Patterns
+  ## 🔍 Key Patterns (start with data.patterns.findings — each one is a concrete, verified pattern)
   ## ⚡ Top 3 Recommendations
   ## 🔌 Plugin & Model Insights
   ## 🐛 Issue Resolution Analysis
@@ -56,6 +57,7 @@ JSON schema:
 }
 
 Rules:
+- IMPORTANT: If data.patterns exists, include its findings FIRST in your response. These are concrete, verified patterns (repeat-fixes, hotspots, time sinks). Map them to the "friction" or "performance" category.
 - Return 3-7 findings, ordered by priority.
 - Reference specific numbers from the data. Never give generic advice.
 - Be direct and opinionated.

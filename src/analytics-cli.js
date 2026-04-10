@@ -151,6 +151,54 @@ program.command('analytics')
     console.log('');
   });
 
+// ─── patterns (#19) ─────────────────────────────────────────────────────
+
+program.command('patterns')
+  .description('Detect workflow patterns: repeat-fixes, hotspots, time sinks')
+  .option('--days <n>', 'Lookback period in days', '14')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    const { detectAllPatterns } = await import('./patterns.js');
+    const days = parseInt(opts.days) || 14;
+    const result = detectAllPatterns({ days });
+
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    const { findings, summary, raw } = result;
+
+    console.log(chalk.bold(`\n  🔍 Pattern Detection (${days} days)\n`));
+    console.log(`  ${summary.total_findings} findings (${summary.high_severity} high) across ${summary.projects_affected.length} projects\n`);
+
+    if (!findings.length) {
+      console.log(chalk.green('  No significant patterns detected.\n'));
+      return;
+    }
+
+    const icons = { 'repeat-fix': '🔁', hotspot: '🔥', 'time-sink': '⏰', 'friction-trend': '📈', 'tool-friction': '🔧' };
+    const colors = { high: chalk.red, medium: chalk.yellow, low: chalk.gray };
+
+    for (const f of findings) {
+      const icon = icons[f.category] || '•';
+      const col = colors[f.severity] || chalk.white;
+      console.log(`  ${icon} ${col(f.title)} ${chalk.gray(`[${f.project}]`)}`);
+      console.log(`     ${chalk.dim(f.action)}`);
+    }
+
+    // Raw stats summary
+    if (raw.timeSinks.projects.length) {
+      console.log(chalk.bold('\n  ⏰ Time distribution:'));
+      for (const p of raw.timeSinks.projects.slice(0, 5)) {
+        const bar = '█'.repeat(Math.min(20, Math.round(p.total_hours * 2)));
+        console.log(`    ${p.project.padEnd(25)} ${chalk.blue(bar)} ${p.total_hours}h (${p.sessions} sessions, friction ${p.avg_friction})`);
+      }
+    }
+
+    console.log('');
+  });
+
 // ─── advise ───────────────────────────────────────────────────────────────
 
 program.command('advise')

@@ -29,8 +29,8 @@ import { homedir } from 'os';
 
 const THRESHOLDS = {
   // Quota / session length
-  SESSION_WARN_PROMPTS: 150,       // 🟡 session getting long
-  SESSION_CRIT_PROMPTS: 300,       // 🔴 session way too long, quota burning
+  SESSION_WARN_PROMPTS: 250,       // 🟡 session getting long
+  SESSION_CRIT_PROMPTS: 450,       // 🔴 session way too long, quota burning
   DAILY_PROMPTS_SPIKE: 1.5,        // 🟡 >1.5x average daily prompts
 
   // Friction
@@ -274,6 +274,25 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
       }
     }
   }
+
+  // ── 4b. Pattern detection (#19) ────────────────────────────────────────
+
+  try {
+    const { detectAllPatterns } = await import('../src/patterns.js');
+    const patterns = detectAllPatterns({ days: 7 });
+
+    // Surface top-3 pattern findings as alerts
+    for (const f of patterns.findings.slice(0, 3)) {
+      alerts.push({
+        severity: f.severity === 'high' ? 'warning' : 'insight',
+        category: 'friction',
+        title: f.title,
+        detail: f.description,
+        action: f.action,
+        data: f.data,
+      });
+    }
+  } catch { /* patterns module non-critical */ }
 
   // ── 5. Notification ───────────────────────────────────────────────────
 
