@@ -12,6 +12,16 @@ import { getAutomationRecommendations } from './automation-advisor.js';
 // NOTE: Schema migration for analytics lives in db.js (_migrateAnalytics),
 // called automatically from getDb(). Do not duplicate DDL here.
 
+// Tools originating from git import — excluded from friction/pattern metrics
+// to avoid skewing analytics with non-interactive observations.
+const IMPORT_TOOLS = ['git-commit'];
+
+// SQL fragment to filter out import tools from observations
+const NOT_IMPORT_TOOL = `o.tool NOT IN (${IMPORT_TOOLS.map(t => `'${t}'`).join(',')})`;
+
+// MCP tools — tracked separately for browser/mobile automation patterns
+const MCP_TOOL_PREFIX = 'mcp__';
+
 // ─── Global stats ─────────────────────────────────────────────────────────
 
 export function getGlobalStats() {
@@ -26,7 +36,7 @@ export function getGlobalStats() {
       SUM(s.token_input + COALESCE(s.token_output, 0)) AS total_tokens,
       AVG(s.duration_ms) / 60000.0    AS avg_session_min
     FROM sessions s
-    LEFT JOIN observations o ON o.session_id = s.id
+    LEFT JOIN observations o ON o.session_id = s.id AND ${NOT_IMPORT_TOOL}
   `).get();
 
   const byProject = db.prepare(`
@@ -38,7 +48,7 @@ export function getGlobalStats() {
       AVG(s.duration_ms) / 60000.0  AS avg_session_min,
       MAX(s.started_at)             AS last_active
     FROM sessions s
-    LEFT JOIN observations o ON o.session_id = s.id
+    LEFT JOIN observations o ON o.session_id = s.id AND ${NOT_IMPORT_TOOL}
     GROUP BY s.project
     ORDER BY last_active DESC
   `).all();
@@ -56,8 +66,8 @@ export function getGlobalStats() {
 
   const topTags = db.prepare(`
     SELECT value AS tag, COUNT(*) AS n
-    FROM observations, json_each(observations.tags)
-    WHERE json_valid(observations.tags)
+    FROM observations o, json_each(o.tags)
+    WHERE json_valid(o.tags) AND ${NOT_IMPORT_TOOL}
     GROUP BY tag
     ORDER BY n DESC
     LIMIT 15
@@ -263,6 +273,41 @@ export function getComplexityHotspots() {
   return { hotFiles, retryByTool };
 }
 
+// ─── Observation source breakdown (#67) ──────────────────────────────────
+
+export function getSourceBreakdown() {
+  const db = getDb();
+
+  const breakdown = db.prepare(`
+    SELECT
+      CASE
+        WHEN tool IN (${IMPORT_TOOLS.map(t => `'${t}'`).join(',')}) THEN 'import'
+        WHEN tool LIKE '${MCP_TOOL_PREFIX}%' THEN 'mcp'
+        ELSE 'hook'
+      END AS source,
+      COUNT(*) AS count,
+      ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM observations), 1) AS percent
+    FROM observations
+    GROUP BY source
+    ORDER BY count DESC
+  `).all();
+
+  const byTool = db.prepare(`
+    SELECT tool, COUNT(*) AS count,
+      CASE
+        WHEN tool IN (${IMPORT_TOOLS.map(t => `'${t}'`).join(',')}) THEN 'import'
+        WHEN tool LIKE '${MCP_TOOL_PREFIX}%' THEN 'mcp'
+        ELSE 'hook'
+      END AS source
+    FROM observations
+    GROUP BY tool
+    ORDER BY count DESC
+    LIMIT 20
+  `).all();
+
+  return { breakdown, byTool };
+}
+
 // ─── Rate a session ───────────────────────────────────────────────────────
 
 export function rateSession(sessionId, rating, note = null) {
@@ -311,6 +356,7 @@ export function buildAdvisorPayload(days = 30) {
   const issues  = getIssueMetrics();
   const hotspots = getComplexityHotspots();
   const effort  = getEffortStats(days);
+  const sources = getSourceBreakdown();
 
   // Summarize for prompt (keep token count manageable)
   return {
@@ -348,6 +394,7 @@ export function buildAdvisorPayload(days = 30) {
     },
     hotspots: hotspots.hotFiles.slice(0, 10),
     top_tags:  global.topTags.slice(0, 10),
+    source_breakdown: sources.breakdown,
     effort_analysis: effort.total > 0 ? {
       total_classified:    effort.total,
       suboptimal_count:    effort.suboptimal,

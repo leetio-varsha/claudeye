@@ -245,9 +245,9 @@ npm test                              # run all tests (node:test)
 - [x] Weekly digest TCC fix — standalone script (#65)
 - [x] Backfill friction scores for historical sessions (#73)
 - [x] npm test — node:test runner with 29 tests (#72)
-- [ ] GitHub Actions CI — automated tests on push (#66) ← #72
-- [ ] Tool distribution anomaly — git-commit 50% of observations (#67)
-- [ ] DB auto-compact and monitoring (#74)
+- [x] GitHub Actions CI — automated tests on push (#66) ← #72
+- [x] Tool distribution anomaly — git-commit filtered from analytics (#67)
+- [x] DB auto-compact — daily auto-compact at 100MB, alert at 150MB (#74)
 
 ### Phase 3: Agent v1 (April-May 2026) ← CURRENT
 - [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
@@ -316,9 +316,7 @@ Each issue has readiness criteria — scheduler checks them daily.
 - ~~Unclosed sessions (57%)~~ — root cause: import-git sessions + orphan cleanup added (#60)
 
 ### Active
-- **GitHub Actions CI** — tests pass locally, need CI pipeline (#66)
-- **Tool distribution anomaly** — git-commit is 50% of observations, skews analytics (#67)
-- **DB auto-compact** — no automated VACUUM + old data cleanup (#74)
+- None — all known gaps resolved. Phase 2.5 complete.
 
 ---
 
@@ -386,4 +384,4 @@ When starting a new session:
 3. Check Known gaps — fix criticals before adding features
 4. Run `claudeye-analyzer` readiness report to see what's ready
 
-**Current priority:** Phase 3 (Agent v1) — #18 local agent mode, #20 one agent one use-case. Also remaining Phase 2.5 items: #66 (CI), #67 (tool distribution), #74 (DB compact).
+**Current priority:** Phase 3 (Agent v1) — #18 local agent mode, #20 one agent one use-case.

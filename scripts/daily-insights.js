@@ -18,7 +18,7 @@
  * Philosophy: no alerts = everything is fine. Don't spam.
  */
 
-import { getDb, getDbMetrics, getErrorStats } from '../src/db.js';
+import { getDb, getDbMetrics, getErrorStats, cleanup, compact } from '../src/db.js';
 import { isEmbeddingEnabled } from '../src/embeddings.js';
 import { existsSync, statSync } from 'fs';
 import { execSync } from 'child_process';
@@ -39,7 +39,8 @@ const THRESHOLDS = {
 
   // Infrastructure
   HOOK_SILENCE_HOURS: 36,          // 🔴 no observations for 36+ hours
-  DB_SIZE_WARN_MB: 100,            // 🟡 database getting large
+  DB_SIZE_WARN_MB: 150,            // 🟡 database getting large
+  DB_SIZE_AUTO_COMPACT_MB: 100,    // auto-run compact when DB exceeds this
   ERROR_RATE_CRIT: 20,             // 🔴 >20 hook errors in 24h
 
   // Activity
@@ -219,15 +220,51 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
     }
   }
 
-  // DB size
+  // DB size + auto-compact (#74)
   const metrics = getDbMetrics();
+
+  // Auto-compact when DB exceeds threshold — runs cleanup + compact + vacuum
+  if (metrics.fileSizeMB > THRESHOLDS.DB_SIZE_AUTO_COMPACT_MB) {
+    try {
+      const cleanupResult = cleanup({ vacuum: false });
+      const compactResult = compact();
+      const totalCleaned = cleanupResult.total + compactResult.total;
+
+      if (totalCleaned > 0) {
+        // Run VACUUM after both cleanup and compact
+        db.exec('VACUUM');
+        const newMetrics = getDbMetrics();
+        const savedMB = (metrics.fileSizeMB - newMetrics.fileSizeMB).toFixed(1);
+
+        alerts.push({
+          severity: 'insight',
+          category: 'infra',
+          title: `Auto-compact: освобождено ${savedMB}MB (${metrics.fileSizeMB}MB → ${newMetrics.fileSizeMB}MB)`,
+          detail: `Cleanup: ${cleanupResult.total} observations удалено. Compact: ${compactResult.embeddingsPruned} embeddings + ${compactResult.rawCompacted} raw data.`,
+          action: null,
+        });
+
+        // Update metrics reference for the size warning check below
+        metrics.fileSizeMB = newMetrics.fileSizeMB;
+      }
+    } catch (e) {
+      alerts.push({
+        severity: 'warning',
+        category: 'infra',
+        title: 'Auto-compact failed',
+        detail: e.message,
+        action: 'Запусти `claudeye cleanup` и `claudeye compact` вручную.',
+      });
+    }
+  }
+
   if (metrics.fileSizeMB > THRESHOLDS.DB_SIZE_WARN_MB) {
     alerts.push({
       severity: 'warning',
       category: 'infra',
       title: `База данных ${metrics.fileSizeMB}MB`,
       detail: `Рекомендуемый максимум: ${THRESHOLDS.DB_SIZE_WARN_MB}MB. Поиск может замедлиться.`,
-      action: 'Запусти `claudeye cleanup` для очистки старых данных.',
+      action: 'Запусти `claudeye cleanup --vacuum` для принудительной очистки.',
     });
   }
 

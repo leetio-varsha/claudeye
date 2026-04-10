@@ -1,5 +1,7 @@
 # Claudeye
 
+[![CI](https://github.com/leetio-varsha/claudeye/actions/workflows/ci.yml/badge.svg)](https://github.com/leetio-varsha/claudeye/actions/workflows/ci.yml)
+
 **See how you work. Work better.**
 
 Claudeye gives Claude Code a memory and shows you how to use it better.
@@ -297,9 +299,9 @@ Embeddings (optional, for semantic search):
 - [x] Weekly digest TCC fix — standalone script (#65)
 - [x] Backfill friction scores for historical sessions (#73)
 - [x] npm test — node:test runner with 29 tests (#72)
-- [ ] GitHub Actions CI — automated tests on push (#66) ← #72
-- [ ] Tool distribution anomaly — git-commit 50% of observations (#67)
-- [ ] DB auto-compact and monitoring (#74)
+- [x] GitHub Actions CI — automated tests on push (#66) ← #72
+- [x] Tool distribution anomaly — git-commit filtered from analytics (#67)
+- [x] DB auto-compact — daily auto-compact at 100MB, alert at 150MB (#74)
 
 ### Phase 3: Agent v1 (April-May 2026)
 
