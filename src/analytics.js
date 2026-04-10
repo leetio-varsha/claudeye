@@ -6,6 +6,7 @@
  */
 
 import { getDb, getEffortStats } from './db.js';
+import { detectAllPatterns } from './patterns.js';
 
 // NOTE: Schema migration for analytics lives in db.js (_migrateAnalytics),
 // called automatically from getDb(). Do not duplicate DDL here.
@@ -353,5 +354,16 @@ export function buildAdvisorPayload(days = 30) {
       distribution:        effort.distribution,
       by_project:          effort.byProject.slice(0, 10),
     } : null,
+
+    // Pattern detection (#19)
+    patterns: (() => {
+      try {
+        const p = detectAllPatterns({ days });
+        return {
+          findings: p.findings.slice(0, 10),
+          summary:  p.summary,
+        };
+      } catch { return null; }
+    })(),
   };
 }
