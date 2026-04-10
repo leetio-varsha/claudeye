@@ -6,10 +6,14 @@
  * (every Sunday at 20:00) and sends a macOS notification when done.
  */
 
-import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
 
 const LABEL    = 'com.claudeye.weekly-digest';
 const PLIST    = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
@@ -32,14 +36,23 @@ function findClaudeyeBin() {
 }
 
 export function install() {
-  const bin = findClaudeyeBin();
-
   if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
-  // Wrapper script: run digest + send macOS notification
+  // Copy standalone digest script to ~/.claudeye/ (avoids TCC restrictions on ~/Documents) (#65)
+  const standaloneSrc  = join(__dirname, 'digest-standalone.js');
+  const standaloneDest = join(homedir(), '.claudeye', 'digest-standalone.mjs');
+
+  // Also need better-sqlite3 accessible from ~/.claudeye/
+  // We copy the standalone script and point it to the global node_modules
+  if (existsSync(standaloneSrc)) {
+    copyFileSync(standaloneSrc, standaloneDest);
+  }
+
+  // Wrapper script: runs standalone digest (no ~/Documents access needed)
   const wrapperPath = join(homedir(), '.claudeye', 'digest-runner.sh');
   const wrapper = `#!/bin/bash
-${bin} digest --generate 2>>${LOG_ERR}
+# No NODE_PATH needed — standalone script uses createRequire from ~/.claudeye/
+/opt/homebrew/bin/node ${standaloneDest} 2>>${LOG_ERR}
 if [ $? -eq 0 ]; then
   osascript -e 'display notification "Weekly digest generated. Run: claudeye digest" with title "Claudeye"'
 else
