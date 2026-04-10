@@ -173,7 +173,16 @@ different projects — because it understands meaning, not just keywords.
 
 ## Automated daily analysis
 
-Claudeye includes a scheduled analyzer (via Cowork) that runs daily with 4 tracks:
+Claudeye includes two daily scheduled tasks that run via **Cowork** (Claude Desktop).
+The scripts live in the repo, but the schedulers themselves are Cowork runtime configs — they don't transfer with `git clone`. If you're setting up Claudeye from scratch, you need to create them manually.
+
+### Why schedulers exist
+
+Claudeye collects data passively through hooks, but raw data alone isn't actionable. The schedulers turn it into a daily feedback loop: the analyzer finds problems in the codebase and workflow, creates GitHub issues automatically; the insights monitor watches for anomalies (quota burn, broken hooks, friction spikes) and alerts before things go wrong. Without them Claudeye is a memory tool. With them it's a proactive advisor.
+
+### 1. `claudeye-analyzer` — daily codebase + workflow analysis
+
+Runs daily (recommended: 13:00). Performs 4 analysis tracks:
 
 | Track | What it does |
 |-------|-------------|
@@ -182,7 +191,32 @@ Claudeye includes a scheduled analyzer (via Cowork) that runs daily with 4 track
 | **C: Workflow** | Scans git + GitHub for PR/issue patterns, recommends automations |
 | **D: Readiness** | Checks each issue's start criteria, comments when ready |
 
-The analyzer auto-creates GitHub issues and adds them to the project board.
+Auto-creates GitHub issues and adds them to the project board.
+Not a standalone script — runs as a Cowork scheduled task with an LLM prompt that reads the codebase, mem.db, and GitHub state.
+
+### 2. `claudeye-insights` — daily anomaly detection
+
+Runs daily (recommended: 09:00). Script: `scripts/daily-insights.js`.
+Can also be invoked via CLI: `claudeye insights`.
+
+Monitors for:
+- **Quota burn** — sessions with 250+ prompts, daily volume spikes
+- **Friction anomalies** — per-project friction increase >30%, repeat-fix hotspots
+- **Infrastructure health** — hook silence >36h, DB size, hook error rate, embedding gaps
+- **Positive signals** — friction drops (so you know what's working)
+
+Alert severity: 🔴 critical (act now), 🟡 warning (trend worsening), 🟢 insight (opportunity).
+Philosophy: no alerts = everything is fine.
+
+### Setting up schedulers (for new contributors)
+
+Schedulers are created in **Cowork** (Claude Desktop app) using the `schedule` skill:
+
+1. **claudeye-analyzer**: Create a daily scheduled task at 13:00. The task prompt should instruct Claude to analyze the Claudeye codebase (4 tracks above), read mem.db metrics, check GitHub issues for readiness criteria, and create new issues for findings. Cron: `0 13 * * *`.
+
+2. **claudeye-insights**: Create a daily scheduled task at 09:00 that runs `node scripts/daily-insights.js` from the claudeye directory and reports the results. Cron: `0 9 * * *`.
+
+Alternatively, for non-Cowork setups, `scripts/digest-scheduler.js` can install a macOS LaunchAgent for the weekly digest (`claudeye scheduler install`).
 
 ---
 
@@ -212,73 +246,109 @@ Embeddings (optional, for semantic search):
 
 ## Roadmap
 
-### Phase 1: Dogfooding Foundation (March 2026)
+> Synced with [GitHub Project #4](https://github.com/users/leetio-varsha/projects/4). Each issue has readiness criteria — the daily analyzer checks them automatically.
+>
+> **Dependency notation:** `← #N` means "blocked by issue #N".
+
+### Phase 1: Dogfooding Foundation (March 2026) ✅
+
 - [x] Core memory hooks (save, inject, summarize)
 - [x] Hybrid FTS5 + vector search with RRF
 - [x] AI compression via Claude CLI
 - [x] Analytics computation layer
 - [x] Git history import
 - [x] Switch to better-sqlite3 for native FTS5 (#1)
-- [ ] E2E hook testing (#2, #3)
-- [x] First real git import on own repos (#4) — 6,866 commits from 19 repos
+- [x] E2E hook testing (#2, #3) ← #1
+- [x] First real git import on own repos (#4) — 6,866 commits from 19 repos ← #1
 
-### Phase 2: Polish & Fix (April 2026, after 2 weeks dogfooding)
-- [ ] Retention policy (#5)
-- [ ] Private tag support (#6)
-- [ ] Dashboard polish with Chart.js (#7)
-- [ ] Weekly digest automation (#8)
+### Phase 2: Polish & Fix (April 2026) ✅
+
+- [x] Retention policy + tiered storage (#5, #59)
+- [x] Private tag support (#6)
+- [x] Dashboard polish with Chart.js (#7)
+- [x] Weekly digest automation (#8)
+- [x] Hardening: timeouts, retries, graceful degradation (#31)
+- [x] Onboarding UX: `claudeye init` (#32)
+- [x] Decision Memory: capture why, not just what (#25)
+- [x] Post-commit hook: auto git import (#50)
+- [x] Daily proactive insights: anomalies, quota alerts (#49)
+- [x] Effort advisor: rule-based prompt classification (#63)
 
 ### Phase 2.5: Advisor Foundation (April 2026)
-- [ ] Structured advisor output — JSON format (#17)
-- [ ] Auto-issues from advisor (#15)
-- [ ] Automation advisor — full workflow analysis (#16)
+
+- [x] Structured advisor output — JSON format (#17)
+- [x] Cross-project friction heatmap (#56)
+- [x] `claudeye generate-claude-md` — auto-generate CLAUDE.md from observations (#57)
+- [ ] Auto-issues from advisor (#15) ← #17
+- [ ] Automation advisor — full workflow analysis (#16) ← #17
+- [ ] Weekly digest never ran — 0 digests for 12 days of data (#65)
+- [ ] GitHub Actions CI — no automated tests on push (#66)
+- [ ] Tool distribution anomaly — git-commit 50% of observations (#67)
 
 ### Phase 3: Import Layer (late April 2026)
+
 - [ ] Notion import (#9)
 - [ ] Jira/Linear import (#10)
 - [ ] Memory export as markdown (#11)
 
 ### Phase 4: Team Foundation (May-June 2026)
+
 - [ ] Postgres + pgvector — team backend (#12)
-- [ ] API auth + multi-user (#13)
-- [ ] Team Sync Layer — local SQLite → shared DB, aggregates only (#34)
-- [ ] Team Roles & Access — dev / tech lead / admin (#35)
+- [ ] API auth + multi-user (#13) ← #12
+- [ ] Team Sync Layer — local SQLite → shared DB, aggregates only (#34) ← #12, #13
+- [ ] Team Roles & Access — dev / tech lead / admin (#35) ← #13
 - [ ] Landing page + pricing (#14)
 - [ ] Local agent mode (#18)
+- [ ] Multi-provider embeddings: OpenAI + Anthropic/Voyage + fallback (#41)
 
 ### Phase 4.5: Team UX (June 2026)
-- [ ] Team Auto-Setup — `npx claudeye join <token>` (#36)
-- [ ] Team Dashboard — friction heatmap, tool ROI, standardization (#37)
-- [ ] Team CLAUDE.md — hierarchical: global → team → project → personal (#38)
-- [ ] Team Analytics — aggregated advisor for the whole team (#39)
-- [ ] Shared Knowledge Base — privacy-first knowledge sharing (#40)
+
+All items depend on Team Sync Layer (#34) + Team Roles (#35):
+
+- [ ] Team Auto-Setup — `npx claudeye join <token>` (#36) ← #34, #35
+- [ ] Team Dashboard — friction heatmap, tool ROI, standardization (#37) ← #34, #35
+- [ ] Team CLAUDE.md — hierarchical: global → team → project → personal (#38) ← #34
+- [ ] Team Analytics — aggregated advisor for the whole team (#39) ← #34 (needs 2+ weeks of team data)
+- [ ] Shared Knowledge Base — privacy-first knowledge sharing (#40) ← #34
 
 ### Phase 5: Agent v1 (June-July 2026)
+
 - [ ] Pattern detection: repeat-fix detector, file hotspots (#19)
 - [ ] One agent, one use-case, full cycle through Claudeye (#20)
-- [ ] Feedback loop: system learns from its own actions (#21)
+- [ ] Feedback loop: system learns from its own actions (#21) ← #20
 - [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22)
 
 ### Phase 6: Integrations (July-August 2026)
+
 - [ ] Read-first: GitLab, Jira, Slack, Gmail, Sentry (#23)
 
 ### Phase 7: Autopilot (August+ 2026)
+
 - [ ] Partial automation with control: auto triage, reports, tasks (#24)
 
 ### Phase 8: Digital Twin (Q4 2026+)
+
 - [ ] Developer model: style, decisions, partial delegation (#29)
 
 ### Cross-phase (gradual)
-- [ ] Decision Memory: capture why, not just what (#25)
+
 - [ ] Knowledge Graph: entity relationships (#26)
 - [ ] Personal AI OS: unified memory, entry, control (#27)
 - [ ] Self-Improving Workflow Engine: coach + optimizer (#28)
+- [ ] Shared read-only viewer: share dashboard by link (#33)
+- [ ] Scalability: hot/cold storage, L2 compression, vector index (#30)
 
-**Strategy:** core -> value -> one agent -> learning -> scale
+### Dependency graph (key chains)
 
-**Evolution:** memory tool -> self-improving system -> team platform -> personal AI OS -> digital twin
+```
+#12 (Postgres) → #13 (Auth) → #34 (Sync) → #35 (Roles) → #36-#40 (Team UX)
+#17 (Structured advisor) → #15 (Auto-issues), #16 (Automation advisor)
+#20 (Agent v1) → #21 (Feedback loop)
+```
 
-All issues have readiness criteria — the daily analyzer checks them automatically.
+**Strategy:** core → value → one agent → learning → scale
+
+**Evolution:** memory tool → self-improving system → team platform → personal AI OS → digital twin
 
 ---
 
