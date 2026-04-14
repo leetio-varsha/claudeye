@@ -154,7 +154,10 @@ async function main() {
 
   if (!prompt?.trim()) process.exit(0);
 
-  const project = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Normalize worktree paths to parent project (#78)
+  const rawProject = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const worktreeMatch = rawProject.match(/^(.+?)\/\.claude\/worktrees\/.+$/);
+  const project = worktreeMatch ? worktreeMatch[1] : rawProject;
 
   // Global timeout: never block Claude Code for more than 5 seconds (#55)
   const TIMEOUT_MS = 5000;

@@ -178,12 +178,27 @@ program.command('health')
       const stats = getStats();
       const metrics = getDbMetrics();
       const sizeWarn = metrics.fileSizeMB > 100;
+      const sizeCrit = metrics.fileSizeMB > 200;
+      const embCoverage = metrics.obsCount > 0 ? Math.round(metrics.embCount / metrics.obsCount * 100) : 0;
+      const gitPct = metrics.obsCount > 0 ? Math.round(metrics.gitCommitCount / metrics.obsCount * 100) : 0;
+      let sizeAdvice = '';
+      if (sizeCrit) sizeAdvice = ` 🔴 >200MB — run ${chalk.red('claudeye cleanup')} urgently`;
+      else if (sizeWarn) sizeAdvice = ` ⚠️  >100MB — run ${chalk.yellow('claudeye cleanup')} or auto-cleanup will trigger`;
+      const effCov = metrics.effectiveCoverage;
+      const embCovWarn = effCov < 80;
       checks.push({
         name: 'Database',
         ok: !sizeWarn,
         detail: `${stats.totalObservations} obs, ${stats.totalSessions} sessions, ${metrics.fileSizeMB}MB`
-          + (sizeWarn ? ` ⚠️  >100MB — run ${chalk.yellow('claudeye cleanup')}` : '')
-          + ` | git-commit: ${metrics.gitCommitCount}`
+          + sizeAdvice
+          + ` | git-commit: ${metrics.gitCommitCount} (${gitPct}%)`
+      });
+      checks.push({
+        name: 'Embedding coverage',
+        ok: !embCovWarn,
+        detail: `${metrics.embCount} total (${embCoverage}% raw) | `
+          + `${chalk.bold(effCov + '%')} effective (${metrics.searchableWithEmb}/${metrics.searchableObs} searchable)`
+          + (embCovWarn ? ` ⚠️  <80% — run ${chalk.yellow('claudeye reindex')}` : '')
       });
     } catch (e) {
       checks.push({ name: 'Database', ok: false, detail: e.message });
@@ -478,7 +493,7 @@ program.command('cleanup')
       if (counts.lowImportance) console.log(`    ${counts.lowImportance} low importance (<0.3, >60 days)`);
       if (counts.medImportance) console.log(`    ${counts.medImportance} medium importance (0.3–0.7, >180 days)`);
       if (counts.highImportance) console.log(`    ${counts.highImportance} high importance (≥0.7, >365 days)`);
-      if (counts.gitCommit) console.log(`    ${counts.gitCommit} old git-commit (importance <0.5, >30 days, beyond top 200/project)`);
+      if (counts.gitCommit) console.log(`    ${counts.gitCommit} old git-commit (importance <0.5, >14 days, beyond top 50/project)`);
     } else {
       retSpinner.succeed('Nothing to delete — all data within retention policy.');
     }
@@ -490,6 +505,46 @@ program.command('cleanup')
       getDb().exec('VACUUM');
       const after = getDbMetrics();
       vacSpinner.succeed(`VACUUM done. DB size: ${chalk.cyan(metrics.fileSizeMB + 'MB')} → ${chalk.green(after.fileSizeMB + 'MB')}`);
+    }
+    console.log('');
+  });
+
+// ─── compact (#76) ───────────────────────────────────────────────────────
+
+program.command('compact')
+  .description('Quick compaction: strip raw data & prune old embeddings (no retention delete)')
+  .option('--dry-run', 'Show what would be compacted without changes')
+  .option('--vacuum', 'Run VACUUM after compaction to reclaim disk space')
+  .action(async (opts) => {
+    const { compact, getDbMetrics } = await import('./src/db.js');
+    const ora = (await import('ora')).default;
+
+    const before = getDbMetrics();
+    console.log(chalk.bold('\n  Claudeye Compact\n'));
+    console.log(`  DB size: ${chalk.cyan(before.fileSizeMB + 'MB')} | Observations: ${chalk.cyan(before.obsCount)} | Embeddings: ${chalk.cyan(before.embCount)}\n`);
+
+    const spinner = ora(opts.dryRun ? 'Calculating...' : 'Compacting...').start();
+    const result = compact({ dryRun: opts.dryRun });
+
+    if (result.total > 0) {
+      if (opts.dryRun) {
+        spinner.info(`Would compact ${chalk.yellow(result.total)} items:`);
+      } else {
+        spinner.succeed(`Compacted ${chalk.green(result.total)} items.`);
+      }
+      if (result.embGit) console.log(`    ${result.embGit} git-commit embeddings pruned (~${(result.embGit * 6 / 1024).toFixed(1)}MB)`);
+      if (result.embLow) console.log(`    ${result.embLow} low-importance embeddings pruned (~${(result.embLow * 6 / 1024).toFixed(1)}MB)`);
+      if (result.rawCompacted) console.log(`    ${result.rawCompacted} observations raw data stripped`);
+    } else {
+      spinner.succeed('Nothing to compact.');
+    }
+
+    if (opts.vacuum && !opts.dryRun && result.total > 0) {
+      const vacSpinner = ora('Running VACUUM...').start();
+      const { getDb } = await import('./src/db.js');
+      getDb().exec('VACUUM');
+      const after = getDbMetrics();
+      vacSpinner.succeed(`VACUUM done. DB size: ${chalk.cyan(before.fileSizeMB + 'MB')} → ${chalk.green(after.fileSizeMB + 'MB')}`);
     }
     console.log('');
   });

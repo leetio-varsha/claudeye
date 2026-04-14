@@ -200,6 +200,47 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
     });
   }
 
+  // ── 2b. Friction Score Breakdown (#78) ─────────────────────────────────
+
+  // Per-project friction_score trend: last 3d vs 7d baseline
+  const frictionByProject = db.prepare(`
+    SELECT
+      project,
+      AVG(CASE WHEN started_at > datetime('now', '-3 days') THEN friction_score END) as recent_f,
+      AVG(CASE WHEN started_at <= datetime('now', '-3 days') AND started_at > datetime('now', '-10 days') THEN friction_score END) as baseline_f,
+      COUNT(CASE WHEN started_at > datetime('now', '-3 days') THEN 1 END) as recent_sessions,
+      COUNT(CASE WHEN started_at <= datetime('now', '-3 days') AND started_at > datetime('now', '-10 days') THEN 1 END) as baseline_sessions
+    FROM sessions
+    WHERE friction_score > 0
+      AND id NOT LIKE 'import-git-%'
+      AND started_at > datetime('now', '-10 days')
+    GROUP BY project
+    HAVING recent_sessions >= 3 AND baseline_sessions >= 3
+  `).all();
+
+  for (const p of frictionByProject) {
+    if (p.baseline_f > 0 && p.recent_f > 0) {
+      const delta = (p.recent_f - p.baseline_f) / p.baseline_f;
+      if (delta > 0.25) {
+        alerts.push({
+          severity: 'warning',
+          category: 'friction',
+          title: `Friction score вырос на ${Math.round(delta * 100)}% в ${shortProject(p.project)}`,
+          detail: `Friction: ${p.recent_f.toFixed(3)} (last 3d, ${p.recent_sessions} sessions) vs ${p.baseline_f.toFixed(3)} (baseline, ${p.baseline_sessions} sessions). Больше ошибок/retry в сессиях.`,
+          action: `Проверь error rate в ${shortProject(p.project)} — возможно inject-hook подаёт нерелевантный контекст.`,
+        });
+      } else if (delta < -0.25) {
+        alerts.push({
+          severity: 'insight',
+          category: 'positive',
+          title: `Friction score снизился на ${Math.round(Math.abs(delta) * 100)}% в ${shortProject(p.project)}`,
+          detail: `Friction: ${p.recent_f.toFixed(3)} → ${p.baseline_f.toFixed(3)}. Работа идёт ровнее.`,
+          action: null,
+        });
+      }
+    }
+  }
+
   // ── 3. Infrastructure Health ──────────────────────────────────────────
 
   // Hook silence
@@ -280,16 +321,16 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
     });
   }
 
-  // Embedding gap
-  if (metrics.obsCount > 0) {
-    const gapPct = Math.round((1 - metrics.embCount / metrics.obsCount) * 100);
-    if (gapPct > 60 && isEmbeddingEnabled()) {
+  // Embedding gap — use effective coverage (#75)
+  if (metrics.searchableObs > 0 && isEmbeddingEnabled()) {
+    const effCov = metrics.effectiveCoverage;
+    if (effCov < 80) {
       alerts.push({
-        severity: 'insight',
+        severity: 'warning',
         category: 'infra',
-        title: `${gapPct}% observations без embeddings`,
-        detail: `${metrics.embCount} из ${metrics.obsCount} имеют vector embeddings. Поиск использует только FTS5 для остальных.`,
-        action: 'Запусти `claudeye reindex` для улучшения качества поиска.',
+        title: `Effective embedding coverage ${effCov}% (<80%)`,
+        detail: `${metrics.searchableWithEmb} из ${metrics.searchableObs} searchable observations имеют embeddings. Vector search деградирует.`,
+        action: 'Запусти `claudeye reindex` для восстановления покрытия.',
       });
     }
   }
@@ -384,7 +425,7 @@ export function formatReport(result) {
       lines.push(`  ${a.title}`);
       lines.push(`    ${a.detail}`);
       if (a.action) lines.push(`    → ${a.action}`);
-      if (a.data) {
+      if (a.data && Array.isArray(a.data)) {
         for (const d of a.data.slice(0, 5)) {
           const parts = Object.entries(d).map(([k, v]) => `${k}: ${v}`).join(', ');
           lines.push(`      ${parts}`);
@@ -400,7 +441,7 @@ export function formatReport(result) {
       lines.push(`  ${a.title}`);
       lines.push(`    ${a.detail}`);
       if (a.action) lines.push(`    → ${a.action}`);
-      if (a.data) {
+      if (a.data && Array.isArray(a.data)) {
         for (const d of a.data.slice(0, 3)) {
           const parts = Object.entries(d).map(([k, v]) => `${k}: ${v}`).join(', ');
           lines.push(`      ${parts}`);
