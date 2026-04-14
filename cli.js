@@ -245,6 +245,32 @@ program.command('health')
       checks.push({ name: 'Error budget', ok: true, detail: '0 errors' });
     }
 
+    // Weekly digest freshness (#79)
+    try {
+      const latest = db.prepare('SELECT week_start, created_at FROM digests ORDER BY week_start DESC LIMIT 1').get();
+      if (!latest) {
+        checks.push({ name: 'Weekly digest', ok: false, detail: `No digests yet — run ${chalk.yellow('claudeye digest --generate')}` });
+      } else {
+        const now = new Date();
+        const dayOfWeek = now.getDay();
+        const monday = new Date(now);
+        monday.setDate(now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+        const currentWeekStart = monday.toISOString().slice(0, 10);
+        // Previous week Monday
+        const prevMonday = new Date(monday);
+        prevMonday.setDate(monday.getDate() - 7);
+        const prevWeekStart = prevMonday.toISOString().slice(0, 10);
+        const isCurrent = latest.week_start >= prevWeekStart;
+        checks.push({
+          name: 'Weekly digest',
+          ok: isCurrent,
+          detail: `Last: ${latest.week_start}` + (!isCurrent ? ` ⚠️  stale — run ${chalk.yellow('claudeye digest --generate')}` : ' (up to date)')
+        });
+      }
+    } catch {
+      checks.push({ name: 'Weekly digest', ok: true, detail: 'check skipped (no digests table)' });
+    }
+
     // Disk space
     try {
       const { execSync } = await import('child_process');
