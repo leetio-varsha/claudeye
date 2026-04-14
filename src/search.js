@@ -15,6 +15,17 @@ import { embed, cosineSimilarity, bufToFloat32 } from './embeddings.js';
 
 const RRF_K = 60;
 
+/**
+ * Normalize worktree paths to parent project (#78).
+ * `.claude/worktrees/<name>` → parent project path.
+ * This ensures worktree sessions get context from the main project.
+ */
+export function normalizeProject(project) {
+  if (!project) return project;
+  const worktreeMatch = project.match(/^(.+?)\/\.claude\/worktrees\/.+$/);
+  return worktreeMatch ? worktreeMatch[1] : project;
+}
+
 // Minimum hybrid score for cross-project results to be shown.
 // Prevents low-relevance noise from unrelated projects.
 const MIN_CROSS_PROJECT_SCORE = 0.004;
@@ -90,10 +101,13 @@ export async function hybridSearch(query, project, {
  * Combines recent observations + hybrid search results.
  */
 export async function buildContext(userPrompt, project, opts = {}) {
+  // Normalize worktree paths so worktrees get context from parent project (#78)
+  const normalizedProject = normalizeProject(project);
+
   // 1. Project-specific: recent + hybrid search
   const [recent, searched] = await Promise.all([
-    getRecentObservations(project, 3),
-    hybridSearch(userPrompt, project, { limit: 6, ...opts }),
+    getRecentObservations(normalizedProject, 3),
+    hybridSearch(userPrompt, normalizedProject, { limit: 6, ...opts }),
   ]);
 
   // 2. Cross-project: bring experience from other projects

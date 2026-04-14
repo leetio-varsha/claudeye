@@ -34,7 +34,10 @@ export async function reindex(opts = {}) {
 
   const db = getDb();
 
-  // Get observations that need (re-)embedding
+  // Get observations that need (re-)embedding.
+  // By default, skip low-importance obs (< 0.5) — compact prunes their embeddings
+  // after 7 days, so reindexing them is wasteful. Use --force to override.
+  // For git-commits, only reindex top 50/project (search GIT_CAP).
   let observations;
   if (force) {
     // All observations
@@ -43,16 +46,26 @@ export async function reindex(opts = {}) {
       : `SELECT id, summary FROM observations ORDER BY created_at ASC`;
     observations = project ? db.prepare(query).all(project) : db.prepare(query).all();
   } else {
-    // Only those missing embeddings or with degraded (non-1536 dim) vectors
-    const query = project
-      ? `SELECT o.id, o.summary FROM observations o
-         LEFT JOIN embeddings e ON e.observation_id = o.id
-         WHERE o.project = ? AND (e.observation_id IS NULL OR length(e.vector) != ${1536 * 4})
-         ORDER BY o.created_at ASC`
-      : `SELECT o.id, o.summary FROM observations o
-         LEFT JOIN embeddings e ON e.observation_id = o.id
-         WHERE e.observation_id IS NULL OR length(e.vector) != ${1536 * 4}
-         ORDER BY o.created_at ASC`;
+    // Smart reindex: missing/degraded embeddings, respecting compact policy (#75)
+    const projectFilter = project ? `AND o.project = ?` : '';
+    const query = `
+      SELECT o.id, o.summary FROM observations o
+      LEFT JOIN embeddings e ON e.observation_id = o.id
+      WHERE (e.observation_id IS NULL OR length(e.vector) != ${1536 * 4})
+        AND (
+          -- Non-git-commit: only importance >= 0.5 (compact prunes < 0.5 after 7d)
+          (o.tool != 'git-commit' AND o.importance >= 0.5)
+          OR
+          -- Git-commit: only top 50 per project (search GIT_CAP)
+          (o.tool = 'git-commit' AND o.id IN (
+            SELECT id FROM (
+              SELECT id, ROW_NUMBER() OVER (PARTITION BY project ORDER BY created_at DESC) as rn
+              FROM observations WHERE tool = 'git-commit'
+            ) WHERE rn <= 50
+          ))
+        )
+        ${projectFilter}
+      ORDER BY o.importance DESC, o.created_at ASC`;
     observations = project ? db.prepare(query).all(project) : db.prepare(query).all();
   }
 

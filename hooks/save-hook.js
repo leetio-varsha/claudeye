@@ -32,7 +32,11 @@ async function main() {
 
   if (!tool || !sessionId) process.exit(0);
 
-  const project = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Normalize worktree paths to parent project (#78)
+  // .claude/worktrees/<name> → parent project
+  const rawProject = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const worktreeMatch = rawProject.match(/^(.+?)\/\.claude\/worktrees\/.+$/);
+  const project = worktreeMatch ? worktreeMatch[1] : rawProject;
 
   // Strip <private>…</private> content before any processing (#6)
   const stripPrivate = (s) => {
@@ -77,6 +81,15 @@ async function main() {
       const { computeFrictionScore } = await import(srcDir + 'analytics.js');
       closeOrphanedSessions({ maxAgeHours: 4, computeFriction: computeFrictionScore });
     } catch { /* non-critical */ }
+
+    // Opportunistic: auto-compact when DB > 100MB (#76)
+    // ~5% chance per save to avoid running every time
+    if (Math.random() < 0.05) {
+      try {
+        const { autoCleanup } = await import(srcDir + 'db.js');
+        autoCleanup({ maxSizeMB: 100 });
+      } catch { /* non-critical */ }
+    }
 
     // Generate and store embedding — must await before exit
     try {
