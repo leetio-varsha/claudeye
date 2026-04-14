@@ -78,7 +78,11 @@ claudeye/
 └── test/
     ├── db.test.js              # database CRUD + FTS search tests
     ├── patterns.test.js        # pattern detection SQL tests
-    └── effort.test.js          # effort classification tests
+    ├── effort.test.js          # effort classification tests
+    ├── compress.test.js        # noise detection, fallback compression, error extraction
+    ├── search.test.js          # normalizeProject, RRF scoring
+    ├── embeddings.test.js      # cosineSimilarity, bufToFloat32
+    └── auto-issues.test.js     # deduplication, issue formatting, friction trends
 ```
 
 ---
@@ -243,11 +247,15 @@ npm test                              # run all tests (node:test)
 - [x] Auto-issues from advisor (#15) ← #17
 - [x] Automation advisor — full workflow analysis (#16) ← #17, #19
 - [x] Weekly digest TCC fix — standalone script (#65)
+- [x] Weekly digest reliability — hook-based auto-trigger + health check (#79)
 - [x] Backfill friction scores for historical sessions (#73)
-- [x] npm test — node:test runner with 29 tests (#72)
+- [x] npm test — node:test runner with 82 tests (#72, #77)
 - [x] GitHub Actions CI — automated tests on push (#66) ← #72
 - [x] Tool distribution anomaly — git-commit filtered from analytics (#67)
 - [x] DB auto-compact — daily auto-compact at 100MB, alert at 150MB (#74)
+- [x] DB retention tightening — git-commit 50/14d, compact 7d, effective coverage metric (#76)
+- [x] Embedding coverage — effectiveCoverage metric, smart reindex (#75)
+- [x] Friction analysis — worktree normalization, friction breakdown script (#78)
 
 ### Phase 3: Agent v1 (April-May 2026) ← CURRENT
 - [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
