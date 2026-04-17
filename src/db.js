@@ -73,6 +73,20 @@ function _migrateAnalytics(db) {
         complexity    REAL,
         resolution_ms INTEGER
       );
+    `);
+
+    // #83: track GitHub issue number for auto-created issues to dedup locally & enable sync
+    addColumnIfMissing('issues', 'gh_issue_number', 'INTEGER');
+    addColumnIfMissing('issues', 'gh_repo',         'TEXT');
+    addColumnIfMissing('issues', 'source',          "TEXT DEFAULT 'advisor'");  // 'advisor' | 'auto-issues' | 'manual'
+    addColumnIfMissing('issues', 'category',        'TEXT');
+
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_issues_gh_number ON issues(gh_issue_number)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_issues_project_status ON issues(project, status)`);
+    } catch { /* non-critical */ }
+
+    db.exec(`
       CREATE TABLE IF NOT EXISTS digests (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         week_start  TEXT    NOT NULL UNIQUE,
@@ -512,6 +526,131 @@ export function getErrorStats(days = 7) {
     total: db.prepare(`
       SELECT COUNT(*) as n FROM hook_errors WHERE created_at >= date('now', '-' || ? || ' days') AND error_type != 'info'
     `).get(days).n,
+  };
+}
+
+// ─── Issues tracking (#83) ──────────────────────────────────────────────────
+
+/**
+ * Persist an auto-created GitHub issue to local `issues` table.
+ * Enables local dedup + stats for #16 advisor and #28 self-improvement loop.
+ *
+ * @param {object} opts
+ * @param {string} opts.project       — project name/path
+ * @param {string} opts.title         — issue title (matches GH title)
+ * @param {number|null} opts.ghIssueNumber
+ * @param {string|null} opts.ghRepo
+ * @param {string|null} opts.category — 'hotspot' | 'friction-trend' | ...
+ * @param {string[]} opts.sessionIds  — related sessions
+ * @param {number[]} opts.obsIds      — related observations
+ * @param {number|null} opts.complexity
+ * @param {string} opts.source        — 'auto-issues' | 'advisor' | 'manual'
+ * @returns {number} id of inserted row
+ */
+export function saveAutoIssue({
+  project,
+  title,
+  ghIssueNumber = null,
+  ghRepo = null,
+  category = null,
+  sessionIds = [],
+  obsIds = [],
+  complexity = null,
+  source = 'auto-issues',
+}) {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO issues (project, title, status, session_ids, obs_ids, complexity, gh_issue_number, gh_repo, source, category)
+    VALUES (?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    project,
+    title.slice(0, 300),
+    JSON.stringify(sessionIds),
+    JSON.stringify(obsIds),
+    complexity,
+    ghIssueNumber,
+    ghRepo,
+    source,
+    category
+  );
+  return result.lastInsertRowid;
+}
+
+/**
+ * Check if an auto-issue with same project+title (or near-match) was opened
+ * recently. Used by auto-issues.js to dedup before calling `gh`.
+ *
+ * @param {object} opts
+ * @param {string} opts.project
+ * @param {string} opts.title
+ * @param {number} opts.days — lookback window (default 7)
+ * @returns {{id: number, gh_issue_number: number|null, opened_at: string} | null}
+ */
+export function findRecentIssueByTitle({ project, title, days = 7 }) {
+  const db = getDb();
+  // Strip "[auto] " and everything after first colon for fuzzy match
+  const core = title.toLowerCase().replace(/^\[auto\]\s*/, '').split(':')[0].trim();
+  if (!core) return null;
+  return db.prepare(`
+    SELECT id, gh_issue_number, opened_at, title, status
+    FROM issues
+    WHERE project = ?
+      AND opened_at >= datetime('now', '-' || ? || ' days')
+      AND (LOWER(title) = ? OR LOWER(title) LIKE ?)
+    ORDER BY opened_at DESC
+    LIMIT 1
+  `).get(project, days, title.toLowerCase(), `%${core}%`) || null;
+}
+
+/**
+ * Mark auto-issue resolved based on GitHub issue number (called from sync job).
+ */
+export function markIssueResolvedByGhNumber(ghIssueNumber, ghRepo = null) {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT id, opened_at FROM issues
+    WHERE gh_issue_number = ? AND (gh_repo = ? OR ? IS NULL) AND status = 'open'
+    LIMIT 1
+  `).get(ghIssueNumber, ghRepo, ghRepo);
+  if (!row) return false;
+  const resolutionMs = Math.max(0, Date.now() - new Date(row.opened_at + 'Z').getTime());
+  db.prepare(`
+    UPDATE issues
+    SET status = 'resolved', resolved_at = datetime('now'), resolution_ms = ?
+    WHERE id = ?
+  `).run(resolutionMs, row.id);
+  return true;
+}
+
+/**
+ * Stats for auto-issues — used by weekly digest (#83).
+ */
+export function getAutoIssueStats(days = 30) {
+  const db = getDb();
+  const created = db.prepare(`
+    SELECT COUNT(*) as n FROM issues
+    WHERE source = 'auto-issues' AND opened_at >= datetime('now', '-' || ? || ' days')
+  `).get(days).n;
+  const resolved = db.prepare(`
+    SELECT COUNT(*) as n FROM issues
+    WHERE source = 'auto-issues' AND resolved_at >= datetime('now', '-' || ? || ' days')
+  `).get(days).n;
+  const avgResolutionDays = db.prepare(`
+    SELECT AVG(resolution_ms) as avg_ms FROM issues
+    WHERE source = 'auto-issues' AND resolved_at IS NOT NULL
+      AND resolved_at >= datetime('now', '-' || ? || ' days')
+  `).get(days).avg_ms;
+  const byCategory = db.prepare(`
+    SELECT category, COUNT(*) as n FROM issues
+    WHERE source = 'auto-issues' AND opened_at >= datetime('now', '-' || ? || ' days')
+    GROUP BY category ORDER BY n DESC
+  `).all(days);
+  return {
+    created,
+    resolved,
+    open: Math.max(0, created - resolved),
+    avgResolutionDays: avgResolutionDays ? +(avgResolutionDays / (1000 * 60 * 60 * 24)).toFixed(1) : null,
+    byCategory,
   };
 }
 

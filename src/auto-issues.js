@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { detectAllPatterns } from './patterns.js';
-import { getDb } from './db.js';
+import { getDb, saveAutoIssue, findRecentIssueByTitle } from './db.js';
 
 const GH = process.env.GH_PATH || '/opt/homebrew/bin/gh';
 const DATA_DIR = join(homedir(), '.claudeye');
@@ -126,6 +126,14 @@ function patternToIssue(finding) {
     body,
     labels: [categoryLabels[finding.category] || 'improvement'].filter(Boolean),
     priority: finding.severity,
+    // Preserve finding metadata for local persistence (#83)
+    _meta: {
+      category:   finding.category,
+      project:    finding.project,
+      sessionIds: finding.data?.session_ids || [],
+      obsIds:     finding.data?.obs_ids || [],
+      complexity: finding.data?.hotspot_score || null,
+    },
   };
 }
 
@@ -261,8 +269,22 @@ export async function runAutoIssues({ dryRun = false, days = 14, advisorFindings
   let skipped = 0;
 
   for (const issue of issues) {
+    // GitHub-side dedup (existing behaviour)
     if (isDuplicate(issue, existingIssues)) {
       results.push({ ...issue, status: 'skipped', reason: 'duplicate' });
+      skipped++;
+      continue;
+    }
+
+    // Local-DB dedup (#83) — cheap, works offline, prevents rapid re-creation
+    // across runs when GitHub list is stale.
+    const localDup = !dryRun ? findRecentIssueByTitle({
+      project: issue._meta?.project || 'unknown',
+      title:   issue.title,
+      days:    7,
+    }) : null;
+    if (localDup) {
+      results.push({ ...issue, status: 'skipped', reason: 'local-duplicate', gh_issue_number: localDup.gh_issue_number });
       skipped++;
       continue;
     }
@@ -275,6 +297,22 @@ export async function runAutoIssues({ dryRun = false, days = 14, advisorFindings
         const num = createIssue(issue, config);
         if (num && config.projectId) {
           addToProject(num, config);
+        }
+        // #83: Persist to local issues table for analytics + cross-run dedup
+        try {
+          saveAutoIssue({
+            project:       issue._meta?.project || 'unknown',
+            title:         issue.title,
+            ghIssueNumber: num,
+            ghRepo:        config.repo,
+            category:      issue._meta?.category || null,
+            sessionIds:    issue._meta?.sessionIds || [],
+            obsIds:        issue._meta?.obsIds || [],
+            complexity:    issue._meta?.complexity || null,
+            source:        'auto-issues',
+          });
+        } catch (e) {
+          console.error(`  Warning: couldn't persist issue #${num} to local DB: ${e.message}`);
         }
         results.push({ ...issue, status: 'created', number: num });
         created++;
