@@ -20,10 +20,22 @@
 
 import { getDb, getDbMetrics, getErrorStats, cleanup, compact } from '../src/db.js';
 import { isEmbeddingEnabled } from '../src/embeddings.js';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, appendFileSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
+
+// ─── Heartbeat logging (#82) ──────────────────────────────────────────────
+// Append start/finish markers so "scheduler never ran" vs "script crashed silently"
+// can be distinguished from a single log file.
+const _HEARTBEAT_DIR  = join(homedir(), '.claudeye', 'logs');
+const _HEARTBEAT_PATH = join(_HEARTBEAT_DIR, 'insights-heartbeat.log');
+function _heartbeat(msg) {
+  try {
+    if (!existsSync(_HEARTBEAT_DIR)) mkdirSync(_HEARTBEAT_DIR, { recursive: true });
+    appendFileSync(_HEARTBEAT_PATH, `${new Date().toISOString()} ${msg}\n`);
+  } catch { /* non-critical */ }
+}
 
 // ─── Thresholds ──────────────────────────────────────────────────────────
 
@@ -50,6 +62,7 @@ const THRESHOLDS = {
 // ─── Main ────────────────────────────────────────────────────────────────
 
 export async function runInsights({ days = 1, verbose = false, notify = true } = {}) {
+  _heartbeat('[insights] runInsights start');
   const db = getDb();
   const alerts = [];
 
@@ -404,6 +417,8 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
       `${critAlerts.length} critical, ${warnAlerts.length} warnings, ${insightAlerts.length} insights`
     );
   } catch { /* non-critical */ }
+
+  _heartbeat(`[insights] runInsights finish: ${critAlerts.length}c/${warnAlerts.length}w/${insightAlerts.length}i`);
 
   return { alerts, critAlerts, warnAlerts, insightAlerts };
 }
