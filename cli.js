@@ -271,6 +271,25 @@ program.command('health')
       checks.push({ name: 'Weekly digest', ok: true, detail: 'check skipped (no digests table)' });
     }
 
+    // Daily insights freshness (#82)
+    try {
+      const latestInsight = db.prepare('SELECT date, created_at FROM insights ORDER BY created_at DESC LIMIT 1').get();
+      if (!latestInsight) {
+        checks.push({ name: 'Daily insights', ok: false, detail: `No insights yet — run ${chalk.yellow('claudeye insights --schedule')}` });
+      } else {
+        const hoursSince = (Date.now() - new Date(latestInsight.created_at + 'Z').getTime()) / 3600000;
+        const isStale = hoursSince > 36; // 1.5 days
+        checks.push({
+          name: 'Daily insights',
+          ok: !isStale,
+          detail: `Last: ${latestInsight.date} (${Math.round(hoursSince)}h ago)`
+            + (isStale ? ` ⚠️  stale — run ${chalk.yellow('claudeye insights --schedule')}` : ' (fresh)')
+        });
+      }
+    } catch {
+      checks.push({ name: 'Daily insights', ok: true, detail: 'check skipped (no insights table)' });
+    }
+
     // Disk space
     try {
       const { execSync } = await import('child_process');
@@ -1025,7 +1044,43 @@ program.command('insights')
   .option('--days <n>', 'Lookback period in days', '1')
   .option('--no-notify', 'Skip macOS notification')
   .option('--json', 'Output as JSON')
+  .option('--schedule',    'Install daily launchd automation (09:00)')
+  .option('--unschedule',  'Remove daily launchd automation')
+  .option('--status',      'Check if launchd automation is active')
   .action(async (opts) => {
+    // ── Scheduler subcommands (#82) ─────────────────────────
+    if (opts.schedule) {
+      const { install } = await import('./scripts/insights-scheduler.js');
+      const result = install();
+      console.log(chalk.green('\n  ✅ Daily insights scheduled!'));
+      console.log(chalk.gray(`  Schedule:   ${result.schedule}`));
+      console.log(chalk.gray(`  Plist:      ${result.plist}`));
+      console.log(chalk.gray(`  Wrapper:    ${result.wrapper}`));
+      console.log(chalk.gray(`  Standalone: ${result.standalone}\n`));
+      return;
+    }
+    if (opts.unschedule) {
+      const { uninstall } = await import('./scripts/insights-scheduler.js');
+      const result = uninstall();
+      console.log(result.removed
+        ? chalk.green('\n  ✅ Daily insights unscheduled.\n')
+        : chalk.yellow(`\n  ${result.message}\n`));
+      return;
+    }
+    if (opts.status) {
+      const { status } = await import('./scripts/insights-scheduler.js');
+      const s = status();
+      if (!s.installed) {
+        console.log(chalk.yellow('\n  Not scheduled. Run: claudeye insights --schedule\n'));
+      } else {
+        console.log(chalk.green('\n  ✅ Scheduled'));
+        console.log(chalk.gray(`  Loaded: ${s.loaded}`));
+        console.log(chalk.gray(`  Plist:  ${s.plist}\n`));
+      }
+      return;
+    }
+
+    // ── Normal run ─────────────────────────────────────────
     const { runInsights, formatReport } = await import('./scripts/daily-insights.js');
 
     console.log(chalk.bold('\n  Claudeye Daily Insights\n'));
@@ -1042,6 +1097,38 @@ program.command('insights')
       const { critAlerts, warnAlerts, insightAlerts } = result;
       const total = critAlerts.length + warnAlerts.length + insightAlerts.length;
       console.log(chalk.gray(`  ${total} alerts: ${critAlerts.length} critical, ${warnAlerts.length} warnings, ${insightAlerts.length} insights\n`));
+    }
+  });
+
+// ─── export (#11) ────────────────────────────────────────────────────────
+
+program.command('export')
+  .description('Export memory (sessions + observations) to a Markdown file')
+  .option('--project <substring>', 'Filter by project path substring')
+  .option('--since <date>',        'ISO date (YYYY-MM-DD), only sessions started on/after this date')
+  .option('--output <path>',       'Output file path (default: ./claudeye-export-YYYY-MM-DD.md)')
+  .option('--include-raw',         'Include raw_input / raw_output in each observation (verbose)')
+  .option('--no-git',              'Skip git-commit observations')
+  .action(async (opts) => {
+    const { runExport } = await import('./src/export.js');
+
+    console.log(chalk.bold('\n  Claudeye Export\n'));
+
+    try {
+      const result = runExport({
+        project:     opts.project || null,
+        since:       opts.since   || null,
+        output:      opts.output  || null,
+        includeGit:  opts.git !== false,
+        includeRaw:  !!opts.includeRaw,
+      });
+
+      const sizeKB = (result.sizeBytes / 1024).toFixed(1);
+      console.log(chalk.green(`  ✓ Exported ${result.sessions} sessions · ${result.observations} observations · ${result.projects} projects`));
+      console.log(chalk.gray(`    File: ${result.outputPath} (${sizeKB} KB)\n`));
+    } catch (e) {
+      console.error(chalk.red(`  ✗ Export failed: ${e.message}\n`));
+      process.exit(1);
     }
   });
 
