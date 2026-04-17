@@ -28,9 +28,12 @@ async function main() {
     process.exit(0);
   }
 
-  const { tool_name: tool, tool_input: rawInput, tool_response: rawOutput, session_id: sessionId } = event;
+  const { tool_name: tool, tool_input: rawInput, tool_response: rawOutput, session_id: sessionId, duration_ms: eventDuration, model: eventModel } = event;
 
   if (!tool || !sessionId) process.exit(0);
+
+  // (#81) Capture model from event or env — update session if available
+  const model = eventModel || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null;
 
   // Normalize worktree paths to parent project (#78)
   // .claude/worktrees/<name> → parent project
@@ -51,17 +54,22 @@ async function main() {
     const { compressObservation }                           = await import(srcDir + 'compress.js');
     const { embed }                                         = await import(srcDir + 'embeddings.js');
 
-    // Ensure session exists
-    upsertSession(sessionId, project);
+    // Ensure session exists — pass model if available (#81)
+    upsertSession(sessionId, project, { model });
 
     // Skip very noisy low-value tools
     const SKIP_TOOLS = new Set(['TodoRead', 'mcp__mem__search']);
     if (SKIP_TOOLS.has(tool)) process.exit(0);
 
     // AI compress (input/output already sanitized via stripPrivate above)
-    const { summary, tags, importance, decisionRationale } = await compressObservation({
+    const { summary, tags, importance, decisionRationale, aiCompressed, fallbackReason } = await compressObservation({
       tool, input, output, project,
     });
+
+    // Track compress fallbacks (#80) — visibility into AI success rate
+    if (!aiCompressed) {
+      logHookError('save-hook', 'compress_fallback', fallbackReason || 'unknown', project);
+    }
 
     // Skip noise
     if (importance < 0.1) process.exit(0);
@@ -72,6 +80,7 @@ async function main() {
       rawInput:  input,
       rawOutput: output,
       tags, importance, decisionRationale,
+      durationMs: eventDuration ?? null,  // (#81) from hook event if available
     });
 
     // Opportunistic: close orphaned sessions older than 4h (#60)

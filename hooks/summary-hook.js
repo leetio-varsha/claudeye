@@ -21,8 +21,17 @@ async function main() {
     process.exit(0);
   }
 
-  const { session_id: sessionId } = event;
+  const { session_id: sessionId, model: eventModel, token_input, token_output, total_tokens_in, total_tokens_out } = event;
   if (!sessionId) process.exit(0);
+
+  // (#81) Extract model from event or env
+  const model = eventModel || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null;
+  // (#81) Extract token counts — try multiple field names since hook contract may vary
+  const tokenInput  = token_input  ?? total_tokens_in  ?? null;
+  const tokenOutput = token_output ?? total_tokens_out ?? null;
+
+  // (#81) Diagnostic: log full stop event keys to discover available fields
+  console.error(`[mem:summary] event keys: ${Object.keys(event).join(', ')}`);
 
   const project = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -44,7 +53,12 @@ async function main() {
     }
 
     const summary = await compressSession({ observations, project });
-    if (summary) closeSession(sessionId, summary, { computeFriction: computeFrictionScore });
+    if (summary) closeSession(sessionId, summary, {
+      computeFriction: computeFrictionScore,
+      model,
+      tokenInput,
+      tokenOutput,
+    });
 
     console.error(`[mem:summary] session closed with ${observations.length} observations`);
 
