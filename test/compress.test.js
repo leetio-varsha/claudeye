@@ -208,3 +208,39 @@ describe('Error Extraction', () => {
     assert.equal(extractErrorReason(null), '(no output)');
   });
 });
+
+// ─── Claude binary resolution (regression: claude-code-vm ENOEXEC) ───────
+//
+// The earlier resolver picked up ~/Library/Application Support/Claude/
+// claude-code-vm/<ver>/claude, which is a Linux aarch64 ELF used by the
+// sandbox VM — spawning it on macOS yields ENOEXEC and forced 100% of
+// observations into fallbackCompress. These tests guard against the
+// regression by asserting the resolved path is never inside claude-code-vm.
+
+describe('resolveClaude (regression)', () => {
+  it('never returns a claude-code-vm path', async () => {
+    const { resolveClaude } = await import('../src/compress.js');
+    const bin = resolveClaude();
+    assert.ok(!/claude-code-vm/.test(bin),
+      `resolveClaude() returned ${bin} — must not use claude-code-vm VM binary`);
+  });
+
+  it('honors $CLAUDE_BIN override before other candidates', async () => {
+    // Point CLAUDE_BIN at the test runner itself (node is always executable
+    // on the host). resolveClaude() validates with `--version`, which node
+    // supports, so it should accept this candidate.
+    const prev = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = process.execPath;
+    try {
+      // Re-import via cache-busting query so we re-run the top-level
+      // resolution logic. (The exported `resolveClaude` is pure, so a
+      // direct call is enough — no re-import needed.)
+      const { resolveClaude } = await import('../src/compress.js');
+      const bin = resolveClaude();
+      assert.equal(bin, process.execPath);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = prev;
+    }
+  });
+});
