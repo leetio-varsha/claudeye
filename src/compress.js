@@ -106,11 +106,15 @@ export async function compressObservation({ tool, input, output, project }) {
       tags,
       importance,
       decisionRationale,
+      aiCompressed: true,
     };
   } catch (err) {
     // Fallback: simple rule-based compression
     console.error('[mem:compress] AI failed, using fallback:', err.message);
-    return fallbackCompress(tool, truncatedInput, truncatedOutput);
+    const fb = fallbackCompress(tool, truncatedInput, truncatedOutput);
+    fb.aiCompressed = false;
+    fb.fallbackReason = err.message?.slice(0, 200);
+    return fb;
   }
 }
 
@@ -130,7 +134,7 @@ export async function compressSession({ observations, project }) {
     const prompt = `Summarize this coding session for project "${project}" in 3-5 sentences. Focus on: what was built/fixed, key decisions, any unresolved issues. Be specific.\n\nSession observations:\n${topObs}`;
 
     // Pass prompt via stdin to avoid ARG_MAX limits (#52)
-    return execFileSync('claude', ['--print', '-m', 'haiku', '--max-tokens', '400', '-'], {
+    return execFileSync(CLAUDE_BIN, ['--print', '-m', 'haiku', '--max-tokens', '400', '-'], {
       input: prompt,
       encoding: 'utf8',
       timeout: 30000,
@@ -225,7 +229,7 @@ function fallbackCompress(tool, input, output) {
     if (!tags.includes('error')) tags.push('error');
   }
 
-  return { summary, tags, importance };
+  return { summary, tags, importance, decisionRationale: null };
 }
 
 /**

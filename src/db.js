@@ -198,18 +198,19 @@ export function migrate(db = getDb()) {
 
 // ─── Observations ────────────────────────────────────────────────────────────
 
-export function saveObservation({ sessionId, project, tool, summary, rawInput, rawOutput, tags = [], importance = 0.5, decisionRationale = null }) {
+export function saveObservation({ sessionId, project, tool, summary, rawInput, rawOutput, tags = [], importance = 0.5, decisionRationale = null, durationMs = null }) {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO observations (session_id, project, tool, summary, raw_input, raw_output, tags, importance, decision_rationale)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO observations (session_id, project, tool, summary, raw_input, raw_output, tags, importance, decision_rationale, duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(sessionId, project, tool, summary,
     rawInput?.slice(0, 2000) ?? null,
     rawOutput?.slice(0, 2000) ?? null,
     JSON.stringify(tags),
     importance,
-    decisionRationale
+    decisionRationale,
+    durationMs
   );
   return result.lastInsertRowid;
 }
@@ -231,14 +232,14 @@ export function getObservationsWithEmbeddings(project = null, limit = 500) {
   if (project) {
     return db.prepare(`
       SELECT * FROM (
-        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.created_at, o.project, e.vector
+        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
         FROM observations o JOIN embeddings e ON e.observation_id = o.id
         WHERE o.project = ? AND o.tool != 'git-commit'
         ORDER BY o.created_at DESC LIMIT ?
       )
       UNION ALL
       SELECT * FROM (
-        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.created_at, o.project, e.vector
+        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
         FROM observations o JOIN embeddings e ON e.observation_id = o.id
         WHERE o.project = ? AND o.tool = 'git-commit'
         ORDER BY o.created_at DESC LIMIT ?
@@ -247,14 +248,14 @@ export function getObservationsWithEmbeddings(project = null, limit = 500) {
   }
   return db.prepare(`
     SELECT * FROM (
-      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.created_at, o.project, e.vector
+      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
       FROM observations o JOIN embeddings e ON e.observation_id = o.id
       WHERE o.tool != 'git-commit'
       ORDER BY o.created_at DESC LIMIT ?
     )
     UNION ALL
     SELECT * FROM (
-      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.created_at, o.project, e.vector
+      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
       FROM observations o JOIN embeddings e ON e.observation_id = o.id
       WHERE o.tool = 'git-commit'
       ORDER BY o.created_at DESC LIMIT ?
@@ -266,13 +267,13 @@ export function getRecentObservations(project = null, limit = 10) {
   const db = getDb();
   if (project) {
     return db.prepare(`
-      SELECT id, summary, tool, tags, importance, created_at, project
+      SELECT id, summary, tool, tags, importance, decision_rationale, created_at, project
       FROM observations WHERE project = ?
       ORDER BY importance DESC, created_at DESC LIMIT ?
     `).all(project, limit);
   }
   return db.prepare(`
-    SELECT id, summary, tool, tags, importance, created_at, project
+    SELECT id, summary, tool, tags, importance, decision_rationale, created_at, project
     FROM observations
     ORDER BY importance DESC, created_at DESC LIMIT ?
   `).all(limit);
@@ -286,7 +287,7 @@ export function ftsSearch(query, project = null, limit = 20) {
   const ftsQuery = safe.split(/\s+/).filter(Boolean).join(' OR ');
   if (project) {
     return db.prepare(`
-      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.created_at, o.project,
+      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project,
              bm25(fts_obs) AS fts_score
       FROM fts_obs
       JOIN observations o ON o.id = fts_obs.rowid
@@ -295,7 +296,7 @@ export function ftsSearch(query, project = null, limit = 20) {
     `).all(ftsQuery, project, limit);
   }
   return db.prepare(`
-    SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.created_at, o.project,
+    SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project,
            bm25(fts_obs) AS fts_score
     FROM fts_obs
     JOIN observations o ON o.id = fts_obs.rowid
@@ -306,25 +307,34 @@ export function ftsSearch(query, project = null, limit = 20) {
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
 
-export function upsertSession(id, project) {
+export function upsertSession(id, project, { model = null } = {}) {
   getDb().prepare(`
-    INSERT INTO sessions (id, project) VALUES (?, ?)
-    ON CONFLICT(id) DO UPDATE SET prompt_count = prompt_count + 1
-  `).run(id, project);
+    INSERT INTO sessions (id, project, model) VALUES (?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET prompt_count = prompt_count + 1, model = COALESCE(?, model)
+  `).run(id, project, model, model);
 }
 
-export function closeSession(id, summary, { computeFriction = null } = {}) {
+export function closeSession(id, summary, { computeFriction = null, model = null, tokenInput = null, tokenOutput = null } = {}) {
   const db = getDb();
-  if (computeFriction) {
-    const score = computeFriction(id);
-    db.prepare(`
-      UPDATE sessions SET ended_at = datetime('now'), summary = ?, friction_score = ? WHERE id = ?
-    `).run(summary, score, id);
-  } else {
-    db.prepare(`
-      UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?
-    `).run(summary, id);
-  }
+  const frictionScore = computeFriction ? computeFriction(id) : 0;
+
+  // Compute duration_ms from created_at → now (#81)
+  const session = db.prepare('SELECT created_at FROM sessions WHERE id = ?').get(id);
+  const durationMs = session?.created_at
+    ? Math.max(0, Date.now() - new Date(session.created_at + 'Z').getTime())
+    : null;
+
+  db.prepare(`
+    UPDATE sessions
+    SET ended_at = datetime('now'),
+        summary = ?,
+        friction_score = ?,
+        duration_ms = ?,
+        model = COALESCE(?, model),
+        token_input = COALESCE(?, token_input),
+        token_output = COALESCE(?, token_output)
+    WHERE id = ?
+  `).run(summary, frictionScore, durationMs, model, tokenInput, tokenOutput, id);
 }
 
 // ─── Orphaned session cleanup (#60) ────────────────────────────────────────
