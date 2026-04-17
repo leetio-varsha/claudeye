@@ -62,9 +62,10 @@ claudeye/
 │   ├── advisor.js              # Claude CLI advisor, weekly digest, issue detection
 │   ├── analytics-cli.js        # CLI commands: analytics, advise, rate, digest, patterns, auto-issues
 │   ├── patterns.js             # pattern detection: repeat-fixes, hotspots, time sinks, cross-session
-│   ├── auto-issues.js          # auto-create GitHub issues from pattern findings (#15)
+│   ├── auto-issues.js          # auto-create GitHub issues from pattern findings (#15, #83 local-DB dedup)
 │   ├── automation-advisor.js   # workflow automation recommendations with ROI scoring (#16)
 │   ├── import.js               # Import dispatcher (git implemented, notion/jira stubs)
+│   ├── export.js               # memory export → Markdown (#11)
 │   └── server.js               # Express web viewer, localhost:47777
 │
 ├── scripts/
@@ -73,7 +74,9 @@ claudeye/
 │   ├── backfill-friction.js    # one-time friction score recalculation for old sessions
 │   ├── digest-standalone.js    # self-contained digest generator (bypasses TCC)
 │   ├── digest-scheduler.js     # launchd agent for weekly digest
-│   └── daily-insights.js       # daily anomaly detection (quota, friction, hook health)
+│   ├── daily-insights.js       # daily anomaly detection (quota, friction, hook health)
+│   ├── insights-standalone.js  # TCC-safe daily-insights runner (copied to ~/.claudeye/)
+│   └── insights-scheduler.js   # launchd agent for daily insights (#82)
 │
 └── test/
     ├── db.test.js              # database CRUD + FTS search tests
@@ -82,7 +85,8 @@ claudeye/
     ├── compress.test.js        # noise detection, fallback compression, error extraction
     ├── search.test.js          # normalizeProject, RRF scoring
     ├── embeddings.test.js      # cosineSimilarity, bufToFloat32
-    └── auto-issues.test.js     # deduplication, issue formatting, friction trends
+    ├── auto-issues.test.js     # deduplication, issue formatting, friction trends, local-DB persistence (#83)
+    └── export.test.js          # renderMarkdown + edge cases (#11)
 ```
 
 ---
@@ -208,9 +212,17 @@ claudeye auto-issues --dry-run        # preview auto-created GitHub issues
 claudeye auto-issues                  # create issues from detected patterns
 claudeye backfill-friction            # recalculate friction for old sessions
 claudeye insights                     # daily anomaly detection
+claudeye insights --schedule          # install launchd agent (daily 09:00, #82)
+claudeye insights --status            # scheduler status
+claudeye health                       # self-check (DB, digests, insights freshness)
+
+# Export (#11)
+claudeye export                       # memory → ./claudeye-export-YYYY-MM-DD.md
+claudeye export --project <substring> --since <YYYY-MM-DD> --output <path>
+claudeye export --include-raw --no-git
 
 # Testing
-npm test                              # run all tests (node:test)
+npm test                              # run all tests (node:test) — 95 tests
 ```
 
 ---
@@ -266,7 +278,7 @@ npm test                              # run all tests (node:test)
 ### Phase 4: Import Layer & Integrations (May 2026)
 - [ ] Notion import (#9)
 - [ ] Jira/Linear import (#10)
-- [ ] Memory export as markdown (#11)
+- [x] Memory export as markdown (#11)
 - [ ] Read-first integrations: GitLab, Jira, Slack, Gmail, Sentry (#23)
 
 ### Phase 5: Team Foundation (May-June 2026)

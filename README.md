@@ -142,14 +142,26 @@ claudeye advise --json                        # structured JSON output
 claudeye rate                                 # rate a session 1-5
 claudeye digest                               # latest weekly digest
 claudeye digest --generate                    # generate now
+claudeye insights                             # daily proactive insights
+claudeye insights --schedule                  # install launchd agent (daily 09:00)
+claudeye insights --status                    # scheduler status
+claudeye health                               # self-check (DB, digests, insights freshness)
 
 # Pattern Detection & Automation
 claudeye patterns                             # repeat-fixes, hotspots, time sinks
 claudeye patterns --json                      # structured output
 claudeye automation-advice                    # workflow automation recommendations
 claudeye auto-issues --dry-run                # preview auto-created GitHub issues
-claudeye auto-issues                          # create issues from detected patterns
+claudeye auto-issues                          # create issues from detected patterns (deduped locally + on GH)
 claudeye backfill-friction                    # recalculate friction for old sessions
+
+# Export
+claudeye export                               # memory → ./claudeye-export-YYYY-MM-DD.md
+claudeye export --project ~/code/foo          # filter by project path substring
+claudeye export --since 2026-04-01            # only sessions started on/after date
+claudeye export --output ./snapshot.md        # custom output path
+claudeye export --include-raw                 # include raw tool I/O (verbose)
+claudeye export --no-git                      # skip git-commit observations
 
 # Testing
 npm test                                      # run all tests (node:test)
