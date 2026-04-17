@@ -13,30 +13,44 @@
  */
 
 import { execFileSync, execSync } from 'child_process';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync } from 'fs';
 
-// Resolve claude binary at module load time — hooks run with minimal PATH
-function resolveClaude() {
-  // Dynamic: find latest version under claude-code-vm/
-  let vmBin = null;
-  try {
-    const vmDir = `${process.env.HOME}/Library/Application Support/Claude/claude-code-vm`;
-    const versions = readdirSync(vmDir).sort().reverse();
-    if (versions.length) vmBin = `${vmDir}/${versions[0]}/claude`;
-  } catch {}
-
+// Resolve claude binary at module load time — hooks run with minimal PATH.
+//
+// IMPORTANT: ~/Library/Application Support/Claude/claude-code-vm/<ver>/claude
+// is NOT the user-facing CLI. It is a Linux aarch64 ELF binary used by
+// Claude Code's internal sandbox VM and produces ENOEXEC when spawned on
+// macOS. Using it caused 100% compress fallbacks (observed via hook_errors
+// log 2026-04-17: spawnSync … /claude-code-vm/2.1.111/claude ENOEXEC).
+//
+// Resolution order (first spawnable wins):
+//   1. $CLAUDE_BIN override
+//   2. ~/.local/bin/claude (current default install location, symlinked
+//      to ~/.local/share/claude/versions/<ver>/claude — Mach-O arm64)
+//   3. Homebrew paths
+//   4. `which claude` fallback via minimal PATH
+export function resolveClaude() {
+  const home = process.env.HOME || '';
   const candidates = [
     process.env.CLAUDE_BIN,
-    vmBin,
+    home && `${home}/.local/bin/claude`,
     '/opt/homebrew/bin/claude',
     '/usr/local/bin/claude',
     'claude',
   ].filter(Boolean);
+
   for (const c of candidates) {
     try {
-      if (c === 'claude') { execSync('which claude', { stdio: 'ignore' }); return c; }
-      if (existsSync(c)) return c;
-    } catch {}
+      if (c === 'claude') {
+        execSync('which claude', { stdio: 'ignore' });
+        return c;
+      }
+      if (!existsSync(c)) continue;
+      // Validate spawnability — catches ENOEXEC (wrong arch/OS binary) and
+      // ensures we don't cache a broken path. 2s is plenty for --version.
+      execFileSync(c, ['--version'], { stdio: 'ignore', timeout: 2000 });
+      return c;
+    } catch { /* try next candidate */ }
   }
   return 'claude';
 }
