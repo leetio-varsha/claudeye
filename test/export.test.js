@@ -7,7 +7,14 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { homedir } from 'os';
 import { renderMarkdown } from '../src/export.js';
+
+// Build project paths anchored to the real homedir so _shortProject()
+// replaces the prefix with `~` regardless of OS/user running the tests.
+const HOME = homedir();
+const ALPHA_PROJECT = `${HOME}/projects/alpha`;
+const BETA_PROJECT  = `${HOME}/projects/beta`;
 
 function buildSamplePayload() {
   return {
@@ -25,7 +32,7 @@ function buildSamplePayload() {
       {
         session: {
           id: 'sess-a',
-          project: '/Users/lord/projects/alpha',
+          project: ALPHA_PROJECT,
           started_at: '2026-04-10 10:00:00',
           ended_at:   '2026-04-10 11:30:00',
           summary: 'Fixed auth bug and cleaned up tests.',
@@ -55,7 +62,7 @@ function buildSamplePayload() {
       {
         session: {
           id: 'sess-b',
-          project: '/Users/lord/projects/beta',
+          project: BETA_PROJECT,
           started_at: '2026-04-12 09:00:00',
           ended_at: null,
           summary: null,

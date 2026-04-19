@@ -229,13 +229,30 @@ export function saveObservation({ sessionId, project, tool, summary, rawInput, r
   return result.lastInsertRowid;
 }
 
-export function saveEmbedding(observationId, float32Array) {
+/**
+ * Persist an embedding for an observation.
+ *
+ * @param {number} observationId
+ * @param {Float32Array} float32Array   — vector data
+ * @param {string} [model]              — embedding model name (optional).
+ *                                        If omitted, DB default `text-embedding-3-small` is used,
+ *                                        preserving prior behavior.
+ *                                        Used for multi-provider tracking (#41).
+ */
+export function saveEmbedding(observationId, float32Array, model = null) {
   const db = getDb();
   const buf = Buffer.from(float32Array.buffer);
-  db.prepare(`
-    INSERT OR REPLACE INTO embeddings (observation_id, vector)
-    VALUES (?, ?)
-  `).run(observationId, buf);
+  if (model) {
+    db.prepare(`
+      INSERT OR REPLACE INTO embeddings (observation_id, vector, model)
+      VALUES (?, ?, ?)
+    `).run(observationId, buf, model);
+  } else {
+    db.prepare(`
+      INSERT OR REPLACE INTO embeddings (observation_id, vector)
+      VALUES (?, ?)
+    `).run(observationId, buf);
+  }
 }
 
 export function getObservationsWithEmbeddings(project = null, limit = 500) {

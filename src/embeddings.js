@@ -1,8 +1,18 @@
 /**
- * embeddings.js — Generate and compare embeddings
+ * embeddings.js — Generate and compare embeddings (#41 multi-provider)
  *
- * Uses OpenAI text-embedding-3-small (1536 dims, cheap, fast).
- * Falls back to a simple keyword-hash vector if no API key.
+ * Provider abstraction:
+ *   - OpenAI  (text-embedding-3-small, 1536 dims) — default
+ *   - Voyage  (voyage-3-lite, 512 dims; or voyage-code-3, 1024 dims)
+ *   - Fallback (keyword hash, 128 dims) — no API key required
+ *
+ * Provider selection (in order of precedence):
+ *   1. settings.embedding_provider ("openai" | "voyage" | "fallback")
+ *   2. Auto-detect from available API keys (openai first, then voyage, then fallback)
+ *
+ * Each provider reports its model name so that stored embeddings can be
+ * re-indexed safely when the provider changes (dimension mismatch is
+ * detected in cosineSimilarity).
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -17,32 +27,130 @@ function getSettings() {
   catch { return {}; }
 }
 
-// ─── Embedding config ─────────────────────────────────────────────────────
-
-export function isEmbeddingEnabled() {
-  const s = getSettings();
-  const key = s.openai_api_key || s.openaiApiKey || process.env.OPENAI_API_KEY;
-  return !!key;
-}
-
-// ─── Embedding generation ─────────────────────────────────────────────────
+// ─── Provider registry ────────────────────────────────────────────────────
 
 /**
- * Generate a 1536-dim embedding for the given text.
- * Uses OpenAI text-embedding-3-small. Falls back to keyword hash.
+ * Pick the active embedding provider based on settings and available keys.
+ * Returns an object describing how to embed: { name, model, dims, fn, requiresKey }.
+ *
+ * Exposed so CLI / tests can introspect the current provider without making
+ * an actual API call.
+ */
+export function resolveProvider(settings = getSettings(), env = process.env) {
+  const explicit = (settings.embedding_provider || env.CLAUDEYE_EMBEDDING_PROVIDER || '').toLowerCase();
+  const openaiKey = settings.openai_api_key || settings.openaiApiKey || env.OPENAI_API_KEY;
+  const voyageKey = settings.voyage_api_key || settings.voyageApiKey || env.VOYAGE_API_KEY;
+  const voyageModel = settings.voyage_model || env.VOYAGE_MODEL || 'voyage-3-lite';
+
+  // Explicit override
+  if (explicit === 'openai') {
+    return openaiKey
+      ? openaiProvider(openaiKey)
+      : fallbackProvider('requested openai but no openai_api_key');
+  }
+  if (explicit === 'voyage') {
+    return voyageKey
+      ? voyageProvider(voyageKey, voyageModel)
+      : fallbackProvider('requested voyage but no voyage_api_key');
+  }
+  if (explicit === 'fallback') {
+    return fallbackProvider('explicitly selected');
+  }
+
+  // Auto-detect
+  if (openaiKey) return openaiProvider(openaiKey);
+  if (voyageKey) return voyageProvider(voyageKey, voyageModel);
+  return fallbackProvider('no api key configured');
+}
+
+function openaiProvider(apiKey) {
+  return {
+    name: 'openai',
+    model: 'text-embedding-3-small',
+    dims: 1536,
+    requiresKey: true,
+    reason: null,
+    fn: (text) => embedViaOpenAI(text, apiKey),
+  };
+}
+
+function voyageProvider(apiKey, model) {
+  // Voyage dims: voyage-3-lite=512, voyage-3=1024, voyage-code-3=1024, voyage-large-2=1536
+  const DIMS_BY_MODEL = {
+    'voyage-3-lite': 512,
+    'voyage-3': 1024,
+    'voyage-3.5': 1024,
+    'voyage-3.5-lite': 1024,
+    'voyage-code-3': 1024,
+    'voyage-code-2': 1536,
+    'voyage-large-2': 1536,
+  };
+  return {
+    name: 'voyage',
+    model,
+    dims: DIMS_BY_MODEL[model] ?? 1024,
+    requiresKey: true,
+    reason: null,
+    fn: (text) => embedViaVoyage(text, apiKey, model),
+  };
+}
+
+function fallbackProvider(reason) {
+  return {
+    name: 'fallback',
+    model: 'keyword-hash-128',
+    dims: 128,
+    requiresKey: false,
+    reason,
+    fn: (text) => Promise.resolve(keywordFallbackEmbed(text)),
+  };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────
+
+/**
+ * True iff a real (non-fallback) embedding provider is configured.
+ * Used by reindex / save-hook to decide whether to skip embedding.
+ */
+export function isEmbeddingEnabled() {
+  return resolveProvider().name !== 'fallback';
+}
+
+/**
+ * Name of the currently-active embedding model (e.g. `text-embedding-3-small`).
+ * Useful for logging and for persisting `embeddings.model` in the DB.
+ */
+export function currentEmbeddingModel() {
+  return resolveProvider().model;
+}
+
+/**
+ * Generate an embedding for the given text.
+ * Returns a Float32Array. Dimension depends on the active provider.
  */
 export async function embed(text) {
   const input = text.slice(0, 8000);
-
-  const s = getSettings();
-  const openaiKey = s.openai_api_key || s.openaiApiKey || process.env.OPENAI_API_KEY;
-  if (openaiKey) {
-    return embedViaOpenAI(input, openaiKey);
-  }
-
-  // Fallback: keyword-based pseudo-embedding (128 dims)
-  return keywordFallbackEmbed(input);
+  const provider = resolveProvider();
+  return provider.fn(input);
 }
+
+/**
+ * Like embed(), but also returns provider metadata.
+ * Preferred for code paths that want to persist `model` alongside the vector.
+ */
+export async function embedWithMeta(text) {
+  const input = text.slice(0, 8000);
+  const provider = resolveProvider();
+  const vector = await provider.fn(input);
+  return {
+    vector,
+    model: provider.model,
+    provider: provider.name,
+    dims: vector.length,
+  };
+}
+
+// ─── OpenAI ───────────────────────────────────────────────────────────────
 
 async function embedViaOpenAI(text, apiKey, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -94,6 +202,61 @@ async function embedViaOpenAI(text, apiKey, retries = 3) {
     throw new Error(`[mem:embed] OpenAI ${status}: ${err}`);
   }
 }
+
+// ─── Voyage AI ────────────────────────────────────────────────────────────
+
+async function embedViaVoyage(text, apiKey, model, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    let res;
+    try {
+      res = await fetch('https://api.voyageai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          input: text,
+          input_type: 'document',
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (netErr) {
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+        console.error(`[mem:embed] Voyage network error: ${netErr.message}, retry ${attempt}/${retries} in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw new Error(`[mem:embed] Voyage network error after ${retries} retries: ${netErr.message}`);
+    }
+
+    if (res.ok) {
+      try {
+        const data = await res.json();
+        const emb = data?.data?.[0]?.embedding;
+        if (!emb) throw new Error(`Voyage response missing data[0].embedding`);
+        return new Float32Array(emb);
+      } catch (parseErr) {
+        throw new Error(`[mem:embed] Failed to parse Voyage response: ${parseErr.message}`);
+      }
+    }
+
+    const status = res.status;
+    if ([429, 500, 502, 503, 504].includes(status) && attempt < retries) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+      console.error(`[mem:embed] Voyage ${status}, retry ${attempt}/${retries} in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+
+    const err = await res.text().catch(() => '(unreadable body)');
+    throw new Error(`[mem:embed] Voyage ${status}: ${err}`);
+  }
+}
+
+// ─── Keyword fallback ─────────────────────────────────────────────────────
 
 /**
  * Keyword fallback — 128-dim bag-of-words style vector.

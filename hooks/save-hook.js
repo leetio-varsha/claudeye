@@ -52,7 +52,7 @@ async function main() {
   try {
     const { saveObservation, saveEmbedding, upsertSession, logHookError } = await import(srcDir + 'db.js');
     const { compressObservation }                           = await import(srcDir + 'compress.js');
-    const { embed }                                         = await import(srcDir + 'embeddings.js');
+    const { embedWithMeta }                                 = await import(srcDir + 'embeddings.js');
 
     // Ensure session exists — pass model if available (#81)
     upsertSession(sessionId, project, { model });
@@ -102,8 +102,8 @@ async function main() {
 
     // Generate and store embedding — must await before exit
     try {
-      const vec = await embed(summary);
-      saveEmbedding(obsId, vec);
+      const { vector, model } = await embedWithMeta(summary);
+      saveEmbedding(obsId, vector, model);
     } catch (e) {
       logHookError('save-hook', 'embed_failed', e.message, project);
     }

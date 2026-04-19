@@ -6,7 +6,7 @@
  */
 
 import { getDb, saveEmbedding } from './db.js';
-import { embed, isEmbeddingEnabled } from './embeddings.js';
+import { embedWithMeta, isEmbeddingEnabled } from './embeddings.js';
 
 /**
  * Reindex observations that are missing embeddings or have degraded (non-1536) vectors.
@@ -84,8 +84,8 @@ export async function reindex(opts = {}) {
       }
 
       try {
-        const vec = await embed(obs.summary);
-        saveEmbedding(obs.id, vec);
+        const { vector, model } = await embedWithMeta(obs.summary);
+        saveEmbedding(obs.id, vector, model);
         reindexed++;
       } catch (e) {
         errors++;
