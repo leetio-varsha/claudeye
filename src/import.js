@@ -7,7 +7,7 @@ import { execFileSync } from 'child_process';
 import { getDb, saveObservation, upsertSession, closeSession, saveEmbedding } from './db.js';
 import { computeFrictionScore } from './analytics.js';
 import { compressObservation as compress } from './compress.js';
-import { embed } from './embeddings.js';
+import { embedWithMeta } from './embeddings.js';
 
 function estimateImportance(msg) {
   const m = msg.toLowerCase();
@@ -118,8 +118,8 @@ export async function importGit(repoPath, opts = {}) {
 
     // Generate embedding
     try {
-      const vec = await embed(summary);
-      if (vec) saveEmbedding(obsId, vec);
+      const meta = await embedWithMeta(summary);
+      if (meta?.vector) saveEmbedding(obsId, meta.vector, meta.model);
     } catch {}
 
     imported++;

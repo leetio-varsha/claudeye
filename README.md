@@ -264,9 +264,11 @@ AI compression uses `claude --print` CLI — **no API cost**, uses your
 existing Claude Code subscription.
 
 Embeddings (optional, for semantic search):
-- OpenAI `text-embedding-3-small`
-- ~100 tool events/day → **$0.0003/day**
-- One full year of heavy use → **~$0.10 total**
+- **OpenAI** `text-embedding-3-small` (1536 dims) — default, ~100 tool events/day ≈ **$0.0003/day**, one year ≈ **$0.10 total**
+- **Voyage AI** `voyage-3-lite` (512 dims) / `voyage-code-3` (1024 dims) — alternative provider, ~$0.00002/1K tokens
+- **Keyword fallback** (128 dims) — no key, zero cost, rough similarity only
+
+Select via `settings.embedding_provider` (`openai` | `voyage` | `fallback`) or auto-detect from whichever key is present. See `src/embeddings.js` (#41).
 
 ---
 
@@ -336,7 +338,7 @@ Embeddings (optional, for semantic search):
 - [ ] Team Sync Layer — local SQLite → shared DB, aggregates only (#34) ← #12, #13
 - [ ] Team Roles & Access — dev / tech lead / admin (#35) ← #13
 - [ ] Landing page + pricing (#14)
-- [ ] Multi-provider embeddings: OpenAI + Anthropic/Voyage + fallback (#41)
+- [x] Multi-provider embeddings: OpenAI + Voyage + keyword fallback (#41)
 
 ### Phase 5.5: Team UX (June 2026)
 

@@ -26,7 +26,7 @@ Long-term vision: "Datadog for AI-assisted development." Start personal, grow to
 - **No open ports by default** — viewer is opt-in (`claudeye viewer`), localhost only.
 - **Never block Claude Code** — all hooks exit 0 on failure. Memory failure = silent skip.
 - **Claude CLI only** — use `claude --print` for AI calls. No Anthropic SDK, no API keys for compression/advice. Uses the user's existing Claude Code subscription.
-- **OpenAI embeddings only** — the one external API. `text-embedding-3-small`, 1536 dims. Optional but strongly recommended.
+- **Multi-provider embeddings (#41)** — pluggable provider abstraction (`src/embeddings.js`). Default: OpenAI `text-embedding-3-small` (1536 dims). Optional: Voyage AI (`voyage-3-lite` / `voyage-code-3` / `voyage-large-2`). Keyword-hash fallback (128 dims) when no key is configured. Selection via `settings.embedding_provider` or auto-detect from available keys.
 - **Security first** — settings file mode 0600, no sensitive data in GET responses, localhost-only for viewer.
 
 ---
@@ -55,7 +55,7 @@ claudeye/
 │
 ├── src/
 │   ├── db.js                   # SQLite schema (better-sqlite3), migrations, all DB operations
-│   ├── embeddings.js           # embed(), cosineSimilarity(), bufToFloat32()
+│   ├── embeddings.js           # embed(), embedWithMeta(), resolveProvider(), cosineSimilarity(), bufToFloat32() — multi-provider (#41)
 │   ├── compress.js             # AI compression via claude --print CLI
 │   ├── search.js               # hybridSearch(), buildContext() — RRF fusion
 │   ├── analytics.js            # all analytics computations (pure SQLite)
@@ -85,6 +85,7 @@ claudeye/
     ├── compress.test.js        # noise detection, fallback compression, error extraction
     ├── search.test.js          # normalizeProject, RRF scoring
     ├── embeddings.test.js      # cosineSimilarity, bufToFloat32
+    ├── embeddings-provider.test.js # multi-provider selection, voyage/openai/fallback (#41)
     ├── auto-issues.test.js     # deduplication, issue formatting, friction trends, local-DB persistence (#83)
     └── export.test.js          # renderMarkdown + edge cases (#11)
 ```
@@ -222,7 +223,7 @@ claudeye export --project <substring> --since <YYYY-MM-DD> --output <path>
 claudeye export --include-raw --no-git
 
 # Testing
-npm test                              # run all tests (node:test) — 95 tests
+npm test                              # run all tests (node:test) — 120 tests
 ```
 
 ---
@@ -287,7 +288,7 @@ npm test                              # run all tests (node:test) — 95 tests
 - [ ] Team Sync Layer — local SQLite → shared DB, aggregates only (#34) ← #12, #13
 - [ ] Team Roles & Access — dev / tech lead / admin (#35) ← #13
 - [ ] Landing page + pricing (#14)
-- [ ] Multi-provider embeddings: OpenAI + Anthropic/Voyage + fallback (#41)
+- [x] Multi-provider embeddings: OpenAI + Voyage + keyword fallback (#41)
 
 ### Phase 5.5: Team UX (June 2026)
 - [ ] Team Auto-Setup — `npx claudeye join <token>` (#36) ← #34, #35
