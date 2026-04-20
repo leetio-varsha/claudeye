@@ -12,10 +12,39 @@
  */
 
 import { createRequire } from 'module';
-import { spawnSync } from 'child_process';
+import { spawnSync, execFileSync, execSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+
+// Resolve claude binary the same way src/compress.js does — avoids the
+// hardcoded-'claude' bug that caused #85 in the hook path. Without this,
+// launchd-spawned digests can fail silently when `claude` is not on PATH.
+function resolveClaude() {
+  const home = homedir();
+  const candidates = [
+    process.env.CLAUDE_BIN,
+    `${home}/.claude/local/claude`,
+    `${home}/.local/bin/claude`,
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+    'claude',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      if (c === 'claude') {
+        execSync('which claude', { stdio: 'ignore' });
+        return c;
+      }
+      if (!existsSync(c)) continue;
+      execFileSync(c, ['--version'], { stdio: 'ignore', timeout: 5000 });
+      return c;
+    } catch { /* try next */ }
+  }
+  return 'claude';
+}
+const CLAUDE_BIN = resolveClaude();
 
 // Use better-sqlite3 from ~/.claudeye/node_modules/ (avoids TCC on ~/Documents)
 const _require = createRequire(join(homedir(), '.claudeye', 'package.json'));
@@ -163,7 +192,7 @@ async function generateDigest() {
   const userPrompt = `Analyze my Claude Code usage for the last 7 days.\n\nDATA:\n${JSON.stringify(stats, null, 2)}`;
   const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
 
-  const result = spawnSync('claude', ['--print', '-'], {
+  const result = spawnSync(CLAUDE_BIN, ['--print', '-'], {
     input: fullPrompt,
     encoding: 'utf8',
     timeout: 120_000,

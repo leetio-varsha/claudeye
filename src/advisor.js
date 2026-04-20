@@ -11,6 +11,12 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { buildAdvisorPayload } from './analytics.js';
 import { getDb } from './db.js';
+import { resolveClaude } from './compress.js';
+
+// Same #85 root cause: hardcoded 'claude' fails when hooks run with a
+// minimal PATH or the user installs via ~/.claude/local. Reuse the hardened
+// resolver so advisor/digest paths don't regress independently.
+const CLAUDE_BIN = resolveClaude();
 
 const DATA_DIR = join(homedir(), '.claudeye');
 
@@ -100,7 +106,7 @@ ${JSON.stringify(stats, null, 2)}`;
 
   if (stream && format !== 'json') {
     // Stream directly to terminal via claude CLI
-    const result = spawnSync('claude', [
+    const result = spawnSync(CLAUDE_BIN, [
       '--print', '-',
     ], {
       input: fullPrompt,
@@ -115,7 +121,7 @@ ${JSON.stringify(stats, null, 2)}`;
     return null; // output already streamed
   } else {
     // Return as string (for digest storage) or JSON
-    const result = spawnSync('claude', [
+    const result = spawnSync(CLAUDE_BIN, [
       '--print', '-',
     ], {
       input: fullPrompt,

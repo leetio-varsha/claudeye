@@ -243,4 +243,28 @@ describe('resolveClaude (regression)', () => {
       else process.env.CLAUDE_BIN = prev;
     }
   });
+
+  it('skips unspawnable candidates instead of returning them', async () => {
+    // Point CLAUDE_BIN at a file that exists but cannot be exec'd
+    // (a text file). resolveClaude() must fall through rather than
+    // returning the broken path and causing spawn failures in compress.
+    const { writeFileSync, mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'claudeye-'));
+    const broken = join(dir, 'claude');
+    writeFileSync(broken, '#!/nonexistent/shell\necho broken\n', { mode: 0o755 });
+
+    const prev = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = broken;
+    try {
+      const { resolveClaude } = await import('../src/compress.js');
+      const bin = resolveClaude();
+      assert.notEqual(bin, broken,
+        `resolveClaude() returned ${bin} — broken CLAUDE_BIN must be rejected`);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = prev;
+    }
+  });
 });

@@ -9,6 +9,10 @@ import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { getDb } from '../src/db.js';
+import { resolveClaude } from '../src/compress.js';
+
+// Reuse the hardened resolver from src/compress.js — same #85 root cause.
+const CLAUDE_BIN = resolveClaude();
 
 const SYSTEM_PROMPT = `You are a CLAUDE.md generator. Given observations from a developer's Claude Code sessions, generate useful additions for the project's CLAUDE.md file.
 
@@ -124,7 +128,7 @@ ${context.sessions.length ? `RECENT SESSIONS:\n${context.sessions.map(s => `- ${
 
   const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
 
-  const result = spawnSync('claude', ['--print', '-'], {
+  const result = spawnSync(CLAUDE_BIN, ['--print', '-'], {
     input: fullPrompt,
     encoding: 'utf8',
     timeout: 120_000,

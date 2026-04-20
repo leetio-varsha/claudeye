@@ -25,30 +25,47 @@ import { existsSync } from 'fs';
 //
 // Resolution order (first spawnable wins):
 //   1. $CLAUDE_BIN override
-//   2. ~/.local/bin/claude (current default install location, symlinked
+//   2. ~/.claude/local/claude (Claude Code's "local install" wrapper)
+//   3. ~/.local/bin/claude (current default install location, symlinked
 //      to ~/.local/share/claude/versions/<ver>/claude — Mach-O arm64)
-//   3. Homebrew paths
-//   4. `which claude` fallback via minimal PATH
+//   4. Homebrew paths
+//   5. `which claude` fallback via augmented PATH
+//
+// Each candidate is spawned with --version (5s timeout) to catch ENOEXEC,
+// missing dylibs, and wrong-arch binaries that existsSync cannot detect.
 export function resolveClaude() {
   const home = process.env.HOME || '';
   const candidates = [
     process.env.CLAUDE_BIN,
+    home && `${home}/.claude/local/claude`,
     home && `${home}/.local/bin/claude`,
     '/opt/homebrew/bin/claude',
     '/usr/local/bin/claude',
+    '/usr/bin/claude',
     'claude',
   ].filter(Boolean);
 
   for (const c of candidates) {
     try {
       if (c === 'claude') {
-        execSync('which claude', { stdio: 'ignore' });
+        // Augment PATH so `which` sees user-local installs even when
+        // Claude Code invoked the hook with a minimal PATH.
+        const augmentedPath = [
+          process.env.PATH || '',
+          home && `${home}/.claude/local`,
+          home && `${home}/.local/bin`,
+          '/opt/homebrew/bin',
+          '/usr/local/bin',
+          '/usr/bin',
+        ].filter(Boolean).join(':');
+        execSync('which claude', { stdio: 'ignore', env: { ...process.env, PATH: augmentedPath } });
         return c;
       }
       if (!existsSync(c)) continue;
-      // Validate spawnability — catches ENOEXEC (wrong arch/OS binary) and
-      // ensures we don't cache a broken path. 2s is plenty for --version.
-      execFileSync(c, ['--version'], { stdio: 'ignore', timeout: 2000 });
+      // Validate spawnability — catches ENOEXEC (wrong arch/OS binary),
+      // missing dylibs, and broken symlinks that existsSync cannot see.
+      // 5s covers slow cold-starts; still short enough to not hang hooks.
+      execFileSync(c, ['--version'], { stdio: 'ignore', timeout: 5000 });
       return c;
     } catch { /* try next candidate */ }
   }
@@ -123,11 +140,14 @@ export async function compressObservation({ tool, input, output, project }) {
       aiCompressed: true,
     };
   } catch (err) {
-    // Fallback: simple rule-based compression
-    console.error('[mem:compress] AI failed, using fallback:', err.message);
+    // Fallback: simple rule-based compression. Include CLAUDE_BIN in the
+    // reason so hook_errors row surfaces the exact binary we tried — makes
+    // the "fix landed, fallbacks still growing" debugging loop tractable.
+    const reason = `[${CLAUDE_BIN}] ${err.code || ''} ${err.message || ''}`.trim();
+    console.error('[mem:compress] AI failed, using fallback:', reason);
     const fb = fallbackCompress(tool, truncatedInput, truncatedOutput);
     fb.aiCompressed = false;
-    fb.fallbackReason = err.message?.slice(0, 200);
+    fb.fallbackReason = reason.slice(0, 200);
     return fb;
   }
 }
