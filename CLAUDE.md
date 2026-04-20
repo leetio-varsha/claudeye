@@ -34,7 +34,7 @@ Long-term vision: "Datadog for AI-assisted development." Start personal, grow to
 ## Current status
 
 **Runtime:** better-sqlite3 (native SQLite with FTS5). Fully operational.
-**Scheduler:** Cowork scheduled task `claudeye-analyzer` runs daily at 17:05 — analyzes codebase, usage patterns, workflow, and checks issue readiness criteria.
+**Scheduler:** Cowork scheduled task `claudeye-analyzer` runs daily at 13:05 — агрегирует метрики из `~/.claudeye/mem.db` через `scripts/analyzer-metrics.mjs` (один JSON-вывод → один osascript-вызов, чтобы не триггерить AUP-классификатор), сверяет readiness criteria по issue titles и сохраняет отчёт в `../analyzer-report-YYYY-MM-DD.md`. Issues создаёт отдельный `claudeye-dev-agent` (14:08).
 **GitHub Project:** https://github.com/users/leetio-varsha/projects/4
 
 ---

@@ -52,15 +52,20 @@ async function main() {
       process.exit(0);
     }
 
-    const summary = await compressSession({ observations, project });
-    if (summary) closeSession(sessionId, summary, {
+    // Always close the session, even if AI summary fails — otherwise #81
+    // tracking fields (model/token_input/token_output/duration_ms) are
+    // never written, leaving sessions table NULL across the board.
+    // Fallback summary preserves countability without losing telemetry.
+    const aiSummary = await compressSession({ observations, project });
+    const summary = aiSummary || `[fallback] Session with ${observations.length} observations in ${project}.`;
+    closeSession(sessionId, summary, {
       computeFriction: computeFrictionScore,
       model,
       tokenInput,
       tokenOutput,
     });
 
-    console.error(`[mem:summary] session closed with ${observations.length} observations`);
+    console.error(`[mem:summary] session closed with ${observations.length} observations${aiSummary ? '' : ' (fallback summary)'}`);
 
     // ── Weekly digest auto-trigger (#79) ──────────────────────
     // Check if digest for current week exists; if not, generate it.
