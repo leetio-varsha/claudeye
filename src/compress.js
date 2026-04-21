@@ -112,7 +112,8 @@ export async function compressObservation({ tool, input, output, project }) {
     const prompt = `${SYSTEM_PROMPT}\n\n${userMsg}`;
 
     // Pass prompt via stdin to avoid ARG_MAX limits on large tool outputs (#52)
-    const text = execFileSync(CLAUDE_BIN, ['--print', '-m', 'haiku', '--max-tokens', '300', '-'], {
+    // Claude Code 2.1.x removed `-m` (use `--model`) and `--max-tokens` entirely.
+    const text = execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '-'], {
       input: prompt,
       encoding: 'utf8',
       timeout: 30000,
@@ -168,7 +169,8 @@ export async function compressSession({ observations, project }) {
     const prompt = `Summarize this coding session for project "${project}" in 3-5 sentences. Focus on: what was built/fixed, key decisions, any unresolved issues. Be specific.\n\nSession observations:\n${topObs}`;
 
     // Pass prompt via stdin to avoid ARG_MAX limits (#52)
-    return execFileSync(CLAUDE_BIN, ['--print', '-m', 'haiku', '--max-tokens', '400', '-'], {
+    // Claude Code 2.1.x removed `-m` (use `--model`) and `--max-tokens` entirely.
+    return execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '-'], {
       input: prompt,
       encoding: 'utf8',
       timeout: 30000,
