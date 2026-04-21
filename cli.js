@@ -182,8 +182,8 @@ program.command('health')
       const embCoverage = metrics.obsCount > 0 ? Math.round(metrics.embCount / metrics.obsCount * 100) : 0;
       const gitPct = metrics.obsCount > 0 ? Math.round(metrics.gitCommitCount / metrics.obsCount * 100) : 0;
       let sizeAdvice = '';
-      if (sizeCrit) sizeAdvice = ` 🔴 >200MB — run ${chalk.red('claudeye cleanup')} urgently`;
-      else if (sizeWarn) sizeAdvice = ` ⚠️  >100MB — run ${chalk.yellow('claudeye cleanup')} or auto-cleanup will trigger`;
+      if (sizeCrit) sizeAdvice = ` 🔴 >200MB — run ${chalk.red('claudeye archive')} to move old obs to archive.db`;
+      else if (sizeWarn) sizeAdvice = ` ⚠️  >100MB — run ${chalk.yellow('claudeye archive --dry-run')} to see what can be archived`;
       const effCov = metrics.effectiveCoverage;
       const embCovWarn = effCov < 80;
       checks.push({
@@ -590,6 +590,60 @@ program.command('compact')
       getDb().exec('VACUUM');
       const after = getDbMetrics();
       vacSpinner.succeed(`VACUUM done. DB size: ${chalk.cyan(before.fileSizeMB + 'MB')} → ${chalk.green(after.fileSizeMB + 'MB')}`);
+    }
+    console.log('');
+  });
+
+// ─── archive (#30) ────────────────────────────────────────────────────────
+
+program.command('archive')
+  .description('Move old low/medium importance observations to archive.db (hot/cold split)')
+  .option('--days <n>', 'Archive observations older than N days (default 14)', '14')
+  .option('--keep-importance <n>', 'Keep observations with importance >= N in hot DB (default 0.7)', '0.7')
+  .option('--dry-run', 'Show what would be archived without making changes')
+  .option('--no-vacuum', 'Skip VACUUM after archiving (faster, does not reclaim disk space)')
+  .action(async (opts) => {
+    const { archiveObservations, getDbMetrics, ARCHIVE_PATH } = await import('./src/db.js');
+    const ora = (await import('ora')).default;
+
+    const olderThanDays  = parseInt(opts.days, 10);
+    const keepImportance = parseFloat(opts.keepImportance);
+
+    if (isNaN(olderThanDays) || olderThanDays < 1) {
+      console.error(chalk.red('  --days must be a positive integer')); process.exit(1);
+    }
+    if (isNaN(keepImportance) || keepImportance < 0 || keepImportance > 1) {
+      console.error(chalk.red('  --keep-importance must be 0.0–1.0')); process.exit(1);
+    }
+
+    const before = getDbMetrics();
+    console.log(chalk.bold('\n  Claudeye Archive (hot/cold split)\n'));
+    console.log(`  Hot DB: ${chalk.cyan(before.fileSizeMB + 'MB')} | ${chalk.cyan(before.obsCount)} observations`);
+    console.log(`  Archive: ${chalk.gray(ARCHIVE_PATH)}\n`);
+    console.log(`  Policy: observations older than ${chalk.yellow(olderThanDays + 'd')} with importance < ${chalk.yellow(keepImportance)} → archive.db`);
+    console.log(`  Keeping: importance >= ${chalk.green(keepImportance)} and all observations < ${chalk.green(olderThanDays + 'd')} old in hot DB\n`);
+
+    if (opts.dryRun) {
+      const result = archiveObservations({ olderThanDays, keepImportance, dryRun: true });
+      if (result.archived === 0) {
+        console.log(chalk.green('  Nothing to archive — hot DB is within policy.\n'));
+      } else {
+        console.log(chalk.yellow(`  Would archive ${chalk.bold(result.archived)} observations to archive.db.\n`));
+      }
+      return;
+    }
+
+    const spinner = ora('Archiving observations...').start();
+    const result = archiveObservations({ olderThanDays, keepImportance, vacuum: opts.vacuum !== false });
+
+    if (result.archived === 0) {
+      spinner.succeed('Nothing to archive — hot DB is within policy.');
+    } else {
+      const freedStr = result.freedMB != null ? chalk.green(` | Freed: ~${result.freedMB}MB`) : '';
+      spinner.succeed(`Archived ${chalk.green(result.archived)} observations.${freedStr}`);
+      const after = getDbMetrics();
+      console.log(`\n  Hot DB: ${chalk.cyan(before.fileSizeMB + 'MB')} → ${chalk.green(after.fileSizeMB + 'MB')} | ${before.obsCount} → ${chalk.green(after.obsCount)} observations`);
+      console.log(`  Archive: ${chalk.gray(result.archivePath)}`);
     }
     console.log('');
   });

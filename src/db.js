@@ -15,6 +15,8 @@ import { join } from 'path';
 
 const DATA_DIR = join(homedir(), '.claudeye');
 const DB_PATH  = join(DATA_DIR, 'mem.db');
+export const ARCHIVE_PATH = join(DATA_DIR, 'archive.db');
+export { DB_PATH, DATA_DIR };
 
 let _db = null;
 
@@ -956,6 +958,127 @@ export function autoCleanup({ maxSizeMB = 100 } = {}) {
   }
 
   return { ran: true, compact: compactResult, cleanup: cleanupResult, vacuumed };
+}
+
+// ─── Hot/Cold archive (#30) ─────────────────────────────────────────────────
+
+/**
+ * Archive old low/medium importance observations to archive.db (Étape 2 hot/cold split).
+ *
+ * Policy:
+ *  - Observations older than `olderThanDays` with importance < `keepImportance`
+ *    are moved from mem.db (hot) → archive.db (cold).
+ *  - High-importance and decisions stay in hot DB regardless of age.
+ *  - Embeddings are migrated alongside observations.
+ *  - hot DB is VACUUMed after migration to reclaim disk space.
+ *
+ * @param {object} opts
+ * @param {number}  opts.olderThanDays   — cutoff in days (default 14)
+ * @param {number}  opts.keepImportance  — min importance to keep in hot (default 0.7)
+ * @param {boolean} opts.dryRun          — count without migrating (default false)
+ * @param {boolean} opts.vacuum          — VACUUM hot DB after migration (default true)
+ * @returns {{ archived: number, archivePath: string, dryRun: boolean, freedMB?: number }}
+ */
+export function archiveObservations({
+  olderThanDays  = 14,
+  keepImportance = 0.7,
+  dryRun         = false,
+  vacuum         = true,
+} = {}) {
+  const db = getDb();
+
+  // Compute cutoff timestamp in JS to avoid SQLite datetime modifier quoting issues
+  const cutoff = new Date(Date.now() - olderThanDays * 86_400_000)
+    .toISOString().replace('T', ' ').slice(0, 19);
+
+  const candidateCount = db.prepare(`
+    SELECT COUNT(*) as n FROM observations
+    WHERE created_at < ? AND importance < ?
+  `).get(cutoff, keepImportance).n;
+
+  if (candidateCount === 0) return { archived: 0, archivePath: ARCHIVE_PATH, dryRun };
+  if (dryRun) return { archived: candidateCount, archivePath: ARCHIVE_PATH, dryRun: true };
+
+  const sizeBefore = (() => { try { return statSync(DB_PATH).size; } catch { return 0; } })();
+
+  // Bootstrap archive.db schema via ATTACH (single connection = no locking issues)
+  db.exec(`ATTACH DATABASE '${ARCHIVE_PATH}' AS archive`);
+
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS archive.sessions (
+        id           TEXT    PRIMARY KEY,
+        project      TEXT    NOT NULL,
+        started_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        ended_at     TEXT,
+        summary      TEXT,
+        prompt_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS archive.observations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT    NOT NULL,
+        project     TEXT    NOT NULL,
+        tool        TEXT    NOT NULL,
+        summary     TEXT    NOT NULL,
+        raw_input   TEXT,
+        raw_output  TEXT,
+        tags        TEXT    NOT NULL DEFAULT '[]',
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+        importance  REAL    NOT NULL DEFAULT 0.5
+      );
+      CREATE TABLE IF NOT EXISTS archive.embeddings (
+        observation_id INTEGER PRIMARY KEY,
+        vector         BLOB    NOT NULL,
+        model          TEXT    NOT NULL DEFAULT 'text-embedding-3-small',
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
+    const migrate = db.transaction(() => {
+      // 1. Copy referenced sessions (ignore if already archived)
+      db.prepare(`
+        INSERT OR IGNORE INTO archive.sessions
+        SELECT * FROM sessions WHERE id IN (
+          SELECT DISTINCT session_id FROM observations
+          WHERE created_at < ? AND importance < ?
+        )
+      `).run(cutoff, keepImportance);
+
+      // 2. Copy embeddings
+      db.prepare(`
+        INSERT OR IGNORE INTO archive.embeddings
+        SELECT * FROM embeddings WHERE observation_id IN (
+          SELECT id FROM observations WHERE created_at < ? AND importance < ?
+        )
+      `).run(cutoff, keepImportance);
+
+      // 3. Copy observations
+      db.prepare(`
+        INSERT OR IGNORE INTO archive.observations
+        SELECT * FROM observations WHERE created_at < ? AND importance < ?
+      `).run(cutoff, keepImportance);
+
+      // 4. Delete from hot DB (FK cascade removes embeddings; FTS triggers fire)
+      db.prepare(`
+        DELETE FROM observations WHERE created_at < ? AND importance < ?
+      `).run(cutoff, keepImportance);
+    });
+
+    migrate();
+  } finally {
+    db.exec('DETACH DATABASE archive');
+  }
+
+  let freedMB;
+  if (vacuum) {
+    try {
+      db.exec('VACUUM');
+      const sizeAfter = (() => { try { return statSync(DB_PATH).size; } catch { return 0; } })();
+      freedMB = +((sizeBefore - sizeAfter) / 1024 / 1024).toFixed(1);
+    } catch { /* non-critical */ }
+  }
+
+  return { archived: candidateCount, archivePath: ARCHIVE_PATH, dryRun: false, freedMB };
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
