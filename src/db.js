@@ -1001,40 +1001,25 @@ export function archiveObservations({
 
   const sizeBefore = (() => { try { return statSync(DB_PATH).size; } catch { return 0; } })();
 
-  // Bootstrap archive.db schema via ATTACH (single connection = no locking issues)
+  // Step 1: Initialize archive.db with the FULL schema by opening it as a
+  // separate Database instance and running the same migrations. This avoids
+  // the "N columns but M values were supplied" error that happens when the
+  // hot DB has extra columns added via ALTER TABLE migrations.
+  {
+    const archiveDb = new Database(ARCHIVE_PATH);
+    archiveDb.pragma('journal_mode = WAL');
+    archiveDb.pragma('foreign_keys = ON');
+    migrate(archiveDb);
+    _migrateAnalytics(archiveDb);
+    archiveDb.close();
+  }
+
+  // Step 2: ATTACH archive.db and move data in a single transaction.
+  // Both DBs now have identical schemas, so SELECT * works safely.
   db.exec(`ATTACH DATABASE '${ARCHIVE_PATH}' AS archive`);
 
   try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS archive.sessions (
-        id           TEXT    PRIMARY KEY,
-        project      TEXT    NOT NULL,
-        started_at   TEXT    NOT NULL DEFAULT (datetime('now')),
-        ended_at     TEXT,
-        summary      TEXT,
-        prompt_count INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS archive.observations (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id  TEXT    NOT NULL,
-        project     TEXT    NOT NULL,
-        tool        TEXT    NOT NULL,
-        summary     TEXT    NOT NULL,
-        raw_input   TEXT,
-        raw_output  TEXT,
-        tags        TEXT    NOT NULL DEFAULT '[]',
-        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-        importance  REAL    NOT NULL DEFAULT 0.5
-      );
-      CREATE TABLE IF NOT EXISTS archive.embeddings (
-        observation_id INTEGER PRIMARY KEY,
-        vector         BLOB    NOT NULL,
-        model          TEXT    NOT NULL DEFAULT 'text-embedding-3-small',
-        created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
-      );
-    `);
-
-    const migrate = db.transaction(() => {
+    const doMigrate = db.transaction(() => {
       // 1. Copy referenced sessions (ignore if already archived)
       db.prepare(`
         INSERT OR IGNORE INTO archive.sessions
@@ -1064,7 +1049,7 @@ export function archiveObservations({
       `).run(cutoff, keepImportance);
     });
 
-    migrate();
+    doMigrate();
   } finally {
     db.exec('DETACH DATABASE archive');
   }
