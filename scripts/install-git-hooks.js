@@ -14,6 +14,10 @@ import chalk from 'chalk';
 
 const HOOK_SCRIPT_PATH = resolve(new URL('../hooks/git-post-commit.js', import.meta.url).pathname);
 
+// Use the absolute path to the current node binary so the hook works when git
+// is invoked from GUI tools (VS Code, Sourcetree, etc.) with a minimal PATH.
+const NODE_BIN = process.execPath;
+
 // Marker comments to identify our hook section
 const MARKER_START = '# >>> claudeye post-commit hook';
 const MARKER_END   = '# <<< claudeye post-commit hook';
@@ -49,7 +53,7 @@ export async function installGitHooks(repoPath) {
   const hookFile = join(hooksDir, 'post-commit');
   const hookBlock = [
     MARKER_START,
-    `node "${HOOK_SCRIPT_PATH}" &`,
+    `"${NODE_BIN}" "${HOOK_SCRIPT_PATH}" &`,
     MARKER_END,
   ].join('\n');
 
