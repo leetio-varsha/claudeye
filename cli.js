@@ -685,36 +685,81 @@ program.command('clear')
 // ─── import ───────────────────────────────────────────────────────────────
 program.command('import')
   .description('Import history from external sources')
-  .argument('<source>', 'Source type: git')
-  .option('-p, --path <path>', 'Repository path', process.cwd())
-  .option('--since <date>', 'Only import commits since date')
-  .option('-n, --limit <n>', 'Max commits to import')
+  .argument('<source>', 'Source type: git | notion')
+  .option('-p, --path <path>', 'Repository path (git)', process.cwd())
+  .option('--since <date>', 'Only import commits since date (git)')
+  .option('-n, --limit <n>', 'Max commits to import (git)')
   .option('--skip-ai', 'Skip AI compression (faster, less rich)')
+  .option('--token <token>', 'API token (notion: integration token, or set NOTION_API_KEY env)')
+  .option('--database-only', 'Import only database rows (notion)')
+  .option('--pages-only', 'Import only standalone pages (notion)')
+  .option('--project <label>', 'Project label for imported observations (notion)', 'notion')
   .action(async (source, opts) => {
-    if (source !== 'git') {
-      console.log(chalk.red(`
-  Unknown source: ${source}. Supported: git
-`));
+    const ora = (await import('ora')).default;
+
+    // ── git ──────────────────────────────────────────────────────────
+    if (source === 'git') {
+      const { importGit } = await import('./src/import.js');
+      const repoPath = opts.path;
+      const spinner = ora(`Importing git history from ${repoPath}...`).start();
+      try {
+        const result = await importGit(repoPath, {
+          since: opts.since || null,
+          limit: opts.limit ? parseInt(opts.limit) : null,
+          skipAi: opts.skipAi || false,
+        });
+        if (result.error) {
+          spinner.warn(result.error);
+        } else {
+          spinner.succeed(`Imported ${result.imported} commits (${result.skipped} skipped) from ${result.total} total`);
+        }
+      } catch (err) {
+        spinner.fail(err.message);
+      }
       return;
     }
-    const { importGit } = await import('./src/import.js');
-    const ora = (await import('ora')).default;
-    const repoPath = opts.path;
-    const spinner = ora(`Importing git history from ${repoPath}...`).start();
-    try {
-      const result = await importGit(repoPath, {
-        since: opts.since || null,
-        limit: opts.limit ? parseInt(opts.limit) : null,
-        skipAi: opts.skipAi || false,
-      });
-      if (result.error) {
-        spinner.warn(result.error);
-      } else {
-        spinner.succeed(`Imported ${result.imported} commits (${result.skipped} skipped) from ${result.total} total`);
+
+    // ── notion ───────────────────────────────────────────────────────
+    if (source === 'notion') {
+      const token = opts.token || process.env.NOTION_API_KEY;
+      if (!token) {
+        console.log(chalk.red(`
+  Notion integration token required.
+  Pass --token <token> or set NOTION_API_KEY environment variable.
+
+  To create a token: https://www.notion.so/my-integrations
+  Then share the pages/databases you want to import with your integration.
+`));
+        return;
       }
-    } catch (err) {
-      spinner.fail(err.message);
+
+      const { importNotion } = await import('./src/import-notion.js');
+      const spinner = ora('Connecting to Notion API...').start();
+      let lastMsg = '';
+      try {
+        const result = await importNotion(token, {
+          skipAi:       opts.skipAi       || false,
+          databaseOnly: opts.databaseOnly || false,
+          pagesOnly:    opts.pagesOnly    || false,
+          project:      opts.project,
+          onProgress: ({ done, total }) => {
+            const msg = `Importing Notion content... ${done}/${total}`;
+            if (msg !== lastMsg) { spinner.text = msg; lastMsg = msg; }
+          },
+        });
+        spinner.succeed(
+          `Notion import complete: ${result.imported} items imported, ` +
+          `${result.skipped} skipped, ${result.errors} errors (${result.total} accessible total)`
+        );
+      } catch (err) {
+        spinner.fail(`Notion import failed: ${err.message}`);
+      }
+      return;
     }
+
+    console.log(chalk.red(`
+  Unknown source: ${source}. Supported: git | notion
+`));
   });
 
 // ─── reindex ─────────────────────────────────────────────────────────────
