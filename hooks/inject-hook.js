@@ -27,28 +27,60 @@ const HANDOFF_PROMPT_COUNT = 200; // strong recommendation + handoff context
  */
 function buildSessionHandoff(db, sessionId, project) {
   try {
+    // (#87 fix) Read session age from actual observation timestamps, not just
+    // prompt_count. Reason: users keep Claude Code open across days, one
+    // session_id can span 5+ days with stale context. session.started_at +
+    // MAX(o.created_at) gives the true active window.
     const session = db.prepare(
       'SELECT prompt_count, started_at FROM sessions WHERE id = ?'
     ).get(sessionId);
 
-    if (!session || session.prompt_count < WARN_PROMPT_COUNT) return null;
+    if (!session) return null;
 
     const promptCount = session.prompt_count;
-    const isHandoff = promptCount >= HANDOFF_PROMPT_COUNT;
-    const lines = [];
+    const ageInfo = db.prepare(`
+      SELECT
+        (julianday('now') - julianday(?))              AS total_days_since_start,
+        (SELECT julianday('now') - julianday(MIN(created_at))
+         FROM observations WHERE session_id = ?)       AS active_days_since_first_obs
+    `).get(session.started_at, sessionId) || {};
+    const activeDays = ageInfo.active_days_since_first_obs || ageInfo.total_days_since_start || 0;
 
+    // Triggers: long by prompts OR long by wall-clock days
+    const SESSION_STALE_DAYS = 1;    // 🟡 session active > 24h
+    const SESSION_FORCE_DAYS = 3;    // 🔴 session active > 3 days = force handoff
+
+    const isLongByPrompts = promptCount >= HANDOFF_PROMPT_COUNT;
+    const isWarnByPrompts = promptCount >= WARN_PROMPT_COUNT;
+    const isLongByAge     = activeDays >= SESSION_FORCE_DAYS;
+    const isWarnByAge     = activeDays >= SESSION_STALE_DAYS;
+
+    if (!isWarnByPrompts && !isWarnByAge) return null;
+
+    const isHandoff = isLongByPrompts || isLongByAge;
+    const lines = [];
     lines.push('<!-- claudeye: session length warning -->');
 
+    const ageStr = activeDays >= 1 ? ` · активна ${activeDays.toFixed(1)}d` : '';
+
     if (isHandoff) {
-      lines.push(`## ⚠️ Длинная сессия: ${promptCount} промптов`);
+      lines.push(`## ⚠️ Длинная сессия: ${promptCount} промптов${ageStr}`);
       lines.push('');
-      lines.push('Эта сессия очень длинная. Контекстное окно заполнено, каждый запрос тратит значительно больше токенов. **Рекомендуется начать новую сессию.**');
+      if (isLongByAge && !isLongByPrompts) {
+        lines.push(`Эта сессия активна уже ${activeDays.toFixed(1)} дней. Контекст накапливает устаревшие инструкции из разных задач, каждый запрос тянет за собой мусор предыдущих дней. **Рекомендуется начать новую сессию.**`);
+      } else {
+        lines.push('Эта сессия очень длинная. Контекстное окно заполнено, каждый запрос тратит значительно больше токенов. **Рекомендуется начать новую сессию.**');
+      }
       lines.push('');
       lines.push('Claudeye inject-hook автоматически подхватит контекст в новой сессии.');
     } else {
-      lines.push(`## ℹ️ Сессия: ${promptCount} промптов`);
+      lines.push(`## ℹ️ Сессия: ${promptCount} промптов${ageStr}`);
       lines.push('');
-      lines.push('Сессия становится длинной. Если задача позволяет — рассмотрите начало новой сессии для экономии квоты.');
+      if (isWarnByAge && !isWarnByPrompts) {
+        lines.push(`Сессия держится уже больше суток. Если переключался между разными задачами — рассмотри свежую сессию для чистого контекста.`);
+      } else {
+        lines.push('Сессия становится длинной. Если задача позволяет — рассмотрите начало новой сессии для экономии квоты.');
+      }
     }
 
     // Build handoff: recent high-importance observations from this session

@@ -27,31 +27,51 @@ const MCP_TOOL_PREFIX = 'mcp__';
 export function getGlobalStats() {
   const db = getDb();
 
-  const overview = db.prepare(`
+  // Session-level aggregates — MUST NOT JOIN observations because JOIN
+  // multiplies rows per observation and inflates AVG/SUM over session columns.
+  // Bug history: "monorepo avg 51h" finding in #87 came from JOIN-multiplier.
+  const sessionOverview = db.prepare(`
     SELECT
-      COUNT(DISTINCT s.id)             AS total_sessions,
-      COUNT(o.id)                      AS total_observations,
-      COUNT(DISTINCT s.project)        AS total_projects,
-      AVG(s.friction_score)            AS avg_friction,
-      SUM(s.token_input + COALESCE(s.token_output, 0)) AS total_tokens,
-      AVG(s.duration_ms) / 60000.0    AS avg_session_min
-    FROM sessions s
-    LEFT JOIN observations o ON o.session_id = s.id AND ${NOT_IMPORT_TOOL}
+      COUNT(*)                                        AS total_sessions,
+      COUNT(DISTINCT project)                         AS total_projects,
+      AVG(friction_score)                             AS avg_friction,
+      SUM(COALESCE(token_input, 0) + COALESCE(token_output, 0)) AS total_tokens,
+      AVG(duration_ms) / 60000.0                      AS avg_session_min
+    FROM sessions
   `).get();
 
-  const byProject = db.prepare(`
+  // Observation count — separate query, join in JS.
+  const obsCount = db.prepare(`
+    SELECT COUNT(*) AS total_observations
+    FROM observations o
+    WHERE ${NOT_IMPORT_TOOL}
+  `).get();
+
+  const overview = { ...sessionOverview, ...obsCount };
+
+  // Same split for per-project: session aggregates vs observation counts.
+  const byProjectSessions = db.prepare(`
     SELECT
-      s.project,
-      COUNT(DISTINCT s.id)          AS sessions,
-      COUNT(o.id)                   AS observations,
-      AVG(s.friction_score)         AS avg_friction,
-      AVG(s.duration_ms) / 60000.0  AS avg_session_min,
-      MAX(s.started_at)             AS last_active
+      project,
+      COUNT(*)                      AS sessions,
+      AVG(friction_score)           AS avg_friction,
+      AVG(duration_ms) / 60000.0    AS avg_session_min,
+      MAX(started_at)               AS last_active
+    FROM sessions
+    GROUP BY project
+  `).all();
+
+  const byProjectObs = db.prepare(`
+    SELECT s.project, COUNT(o.id) AS observations
     FROM sessions s
     LEFT JOIN observations o ON o.session_id = s.id AND ${NOT_IMPORT_TOOL}
     GROUP BY s.project
-    ORDER BY last_active DESC
   `).all();
+  const obsMap = new Map(byProjectObs.map(r => [r.project, r.observations || 0]));
+
+  const byProject = byProjectSessions
+    .map(r => ({ ...r, observations: obsMap.get(r.project) ?? 0 }))
+    .sort((a, b) => (b.last_active || '').localeCompare(a.last_active || ''));
 
   const weeklyTrend = db.prepare(`
     SELECT
@@ -81,20 +101,24 @@ export function getGlobalStats() {
 export function getProjectStats(project) {
   const db = getDb();
 
-  const overview = db.prepare(`
+  // Session-level aggregates — split from observations to avoid JOIN multiplier.
+  // See #87 fix for getGlobalStats().
+  const sessionOverview = db.prepare(`
     SELECT
-      COUNT(DISTINCT s.id)          AS sessions,
-      COUNT(o.id)                   AS observations,
-      AVG(s.friction_score)         AS avg_friction,
-      AVG(s.duration_ms) / 60000.0  AS avg_session_min,
-      SUM(s.token_input)            AS total_tokens_in,
-      SUM(s.token_output)           AS total_tokens_out,
-      MIN(s.started_at)             AS first_session,
-      MAX(s.started_at)             AS last_session
-    FROM sessions s
-    LEFT JOIN observations o ON o.session_id = s.id
-    WHERE s.project = ?
+      COUNT(*)                      AS sessions,
+      AVG(friction_score)           AS avg_friction,
+      AVG(duration_ms) / 60000.0    AS avg_session_min,
+      SUM(COALESCE(token_input, 0)) AS total_tokens_in,
+      SUM(COALESCE(token_output,0)) AS total_tokens_out,
+      MIN(started_at)               AS first_session,
+      MAX(started_at)               AS last_session
+    FROM sessions
+    WHERE project = ?
   `).get(project);
+  const obsCount = db.prepare(`
+    SELECT COUNT(*) AS observations FROM observations WHERE project = ?
+  `).get(project);
+  const overview = { ...sessionOverview, ...obsCount };
 
   const byTool = db.prepare(`
     SELECT tool, COUNT(*) AS n, AVG(importance) AS avg_importance

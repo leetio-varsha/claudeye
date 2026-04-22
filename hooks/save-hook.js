@@ -28,12 +28,32 @@ async function main() {
     process.exit(0);
   }
 
-  const { tool_name: tool, tool_input: rawInput, tool_response: rawOutput, session_id: sessionId, duration_ms: eventDuration, model: eventModel } = event;
+  const { tool_name: tool, tool_input: rawInput, tool_response: rawOutput, session_id: sessionId, duration_ms: eventDuration, model: eventModel, transcript_path: transcriptPath } = event;
 
   if (!tool || !sessionId) process.exit(0);
 
-  // (#81) Capture model from event or env — update session if available
-  const model = eventModel || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null;
+  // (#81) Capture model from event or env — update session if available.
+  // (#87 fix) Claude Code PostToolUse events usually don't include `model`, so
+  // fall back to reading the last assistant turn from the transcript JSONL.
+  // This is cheap (reverse-scan) and only runs when we don't already have a
+  // model — otherwise the session stays model=NULL for its entire lifetime.
+  let model = eventModel || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null;
+  if (!model && transcriptPath) {
+    try {
+      const { existsSync, readFileSync } = await import('fs');
+      if (existsSync(transcriptPath)) {
+        const lines = readFileSync(transcriptPath, 'utf8').split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (!lines[i]) continue;
+          try {
+            const msg = JSON.parse(lines[i]);
+            const m = msg.message?.model || msg.model;
+            if (m) { model = m; break; }
+          } catch { /* skip non-JSON line */ }
+        }
+      }
+    } catch { /* non-critical — leave model as null */ }
+  }
 
   // Normalize worktree paths to parent project (#78)
   // .claude/worktrees/<name> → parent project
