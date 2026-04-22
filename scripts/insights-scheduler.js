@@ -36,16 +36,40 @@ export function install({ hour = 9, minute = 0 } = {}) {
     copyFileSync(standaloneSrc, standaloneDest);
   }
 
-  // Wrapper: logs start/finish, runs standalone, forwards stderr
+  // Wrapper: dispatches to subcommands by day-of-week (#87 unified scheduler).
+  //   daily   → insights-standalone.mjs  (rule-based alerts)
+  //   Mon     → `claudeye advises generate --source behavioral` (Claude-powered)
+  //   Fri     → `claudeye advises generate --source automation` (ROI-scored)
+  // Each subcommand has its own heartbeat line so we can see which failed.
   const wrapperPath = join(homedir(), '.claudeye', 'insights-runner.sh');
   const wrapper = `#!/bin/bash
-# Heartbeat: always record that the scheduler fired, even if the script errors.
-# Without this we can't distinguish "scheduler never ran" from "script crashed silently".
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [runner] start" >> ${LOG_DIR}/insights-heartbeat.log
+# Unified scheduler dispatcher (#87). One launchd agent → N subcommands.
+HEARTBEAT="${LOG_DIR}/insights-heartbeat.log"
+DOW=$(date +%u)   # 1=Mon ... 7=Sun
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [runner] start (dow=$DOW)" >> "$HEARTBEAT"
+
+# Always: daily rule-based insights
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] insights-standalone" >> "$HEARTBEAT"
 /opt/homebrew/bin/node ${standaloneDest} 2>>${LOG_ERR}
-rc=$?
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [runner] exit rc=$rc" >> ${LOG_DIR}/insights-heartbeat.log
-exit $rc
+rc_insights=$?
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] insights-standalone exit=$rc_insights" >> "$HEARTBEAT"
+
+# Monday: Claude-powered behavioral advisor
+if [ "$DOW" = "1" ]; then
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] behavioral-advisor start" >> "$HEARTBEAT"
+  /opt/homebrew/bin/claudeye advises generate --days 14 >>${LOG_OUT} 2>>${LOG_ERR}
+  rc_beh=$?
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] behavioral-advisor exit=$rc_beh" >> "$HEARTBEAT"
+fi
+
+# Friday: automation advisor (TODO: implement --source automation)
+# if [ "$DOW" = "5" ]; then
+#   /opt/homebrew/bin/claudeye automation-advice --days 30 >>${LOG_OUT} 2>>${LOG_ERR}
+# fi
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [runner] exit rc=$rc_insights" >> "$HEARTBEAT"
+exit $rc_insights
 `;
   writeFileSync(wrapperPath, wrapper, { mode: 0o755 });
 

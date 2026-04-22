@@ -207,6 +207,43 @@ async function main() {
     if (handoff) {
       process.stdout.write(handoff + '\n\n');
     }
+
+    // Behavioral advise injection (#87) — top-1 new high-confidence advise.
+    // Shown once per advise; marks status='shown' so next session doesn't loop.
+    try {
+      const adv = getDb().prepare(`
+        SELECT id, category, observation, why, proposal, code_draft, confidence
+        FROM advises
+        WHERE status = 'new'
+        ORDER BY
+          CASE confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+          created_at DESC
+        LIMIT 1
+      `).get();
+      if (adv) {
+        const lines = [];
+        lines.push('<!-- claudeye: behavioral advise #' + adv.id + ' -->');
+        lines.push(`## 💡 Claudeye совет (${adv.confidence}) — ${adv.category}`);
+        lines.push('');
+        lines.push(`**Наблюдение:** ${adv.observation}`);
+        lines.push('');
+        lines.push(`**Почему важно:** ${adv.why}`);
+        lines.push('');
+        lines.push(`**Предложение:** ${adv.proposal}`);
+        if (adv.code_draft) {
+          lines.push('');
+          lines.push('```');
+          lines.push(adv.code_draft.slice(0, 800));
+          lines.push('```');
+        }
+        lines.push('');
+        lines.push(`_\`claudeye advises accept ${adv.id}\` · \`claudeye advises dismiss ${adv.id} --reason "..."\`_`);
+        process.stdout.write(lines.join('\n') + '\n\n');
+        getDb().prepare(`UPDATE advises SET status='shown', shown_at=datetime('now') WHERE id=?`).run(adv.id);
+      }
+    } catch (e) {
+      try { logHookError('inject-hook', 'advise-inject', e.message, project); } catch {}
+    }
   } catch (err) {
     try { logHookError('inject-hook', 'general', err.message, project); } catch {}
     // Exit cleanly — don't block Claude Code on memory failure

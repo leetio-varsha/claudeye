@@ -128,6 +128,33 @@ function _migrateAnalytics(db) {
         created_at TEXT    NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_hook_errors_created ON hook_errors(created_at DESC);
+
+      -- Behavioral advises (#87) — Claude-powered behavioral recommendations
+      -- Distinct from 'insights' (rule-based) and 'issues' (GitHub-synced).
+      -- Each row = one concrete behavioral observation with proposed automation.
+      CREATE TABLE IF NOT EXISTS advises (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+        category         TEXT    NOT NULL,              -- quota|time-of-day|model|hotspot|repeat-fix|context-switch|tooling|handoff|issue-lifecycle|meta
+        observation      TEXT    NOT NULL,              -- what behavior was noticed (prose, not metric)
+        why              TEXT    NOT NULL,              -- why it matters — concrete impact
+        proposal         TEXT    NOT NULL,              -- proposed automation / change
+        code_draft       TEXT,                          -- optional: code snippet, CLI command, or file path
+        confidence       TEXT    NOT NULL DEFAULT 'medium' CHECK(confidence IN ('low','medium','high')),
+        status           TEXT    NOT NULL DEFAULT 'new' CHECK(status IN ('new','dismissed','accepted','applied','shown')),
+        observation_hash TEXT    NOT NULL,              -- stable hash of category+observation for dedup
+        source           TEXT    NOT NULL DEFAULT 'behavioral-advisor',  -- 'behavioral-advisor' | 'automation-advisor' | 'manual'
+        payload_window   TEXT,                          -- '7d' | '30d' | etc
+        shown_at         TEXT,                          -- last time injected into SessionStart
+        dismissed_at     TEXT,
+        dismissed_reason TEXT,
+        accepted_at      TEXT,
+        applied_at       TEXT                           -- when user actually implemented the proposal
+      );
+      CREATE INDEX IF NOT EXISTS idx_advises_status      ON advises(status);
+      CREATE INDEX IF NOT EXISTS idx_advises_hash        ON advises(observation_hash);
+      CREATE INDEX IF NOT EXISTS idx_advises_created     ON advises(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_advises_status_conf ON advises(status, confidence);
     `);
   } catch (err) {
     console.error('[mem:db] analytics migration failed:', err.message);

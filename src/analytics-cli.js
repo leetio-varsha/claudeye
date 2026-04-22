@@ -483,4 +483,121 @@ program.command('digest')
     console.log('');
   });
 
+// ─── Behavioral advises (#87) ────────────────────────────────────────────
+
+program.command('advises')
+  .description('Manage behavioral advises from Claude-powered behavioral-advisor')
+  .argument('[action]', 'list | show | dismiss | accept | generate', 'list')
+  .argument('[id]', 'advise id (for show/dismiss/accept)')
+  .option('--status <status>', 'filter by status (new|dismissed|accepted|applied|shown)')
+  .option('--confidence <conf>', 'filter by confidence (low|medium|high)')
+  .option('--days <n>', 'lookback window for generate (default 14)', '14')
+  .option('--dry-run', 'generate: do not write to DB, just print')
+  .option('--reason <text>', 'dismiss: optional reason')
+  .action(async (action, id, opts) => {
+    const { getDb } = await import('./db.js');
+    const db = getDb();
+
+    if (action === 'generate') {
+      const { generateBehavioralAdvises } = await import('./behavioral-advisor.js');
+      console.log(chalk.gray(`Running behavioral-advisor on last ${opts.days} days...`));
+      const res = await generateBehavioralAdvises({
+        days:   parseInt(opts.days, 10),
+        dryRun: Boolean(opts.dryRun),
+      });
+      if (res.parseError) {
+        console.error(chalk.red(`✗ Parse error: ${res.parseError}`));
+        if (res.raw) console.error(chalk.gray(res.raw));
+        process.exit(1);
+      }
+      if (res.note) {
+        console.log(chalk.yellow(res.note));
+        return;
+      }
+      console.log(chalk.green(
+        `✓ generated=${res.generated} written=${res.written} duplicates=${res.duplicates}`
+      ));
+      if (res.summary) console.log(chalk.gray(`  ${res.summary}`));
+      for (const a of res.advises) {
+        const confColor = a.confidence === 'high' ? chalk.green : a.confidence === 'medium' ? chalk.yellow : chalk.gray;
+        console.log(`\n  ${confColor('[' + a.confidence + ']')} ${chalk.bold(a.category)}${a.id ? ' #' + a.id : ''}`);
+        console.log(`  Observation: ${a.observation}`);
+        console.log(chalk.gray(`  Why: ${a.why}`));
+        console.log(chalk.cyan(`  Proposal: ${a.proposal}`));
+        if (a.code_draft) console.log(chalk.magenta(`  Draft: ${a.code_draft.slice(0, 200)}`));
+      }
+      return;
+    }
+
+    if (action === 'show') {
+      if (!id) { console.error(chalk.red('Usage: claudeye advises show <id>')); process.exit(1); }
+      const row = db.prepare(`SELECT * FROM advises WHERE id = ?`).get(id);
+      if (!row) { console.error(chalk.red(`No advise with id=${id}`)); process.exit(1); }
+      console.log(chalk.bold(`\n#${row.id} [${row.confidence}] ${row.category} — ${row.status}`));
+      console.log(chalk.gray(`created: ${row.created_at} · source: ${row.source} · window: ${row.payload_window}`));
+      console.log(`\n${chalk.bold('Observation:')}\n  ${row.observation}`);
+      console.log(`\n${chalk.bold('Why:')}\n  ${row.why}`);
+      console.log(`\n${chalk.cyan.bold('Proposal:')}\n  ${row.proposal}`);
+      if (row.code_draft) console.log(`\n${chalk.magenta.bold('Draft:')}\n${row.code_draft}`);
+      console.log('');
+      return;
+    }
+
+    if (action === 'dismiss') {
+      if (!id) { console.error(chalk.red('Usage: claudeye advises dismiss <id> [--reason text]')); process.exit(1); }
+      const info = db.prepare(`
+        UPDATE advises SET status = 'dismissed', dismissed_at = datetime('now'), dismissed_reason = ?
+        WHERE id = ? AND status IN ('new','shown')
+      `).run(opts.reason || null, id);
+      if (info.changes === 0) { console.error(chalk.red(`Advise #${id} not found or already handled`)); process.exit(1); }
+      console.log(chalk.green(`✓ Dismissed #${id}`));
+      return;
+    }
+
+    if (action === 'accept') {
+      if (!id) { console.error(chalk.red('Usage: claudeye advises accept <id>')); process.exit(1); }
+      const info = db.prepare(`
+        UPDATE advises SET status = 'accepted', accepted_at = datetime('now')
+        WHERE id = ? AND status IN ('new','shown')
+      `).run(id);
+      if (info.changes === 0) { console.error(chalk.red(`Advise #${id} not found or already handled`)); process.exit(1); }
+      console.log(chalk.green(`✓ Accepted #${id}`));
+      return;
+    }
+
+    // default: list
+    const filters = [];
+    const params = [];
+    if (opts.status) { filters.push('status = ?'); params.push(opts.status); }
+    if (opts.confidence) { filters.push('confidence = ?'); params.push(opts.confidence); }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : `WHERE status IN ('new','shown')`;
+    const rows = db.prepare(`
+      SELECT id, created_at, category, confidence, status,
+             substr(observation, 1, 120) AS obs_preview
+      FROM advises
+      ${where}
+      ORDER BY
+        CASE confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+        created_at DESC
+      LIMIT 50
+    `).all(...params);
+
+    if (rows.length === 0) {
+      console.log(chalk.gray('No advises. Run: claudeye advises generate'));
+      return;
+    }
+
+    console.log(chalk.bold(`\n📋 Advises (${rows.length})\n`));
+    for (const r of rows) {
+      const confColor = r.confidence === 'high' ? chalk.green : r.confidence === 'medium' ? chalk.yellow : chalk.gray;
+      const statusColor = r.status === 'new' ? chalk.white.bold : chalk.gray;
+      console.log(`  #${r.id} ${confColor('[' + r.confidence + ']')} ${statusColor(r.status)} ${chalk.cyan(r.category)}`);
+      console.log(`      ${r.obs_preview}${r.obs_preview.length >= 120 ? '…' : ''}`);
+    }
+    console.log(chalk.gray('\n  claudeye advises show <id>     — full detail'));
+    console.log(chalk.gray('  claudeye advises dismiss <id>  — reject'));
+    console.log(chalk.gray('  claudeye advises accept <id>   — mark accepted'));
+    console.log(chalk.gray('  claudeye advises generate      — run Claude advisor now\n'));
+  });
+
 } // end registerAnalyticsCommands

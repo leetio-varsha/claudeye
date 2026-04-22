@@ -34,7 +34,8 @@ Long-term vision: "Datadog for AI-assisted development." Start personal, grow to
 ## Current status
 
 **Runtime:** better-sqlite3 (native SQLite with FTS5). Fully operational.
-**Scheduler:** Cowork scheduled task `claudeye-analyzer` runs daily at 13:05 — агрегирует метрики из `~/.claudeye/mem.db` через `scripts/analyzer-metrics.mjs` (один JSON-вывод → один osascript-вызов, чтобы не триггерить AUP-классификатор), сверяет readiness criteria по issue titles и сохраняет отчёт в `../analyzer-report-YYYY-MM-DD.md`. Issues создаёт отдельный `claudeye-dev-agent` (14:08).
+**Unified scheduler (#87):** launchd agent `com.claudeye.daily-insights` запускается ежедневно. Wrapper `~/.claudeye/insights-runner.sh` — dispatcher: каждый день → `insights-standalone.mjs` (rule-based alerts); по понедельникам → `claudeye advises generate` (Claude-powered behavioral advisor). Heartbeat `~/.claudeye/logs/insights-heartbeat.log` пишет breakdown по каждому подмодулю.
+**Cowork scheduled tasks:** `claudeye-analyzer` runs daily at 13:05 — агрегирует метрики и сверяет readiness criteria. Issues создаёт отдельный `claudeye-dev-agent` (14:08).
 **GitHub Project:** https://github.com/users/leetio-varsha/projects/4
 
 ---
@@ -114,6 +115,7 @@ All data lives in `~/.claudeye/` (mode 0700).
 **`digests`** — cached weekly advisor reports
 **`session_ratings`** — user ratings 1-5 per session
 **`import_sources`** — idempotent import tracking
+**`advises`** (#87) — Claude-powered behavioral advises. Поля: `category`, `observation`, `why`, `proposal`, `code_draft`, `confidence`, `status` (new/shown/accepted/dismissed/applied), `observation_hash` (dedup). Источник: `behavioral-advisor.js` → Claude CLI → JSON → таблица. Показываются через `inject-hook` (top-1 new) и CLI `claudeye advises`.
 
 ---
 
@@ -193,12 +195,20 @@ claudeye analytics --models           # model comparison
 claudeye analytics --issues           # issue resolution
 claudeye analytics --hotspots         # complexity hotspots
 
-# Advisor
+# Advisor (general, on-demand)
 claudeye advise                       # AI recommendations (streams)
 claudeye advise --focus plugins       # focused advice
 claudeye rate [session-id]            # rate session 1-5
 claudeye digest                       # show latest digest
 claudeye digest --generate            # generate now
+
+# Behavioral Advises (#87) — Claude-powered, proactive, с implementation draft
+claudeye advises                      # список pending advises (new + shown)
+claudeye advises show <id>            # полный текст + code draft
+claudeye advises accept <id>          # принял — учитывается в feedback loop
+claudeye advises dismiss <id> --reason "…"   # отклонил; advisor не повторит похожий
+claudeye advises generate --days 14   # запустить вручную (обычно крутит scheduler по понедельникам)
+claudeye advises generate --dry-run   # посмотреть вывод без записи в DB
 
 # Decision Memory
 claudeye decisions                    # decisions in current project
