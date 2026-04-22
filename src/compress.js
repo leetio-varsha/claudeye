@@ -113,11 +113,14 @@ export async function compressObservation({ tool, input, output, project }) {
 
     // Pass prompt via stdin to avoid ARG_MAX limits on large tool outputs (#52)
     // Claude Code 2.1.x removed `-m` (use `--model`) and `--max-tokens` entirely.
+    // CLAUDEYE_INTERNAL=1 prevents inject-hook from treating this claude --print
+    // call as a real user session, which caused phantom sessions in mem.db.
     const text = execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '-'], {
       input: prompt,
       encoding: 'utf8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, CLAUDEYE_INTERNAL: '1' },
     }).trim();
 
     // Extract JSON from response (claude --print may wrap in markdown)
@@ -170,11 +173,13 @@ export async function compressSession({ observations, project }) {
 
     // Pass prompt via stdin to avoid ARG_MAX limits (#52)
     // Claude Code 2.1.x removed `-m` (use `--model`) and `--max-tokens` entirely.
+    // CLAUDEYE_INTERNAL=1 prevents inject-hook from creating phantom sessions.
     return execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '-'], {
       input: prompt,
       encoding: 'utf8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, CLAUDEYE_INTERNAL: '1' },
     }).trim() || null;
   } catch {
     return `Session with ${observations.length} observations in ${project}.`;
