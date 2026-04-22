@@ -65,6 +65,7 @@ Raw usage data turned into actionable insight.
 - **Model comparison** — when does Opus outperform Sonnet for your work?
 - **Issue resolution time** — how long do bugs actually take to fix?
 - **Weekly digest** — Claude analyzes your patterns and tells you what to change
+- **Behavioral Advisor (#87)** — Claude-powered proactive advises with implementation drafts. Unified launchd scheduler runs rule-based insights daily and the behavioral advisor weekly (Mondays). Each advise carries an observation, why it matters, a proposal, and a code draft. Surfaced via `inject-hook` at session start; managed via `claudeye advises`.
 
 ### 3. Automation Advisor
 
@@ -146,10 +147,18 @@ claudeye advise --json                        # structured JSON output
 claudeye rate                                 # rate a session 1-5
 claudeye digest                               # latest weekly digest
 claudeye digest --generate                    # generate now
-claudeye insights                             # daily proactive insights
-claudeye insights --schedule                  # install launchd agent (daily 09:00)
+claudeye insights                             # daily proactive insights (rule-based)
+claudeye insights --schedule                  # install unified launchd agent (daily 09:00)
 claudeye insights --status                    # scheduler status
 claudeye health                               # self-check (DB, digests, insights freshness)
+
+# Behavioral Advises (#87) — Claude-powered, written to advises table
+claudeye advises                              # list pending (new + shown)
+claudeye advises show <id>                    # full advise (observation/why/proposal/code_draft)
+claudeye advises accept <id>                  # accept — counted in feedback loop
+claudeye advises dismiss <id> --reason "..."  # dismiss — advisor won't repeat similar
+claudeye advises generate --days 14           # run manually (scheduler does it Mondays)
+claudeye advises generate --dry-run           # preview output without writing to DB
 
 # Pattern Detection & Automation
 claudeye patterns                             # repeat-fixes, hotspots, time sinks
