@@ -154,6 +154,10 @@ async function main() {
 
   if (!prompt?.trim()) process.exit(0);
 
+  // Skip internal claude --print calls from compress.js to prevent phantom
+  // sessions. compress.js sets CLAUDEYE_INTERNAL=1 on its subprocess env.
+  if (process.env.CLAUDEYE_INTERNAL === '1') process.exit(0);
+
   // Normalize worktree paths to parent project (#78)
   const rawProject = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const worktreeMatch = rawProject.match(/^(.+?)\/\.claude\/worktrees\/.+$/);
