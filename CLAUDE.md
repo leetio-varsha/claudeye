@@ -64,7 +64,8 @@ claudeye/
 │   ├── patterns.js             # pattern detection: repeat-fixes, hotspots, time sinks, cross-session
 │   ├── auto-issues.js          # auto-create GitHub issues from pattern findings (#15, #83 local-DB dedup)
 │   ├── automation-advisor.js   # workflow automation recommendations with ROI scoring (#16)
-│   ├── import.js               # Import dispatcher (git implemented, notion/jira stubs)
+│   ├── import.js               # Git import (claudeye import git)
+│   ├── import-notion.js        # Notion import — pages + database rows (#9)
 │   ├── export.js               # memory export → Markdown (#11)
 │   └── server.js               # Express web viewer, localhost:47777
 │
@@ -72,6 +73,7 @@ claudeye/
 │   ├── setup.js                # interactive first-time config
 │   ├── install-hooks.js        # patches ~/.claude/settings.json
 │   ├── backfill-friction.js    # one-time friction score recalculation for old sessions
+│   ├── backfill-duration.js    # one-time duration_ms backfill for closed sessions (#81)
 │   ├── digest-standalone.js    # self-contained digest generator (bypasses TCC)
 │   ├── digest-scheduler.js     # launchd agent for weekly digest
 │   ├── daily-insights.js       # daily anomaly detection (quota, friction, hook health)
@@ -336,8 +338,13 @@ Each issue has readiness criteria — scheduler checks them daily.
 - ~~Dashboard analytics~~ — redesigned with actionable insights (#7)
 - ~~Unclosed sessions (57%)~~ — root cause: import-git sessions + orphan cleanup added (#60)
 
+### Resolved (recent)
+- ~~`duration_ms/model/token_input/token_output` always NULL~~ — `closeSession` queried `created_at` (doesn't exist in sessions; use `started_at`). Stop hook silently failed, sessions fell to orphan cleanup. Fixed + backfilled (#81)
+- ~~Sessions count explosion (×2.9/run)~~ — `compress.js` calls `claude --print` which triggered `UserPromptSubmit` inject-hook, creating phantom sessions. Fixed by setting `CLAUDEYE_INTERNAL=1` on compress subprocesses; inject-hook exits early when set.
+- ~~Notion import stub~~ — full implementation: pages + database rows, idempotent, AI-compressed (#9)
+
 ### Active
-- None — all known gaps resolved. Phase 2.5 complete.
+- None — all known gaps resolved.
 
 ---
 
