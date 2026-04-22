@@ -6,10 +6,49 @@
  * Generates a compressed session summary and stores it.
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 
 const __dir = new URL('.', import.meta.url).pathname;
 const srcDir = __dir + '../src/';
+
+/**
+ * Parse a Claude Code transcript JSONL to extract aggregated token counts and model.
+ * The Stop event provides transcript_path; the JSONL has one JSON object per line,
+ * assistant messages have shape: { type: 'assistant', message: { model, usage: { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens } } }
+ *
+ * @param {string} transcriptPath
+ * @returns {{ tokenInput: number|null, tokenOutput: number|null, model: string|null }}
+ */
+function parseTranscript(transcriptPath) {
+  try {
+    if (!transcriptPath || !existsSync(transcriptPath)) return { tokenInput: null, tokenOutput: null, model: null };
+    const lines = readFileSync(transcriptPath, 'utf8').split('\n').filter(Boolean);
+    let totalInput = 0, totalOutput = 0, lastModel = null;
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type !== 'assistant') continue;
+        const msg = obj.message;
+        if (!msg) continue;
+        if (msg.model) lastModel = msg.model;
+        if (msg.usage) {
+          // Count all input token variants (base + cache creation + cache read)
+          totalInput  += (msg.usage.input_tokens || 0)
+                       + (msg.usage.cache_creation_input_tokens || 0)
+                       + (msg.usage.cache_read_input_tokens || 0);
+          totalOutput += (msg.usage.output_tokens || 0);
+        }
+      } catch { /* skip malformed lines */ }
+    }
+    return {
+      tokenInput:  totalInput  > 0 ? totalInput  : null,
+      tokenOutput: totalOutput > 0 ? totalOutput : null,
+      model: lastModel,
+    };
+  } catch {
+    return { tokenInput: null, tokenOutput: null, model: null };
+  }
+}
 
 async function main() {
   let event;
@@ -21,17 +60,18 @@ async function main() {
     process.exit(0);
   }
 
-  const { session_id: sessionId, model: eventModel, token_input, token_output, total_tokens_in, total_tokens_out } = event;
+  const { session_id: sessionId, transcript_path: transcriptPath, model: eventModel, token_input, token_output, total_tokens_in, total_tokens_out } = event;
   if (!sessionId) process.exit(0);
 
-  // (#81) Extract model from event or env
-  const model = eventModel || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null;
-  // (#81) Extract token counts — try multiple field names since hook contract may vary
-  const tokenInput  = token_input  ?? total_tokens_in  ?? null;
-  const tokenOutput = token_output ?? total_tokens_out ?? null;
+  // (#81) Extract token counts + model from transcript (most reliable source)
+  const fromTranscript = parseTranscript(transcriptPath);
 
-  // (#81) Diagnostic: log full stop event keys to discover available fields
-  console.error(`[mem:summary] event keys: ${Object.keys(event).join(', ')}`);
+  // Fallback chain: transcript → event fields → env vars
+  const model = fromTranscript.model || eventModel || process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || null;
+  const tokenInput  = fromTranscript.tokenInput  ?? token_input  ?? total_tokens_in  ?? null;
+  const tokenOutput = fromTranscript.tokenOutput ?? token_output ?? total_tokens_out ?? null;
+
+  console.error(`[mem:summary] event keys: ${Object.keys(event).join(', ')} | transcript: ${transcriptPath ? 'found' : 'missing'} | model: ${model} | tokens: ${tokenInput}/${tokenOutput}`);
 
   const project = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
