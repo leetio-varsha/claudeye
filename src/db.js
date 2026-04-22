@@ -351,10 +351,11 @@ export function closeSession(id, summary, { computeFriction = null, model = null
   const db = getDb();
   const frictionScore = computeFriction ? computeFriction(id) : 0;
 
-  // Compute duration_ms from created_at → now (#81)
-  const session = db.prepare('SELECT created_at FROM sessions WHERE id = ?').get(id);
-  const durationMs = session?.created_at
-    ? Math.max(0, Date.now() - new Date(session.created_at + 'Z').getTime())
+  // Compute duration_ms from started_at → now (#81)
+  // NOTE: sessions table uses started_at (not created_at — that's on observations)
+  const session = db.prepare('SELECT started_at FROM sessions WHERE id = ?').get(id);
+  const durationMs = session?.started_at
+    ? Math.max(0, Date.now() - new Date(session.started_at.replace(' ', 'T') + 'Z').getTime())
     : null;
 
   db.prepare(`
