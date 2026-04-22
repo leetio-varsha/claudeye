@@ -8,15 +8,27 @@
 
 ## What this project is
 
-Claudeye is a production-ready personal memory and analytics layer for Claude Code.
+Claudeye is a **personal behavioral layer for AI work**. It observes how the user works with AI (starting with Claude Code), finds patterns they don't see themselves, and proposes concrete automations with ready-to-apply implementations.
 
-Three distinct parts — all important, different maturity levels.
+The product has four layers, ordered by where actual value lives:
 
-**Part 1: Memory** — persist context across Claude Code sessions using hooks.
-**Part 2: Analytics + Advisor** — understand and improve how you use Claude Code.
-**Part 3: Automation Advisor** — analyze your entire dev workflow and recommend what to automate.
+**1. Behavioral Advisor (core)** — Claude-powered advisor that produces structured recommendations: _observation → why it matters → proposal → implementation draft → confidence_. Dedups via observation hash, respects dismiss/accept history, personalizes via feedback loop.
+**2. Rule-based insights** — daily scheduler writes threshold-based alerts: friction, quota, hotspots, hook health.
+**3. Memory (foundation, not product)** — hooks persist every tool event, compressed and embedded; injected back on relevant prompts. Anthropic will commoditize this — we don't rely on it as defensible value.
+**4. Automation Advisor** — ROI-scored recommendations across the full dev workflow, not just Claude Code.
 
-Long-term vision: "Datadog for AI-assisted development." Start personal, grow to teams.
+## Product vision (read IDEA.md for full version)
+
+Product ladder: **observe → advise → act → learn → model**.
+
+- Observe + Advise shipped (Phase 1 of #87 closed 2026-04-22).
+- Act (#24) — advisor writes hooks/PRs/schedulers, user approves with one click.
+- Learn (#21) — feedback loop makes advisor personalized per-user.
+- **Endgame — Digital Twin (#29):** months of behavioral data become a model of the user. This model is an infrastructure layer any future AI assistant can plug into.
+
+The bet: we're not building a tool for Claude Code. We're building the persistent behavioral layer the user carries across every AI assistant that comes next.
+
+Surface will extend beyond Claude Code (writers, PMs, researchers — anyone using Claude for daily work) when Claude Desktop / Cowork opens an extensions API. Infrastructure is the same; vocabulary of patterns changes per role.
 
 ---
 

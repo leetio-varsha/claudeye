@@ -4,9 +4,11 @@
 
 **See how you work. Work better.**
 
-Claudeye gives Claude Code a memory and shows you how to use it better.
-It captures everything across your sessions, surfaces relevant context when you need it,
-analyzes your AI workflow patterns, and recommends what to automate in your entire dev workflow.
+Claudeye is a **personal behavioral layer for AI work** — it observes how you work with Claude Code, finds patterns you don't notice yourself, and proposes concrete automations with ready-to-apply implementations.
+
+It's not just memory. Memory is the foundation — the real product is the advisor that sits on top, turning raw behavioral data into specific recommendations tailored to how _you_ work.
+
+Long-term vision: a persistent behavioral model of the individual user, portable across AI assistants as they evolve.
 
 ---
 
@@ -45,43 +47,85 @@ Repeat for each project you want Claudeye to know about.
 
 ---
 
-## Three parts
+## The product — four layers
 
-### 1. Memory
+Claudeye is structured as four layers. The top layer is where the actual value lives — the ones below exist to feed it.
 
-Claude Code forgets everything when a session ends. Claudeye doesn't.
+### 1. Behavioral Advisor — the core
+
+Claude-powered advisor that analyzes your patterns and proposes concrete automations with working implementations. Each advise is structured:
+
+- **Observation** — what behavior was noticed (in plain language, not metrics)
+- **Why it matters** — concrete impact on quota, context quality, time, or reliability
+- **Proposal** — specific hook, script, scheduler, or CLI change
+- **Implementation draft** — code snippet, CLI command, or file path you can apply directly
+- **Confidence** — low / medium / high
+
+The advisor runs weekly via the unified scheduler, deduplicates via observation hash, and respects your past dismiss/accept history so it doesn't repeat ignored suggestions. Top advises surface automatically at session start via `inject-hook`. Managed via `claudeye advises list | show | accept | dismiss | generate`.
+
+### 2. Rule-based insights
+
+Daily scheduler writes threshold-based alerts:
+
+- **Friction scores** per session and project — where are you struggling?
+- **Quota & session length** — long sessions, model mismatch, token ratio outliers
+- **Hotspots** — files with high error rates, repeat-fixes, cross-cutting infra code
+- **Plugin & model effectiveness** — is this tool actually helping, or slowing you down?
+- **Hook health** — compress fallback rate, scheduler heartbeat, hook silence detection
+- **Weekly digest** — Claude-written summary with recommendations
+
+### 3. Memory — the foundation
+
+Claude Code forgets everything when a session ends. Claudeye doesn't. This is infrastructure, not the product.
 
 - Captures every tool event, compressed by AI into searchable observations
 - Injects relevant past context before each new prompt automatically
 - Works across all your projects — ask "how did we solve this in project X"
   and get a grounded answer, not a hallucination
+- FTS5 + vector search with RRF fusion, OpenAI text-embedding-3-small (or Voyage, or fallback)
 
-### 2. Analytics + Advisor
+Anthropic will commoditize memory in the next year. We don't rely on this as defensible value — it's the data source that makes behavioral analysis possible.
 
-Raw usage data turned into actionable insight.
+### 4. Automation Advisor
 
-- **Friction scores** per session and project — where are you struggling?
-- **Plugin effectiveness** — is Superpowers actually helping, or just slowing you down?
-- **Model comparison** — when does Opus outperform Sonnet for your work?
-- **Issue resolution time** — how long do bugs actually take to fix?
-- **Weekly digest** — Claude analyzes your patterns and tells you what to change
-- **Behavioral Advisor (#87)** — Claude-powered proactive advises with implementation drafts. Unified launchd scheduler runs rule-based insights daily and the behavioral advisor weekly (Mondays). Each advise carries an observation, why it matters, a proposal, and a code draft. Surfaced via `inject-hook` at session start; managed via `claudeye advises`.
+Extends the behavioral lens beyond Claude Code into your full dev workflow.
 
-### 3. Automation Advisor
-
-Analyzes your entire dev workflow — not just Claude Code — and recommends what to automate.
-
-- **Task management** — detects repeated issue creation, stale tickets, sprint grooming patterns
-- **Code review** — spots PRs waiting too long, repeated review comments, missing checks
-- **Monitoring** — CI/CD status checks, branch divergence, dependency updates
+- **Task management** — repeated issue creation, stale tickets, sprint grooming patterns
+- **Code review** — PRs waiting too long, repeated review comments, missing checks
+- **Monitoring** — CI/CD status, branch divergence, dependency updates
 - **Documentation** — README/CHANGELOG drift, release notes generation
-- **Communications** — standup generation, weekly digests, Slack notifications
-- **Dev operations** — merged branch cleanup, test scheduling, database checks
+- **Communications** — standup generation, weekly digests, notifications
+- **Dev operations** — merged branch cleanup, test scheduling
 
-Each recommendation includes: automation type (Scheduler / Hook / Agent / Script / MCP / GitHub Action),
-estimated time savings, and implementation complexity.
+Each recommendation includes: automation type (Scheduler / Hook / Agent / Script / MCP / GitHub Action), estimated time savings, and implementation complexity.
 
-### 4. Team Mode (coming later)
+---
+
+## Product ladder
+
+Four stages, one endgame.
+
+**Observe** (shipped) — telemetry layer. Hooks see everything.
+
+**Advise** (shipped, Phase 1 via [#87](https://github.com/leetio-varsha/claudeye/issues/87)) — advisor finds patterns, proposes automations with implementation drafts.
+
+**Act** (Phase 3) — advisor writes the hook, opens the PR, configures the scheduler. User approves or rejects with one click. The role shifts from writing code to making decisions. See [#24](https://github.com/leetio-varsha/claudeye/issues/24).
+
+**Learn** (Phase 4) — feedback loop. System sees which advises you accepted, which you dismissed, which worked. Advisor becomes personalized within 2-3 weeks of use. See [#21](https://github.com/leetio-varsha/claudeye/issues/21).
+
+**Endgame — Model.** Digital Twin ([#29](https://github.com/leetio-varsha/claudeye/issues/29)): months of behavioral data become a model of you. This model is an infrastructure layer — any future AI assistant can plug into it and work _as you_ or _with awareness of your particular patterns_.
+
+---
+
+## Beyond Claude Code
+
+The current surface is Claude Code. The behavioral layer applies equally to any AI-assisted workflow — writing, research, PM work, analysis, design. Memory + telemetry + advisor infrastructure is the same; the vocabulary of patterns changes per role.
+
+When Claude Desktop / Cowork opens an extensions API, Claudeye retargets without rebuilding the core.
+
+---
+
+### Team Mode (coming later)
 
 Same principles, scaled to a team. Privacy-first — raw data never leaves dev machines.
 
