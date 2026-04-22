@@ -38,6 +38,7 @@ Don't start with an empty database — import your git history:
 cd ~/my-project
 claudeye import git                    # import from current repo
 claudeye import git --since 2024-01-01 # only recent commits
+claudeye import notion --token <token> # import Notion pages + databases
 ```
 
 Repeat for each project you want Claudeye to know about.
@@ -125,7 +126,10 @@ claudeye viewer                               # web UI at localhost:47777
 # Import
 claudeye import git                           # import git history from current repo
 claudeye import git --path /other/repo        # from another repo
-claudeye import notion                        # (coming soon — Issue #9)
+claudeye import notion --token <token>        # import Notion pages + database rows
+claudeye import notion --database-only        # only database rows
+claudeye import notion --pages-only           # only standalone pages
+# NOTION_API_KEY env var also accepted
 claudeye import jira                          # (coming soon — Issue #10)
 
 # Analytics
