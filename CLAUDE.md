@@ -79,6 +79,8 @@ claudeye/
 │   ├── automation-advisor.js   # workflow automation recommendations with ROI scoring (#16)
 │   ├── import.js               # Git import (claudeye import git)
 │   ├── import-notion.js        # Notion import — pages + database rows (#9)
+│   ├── import-jira.js          # Jira Cloud import — issues + comments (#10)
+│   ├── import-linear.js        # Linear import — issues + comments via GraphQL (#10)
 │   ├── export.js               # memory export → Markdown (#11)
 │   └── server.js               # Express web viewer, localhost:47777
 │
@@ -195,9 +197,10 @@ claudeye viewer             # web UI at localhost:47777
 claudeye clear              # clear data
 
 # Import
-claudeye import git         # import git history
-claudeye import notion      # (stub — Issue #9)
-claudeye import jira        # (stub — Issue #10)
+claudeye import git                                                    # git history
+claudeye import notion --token <token>                                 # Notion pages + database rows (#9)
+claudeye import jira   --url <url> --email <e> --token <api-token>     # Jira Cloud issues + comments (#10)
+claudeye import linear --token <api-key>                               # Linear issues + comments (#10)
 
 # Analytics
 claudeye analytics                    # global overview
@@ -301,8 +304,8 @@ npm test                              # run all tests (node:test) — 120 tests
 - [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20
 
 ### Phase 4: Import Layer & Integrations (May 2026)
-- [ ] Notion import (#9)
-- [ ] Jira/Linear import (#10)
+- [x] Notion import (#9)
+- [x] Jira/Linear import (#10)
 - [x] Memory export as markdown (#11)
 - [ ] Read-first integrations: GitLab, Jira, Slack, Gmail, Sentry (#23)
 
@@ -364,6 +367,7 @@ Each issue has readiness criteria — scheduler checks them daily.
 - ~~`duration_ms/model/token_input/token_output` always NULL~~ — `closeSession` queried `created_at` (doesn't exist in sessions; use `started_at`). Stop hook silently failed, sessions fell to orphan cleanup. Fixed + backfilled (#81)
 - ~~Sessions count explosion (×2.9/run)~~ — `compress.js` calls `claude --print` which triggered `UserPromptSubmit` inject-hook, creating phantom sessions. Fixed by setting `CLAUDEYE_INTERNAL=1` on compress subprocesses; inject-hook exits early when set.
 - ~~Notion import stub~~ — full implementation: pages + database rows, idempotent, AI-compressed (#9)
+- ~~Jira/Linear import stub~~ — `src/import-jira.js` (REST v3 + ADF flattening + comments) and `src/import-linear.js` (GraphQL issues + comments), both idempotent via `import_sources`, AI-compressed, importance-weighted by issue type/priority (#10)
 
 ### Active
 - None — all known gaps resolved.
