@@ -526,8 +526,9 @@ program.command('cleanup')
   .description('Tiered retention cleanup: remove old low-value observations, reclaim disk space')
   .option('--dry-run', 'Show what would be deleted/compacted without changes')
   .option('--no-vacuum', 'Skip VACUUM (faster, but does not reclaim disk space)')
+  .option('--cowork-noise', 'Also drop Cowork noise + intra-session duplicates (#93)')
   .action(async (opts) => {
-    const { cleanup, compact, getDbMetrics, closeOrphanedSessions } = await import('./src/db.js');
+    const { cleanup, compact, getDbMetrics, closeOrphanedSessions, cleanupCoworkNoise } = await import('./src/db.js');
     const { computeFrictionScore } = await import('./src/analytics.js');
     const ora = (await import('ora')).default;
 
@@ -608,8 +609,27 @@ program.command('cleanup')
       retSpinner.succeed('Nothing to delete — all data within retention policy.');
     }
 
+    // Step 2.5: Cowork noise + duplicate sweep (#93) — opt-in because it's
+    // destructive and scoped to already-imported Cowork observations.
+    let coworkCounts = { total: 0, noise: 0, duplicates: 0 };
+    if (opts.coworkNoise) {
+      const cSpinner = ora(opts.dryRun ? 'Scanning Cowork noise/dupes...' : 'Deleting Cowork noise/dupes...').start();
+      coworkCounts = cleanupCoworkNoise({ dryRun: opts.dryRun });
+      if (coworkCounts.total > 0) {
+        if (opts.dryRun) {
+          cSpinner.info(`Would delete ${chalk.yellow(coworkCounts.total)} Cowork observations:`);
+        } else {
+          cSpinner.succeed(`Deleted ${chalk.green(coworkCounts.total)} Cowork observations.`);
+        }
+        if (coworkCounts.noise) console.log(`    ${coworkCounts.noise} noise (empty TodoWrite / screenshots / 'Да' / short assistant replies)`);
+        if (coworkCounts.duplicates) console.log(`    ${coworkCounts.duplicates} intra-session duplicate tool calls`);
+      } else {
+        cSpinner.succeed('No Cowork noise found.');
+      }
+    }
+
     // Step 3: VACUUM to reclaim disk space
-    if (opts.vacuum !== false && !opts.dryRun && (compactCounts.total > 0 || counts.total > 0)) {
+    if (opts.vacuum !== false && !opts.dryRun && (compactCounts.total > 0 || counts.total > 0 || coworkCounts.total > 0)) {
       const vacSpinner = ora('Running VACUUM to reclaim disk space...').start();
       const { getDb } = await import('./src/db.js');
       getDb().exec('VACUUM');
@@ -919,9 +939,11 @@ program.command('import')
       const spinner = ora(`Importing ${sessions.length} Cowork sessions...`).start();
       try {
         const result = importAllCoworkSessions({ force: opts.force || false });
+        const dropped = (result.noiseDropped || 0) + (result.dedupDropped || 0);
         spinner.succeed(
           `Cowork import: ${result.imported} imported, ${result.skipped} skipped, ` +
-          `${result.errors} errors — ${result.observations} observations from ${result.total} sessions`
+          `${result.errors} errors — ${result.observations} observations from ${result.total} sessions` +
+          (dropped ? ` (filtered ${result.noiseDropped} noise + ${result.dedupDropped} dups from ${result.rawEvents} raw)` : '')
         );
         // Surface projects touched so user can validate what ended up where.
         const byProject = new Map();
