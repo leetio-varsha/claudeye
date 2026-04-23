@@ -129,6 +129,23 @@ function _migrateAnalytics(db) {
       );
       CREATE INDEX IF NOT EXISTS idx_hook_errors_created ON hook_errors(created_at DESC);
 
+      -- Injection statistics (#90) — track RAG "tax" per prompt so we can see
+      -- the cost curve over time and drive a budget gate. One row per prompt
+      -- for which inject-hook emitted context.
+      CREATE TABLE IF NOT EXISTS injection_stats (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id    TEXT    NOT NULL,
+        project       TEXT    NOT NULL,
+        bytes         INTEGER NOT NULL,
+        tokens_est    INTEGER NOT NULL,
+        sections_json TEXT    NOT NULL DEFAULT '[]',   -- [{name, count, bytes}]
+        budget_hit    INTEGER NOT NULL DEFAULT 0,      -- 1 if budget gate triggered truncation
+        created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_injection_session ON injection_stats(session_id);
+      CREATE INDEX IF NOT EXISTS idx_injection_created ON injection_stats(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_injection_project ON injection_stats(project);
+
       -- Behavioral advises (#87) — Claude-powered behavioral recommendations
       -- Distinct from 'insights' (rule-based) and 'issues' (GitHub-synced).
       -- Each row = one concrete behavioral observation with proposed automation.
@@ -576,6 +593,156 @@ export function getErrorStats(days = 7) {
   };
 }
 
+/**
+ * Health-oriented error snapshot (#89).
+ * Focus on last 24h (actionable) with 7-day trend context so that stale
+ * spikes from an already-fixed bug don't keep painting health red forever.
+ *
+ * @returns {{
+ *   last24h:  number,   // errors in the last 24h
+ *   last7d:   number,   // errors in the last 7 days
+ *   trend:    'growing' | 'decaying' | 'flat',
+ *   perDay:   Array<{ day: string, n: number }>,  // last 7 days, descending
+ *   byHook:   Array<{ hook: string, error_type: string, count: number }>,  // last 24h
+ * }}
+ */
+export function getErrorHealthSnapshot() {
+  const db = getDb();
+  const last24h = db.prepare(`
+    SELECT COUNT(*) as n FROM hook_errors
+    WHERE created_at >= datetime('now', '-1 day') AND error_type != 'info'
+  `).get().n;
+  const last7d = db.prepare(`
+    SELECT COUNT(*) as n FROM hook_errors
+    WHERE created_at >= datetime('now', '-7 days') AND error_type != 'info'
+  `).get().n;
+  const perDay = db.prepare(`
+    SELECT substr(created_at, 1, 10) as day, COUNT(*) as n
+    FROM hook_errors
+    WHERE created_at >= datetime('now', '-7 days') AND error_type != 'info'
+    GROUP BY day
+    ORDER BY day DESC
+  `).all();
+  const byHook = db.prepare(`
+    SELECT hook, error_type, COUNT(*) as count
+    FROM hook_errors
+    WHERE created_at >= datetime('now', '-1 day') AND error_type != 'info'
+    GROUP BY hook, error_type ORDER BY count DESC
+  `).all();
+
+  // Trend: compare last 24h rate vs previous 6 days average
+  const prev6AvgPerDay = last7d - last24h > 0 ? (last7d - last24h) / 6 : 0;
+  let trend = 'flat';
+  if (prev6AvgPerDay === 0 && last24h > 0)      trend = 'growing';
+  else if (prev6AvgPerDay === 0 && last24h === 0) trend = 'flat';
+  else if (last24h > prev6AvgPerDay * 1.5)        trend = 'growing';
+  else if (last24h < prev6AvgPerDay * 0.5)        trend = 'decaying';
+
+  return { last24h, last7d, trend, perDay, byHook };
+}
+
+// ─── Injection stats (#90) ──────────────────────────────────────────────────
+
+/**
+ * Record a single inject-hook invocation. One row per prompt for which
+ * inject-hook produced context (regardless of budget outcome).
+ *
+ * Called from the hook itself — must not throw.
+ */
+export function saveInjectionStat({
+  sessionId,
+  project,
+  bytes,
+  tokensEst,
+  sections = [],
+  budgetHit = false,
+}) {
+  try {
+    getDb().prepare(`
+      INSERT INTO injection_stats (session_id, project, bytes, tokens_est, sections_json, budget_hit)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(sessionId, project, bytes, tokensEst, JSON.stringify(sections), budgetHit ? 1 : 0);
+  } catch (err) {
+    // Non-critical — inject-hook must not fail because of stats.
+    console.error('[mem:inject-stats] failed:', err.message);
+  }
+}
+
+/**
+ * Aggregated injection stats for the last N days.
+ *
+ * Returns:
+ *   totalPrompts   — prompts that triggered context injection
+ *   avgBytes       — arithmetic mean
+ *   p50, p95, p99  — percentile of tokens_est (what a fresh budget should aim at)
+ *   maxBytes       — largest single injection
+ *   budgetHits     — prompts where the budget gate clamped context
+ *   perProject     — top 10 projects by avg bytes
+ *   perSection     — avg bytes per section name across all injections
+ */
+export function getInjectionStats({ days = 7, project = null } = {}) {
+  const db = getDb();
+  const params = { d: '-' + days + ' days' };
+  const projFilter = project ? ' AND project = @p' : '';
+  if (project) params.p = project;
+
+  const rows = db.prepare(`
+    SELECT bytes, tokens_est, sections_json, budget_hit, project
+    FROM injection_stats
+    WHERE created_at >= datetime('now', @d)${projFilter}
+    ORDER BY tokens_est ASC
+  `).all(params);
+
+  if (!rows.length) {
+    return { totalPrompts: 0, avgBytes: 0, p50: 0, p95: 0, p99: 0, maxBytes: 0,
+             budgetHits: 0, perProject: [], perSection: [] };
+  }
+
+  const pct = (arr, p) => arr[Math.min(arr.length - 1, Math.floor(arr.length * p))];
+  const tokens = rows.map(r => r.tokens_est);
+
+  const sectionTotals = new Map();  // name → { bytesSum, occurrences }
+  const projectTotals = new Map();  // project → { bytesSum, count }
+  let budgetHits = 0, totalBytes = 0, maxBytes = 0;
+
+  for (const r of rows) {
+    totalBytes += r.bytes;
+    maxBytes = Math.max(maxBytes, r.bytes);
+    if (r.budget_hit) budgetHits++;
+
+    const pj = projectTotals.get(r.project) || { bytesSum: 0, count: 0 };
+    pj.bytesSum += r.bytes; pj.count++;
+    projectTotals.set(r.project, pj);
+
+    try {
+      const sections = JSON.parse(r.sections_json || '[]');
+      for (const s of sections) {
+        const acc = sectionTotals.get(s.name) || { bytesSum: 0, count: 0 };
+        acc.bytesSum += s.bytes || 0;
+        acc.count++;
+        sectionTotals.set(s.name, acc);
+      }
+    } catch { /* ignore malformed JSON */ }
+  }
+
+  return {
+    totalPrompts: rows.length,
+    avgBytes: Math.round(totalBytes / rows.length),
+    p50: pct(tokens, 0.5),
+    p95: pct(tokens, 0.95),
+    p99: pct(tokens, 0.99),
+    maxBytes,
+    budgetHits,
+    perProject: [...projectTotals.entries()]
+      .map(([p, v]) => ({ project: p, avgBytes: Math.round(v.bytesSum / v.count), count: v.count }))
+      .sort((a, b) => b.avgBytes - a.avgBytes)
+      .slice(0, 10),
+    perSection: [...sectionTotals.entries()]
+      .map(([name, v]) => ({ name, avgBytes: Math.round(v.bytesSum / v.count), count: v.count }))
+      .sort((a, b) => b.avgBytes - a.avgBytes),
+  };
+}
+
 // ─── Issues tracking (#83) ──────────────────────────────────────────────────
 
 /**
@@ -727,8 +894,17 @@ export function cleanup({ dryRun = false, vacuum = false } = {}) {
     medImportance: 0,
     highImportance: 0,
     gitCommit: 0,
+    hookErrors: 0,
     total: 0,
   };
+
+  // hook_errors retention: delete entries older than 30 days.
+  // These are diagnostic rows that pile up indefinitely and distort health checks
+  // long after the underlying bug is fixed. See issue #89.
+  counts.hookErrors = db.prepare(`
+    SELECT COUNT(*) as n FROM hook_errors
+    WHERE created_at < datetime('now', '-30 days')
+  `).get().n;
 
   // Count candidates per tier
   counts.lowImportance = db.prepare(`
@@ -763,7 +939,7 @@ export function cleanup({ dryRun = false, vacuum = false } = {}) {
       )
   `).get().n;
 
-  counts.total = counts.lowImportance + counts.medImportance + counts.highImportance + counts.gitCommit;
+  counts.total = counts.lowImportance + counts.medImportance + counts.highImportance + counts.gitCommit + counts.hookErrors;
 
   if (dryRun || counts.total === 0) return counts;
 
@@ -798,6 +974,11 @@ export function cleanup({ dryRun = false, vacuum = false } = {}) {
             FROM observations WHERE tool = 'git-commit'
           ) WHERE rn <= 50
         )
+    `).run();
+
+    // hook_errors retention (#89): diagnostic rows only useful for a rolling window.
+    db.prepare(`
+      DELETE FROM hook_errors WHERE created_at < datetime('now', '-30 days')
     `).run();
   });
   run();

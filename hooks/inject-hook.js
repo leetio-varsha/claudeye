@@ -16,6 +16,33 @@ import { readFileSync } from 'fs';
 const __dir = new URL('.', import.meta.url).pathname;
 const srcDir = __dir + '../src/';
 
+/**
+ * Smart truncation — cut on a word boundary close to the limit and append "…"
+ * (#91). Used in session handoff where aggressive hardcoded slice(0, 150) used
+ * to chop details off mid-word exactly when they were most needed for continuing
+ * work in a fresh session.
+ *
+ * If the text fits under the limit, returns it unchanged. Otherwise cuts at the
+ * last whitespace in the last 30% of the window so we don't lose too many words.
+ */
+function truncateSmart(text, limit) {
+  if (!text) return '';
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(' ');
+  const boundary = lastSpace > limit * 0.7 ? lastSpace : cut.length;
+  return cut.slice(0, boundary).trimEnd() + '…';
+}
+
+// Handoff budget per section (#91). Errors get the most because the next
+// session will need full context to continue debugging; recent observations
+// get less because there are many of them. decisions are never truncated.
+const HANDOFF_BUDGET = {
+  errors: 250,   // errors need detail; was hardcoded 150
+  recent: 200,   // was hardcoded 150
+  file:   200,   // path hint for Edit/Write tools
+};
+
 // ─── Session handoff ─────────────────────────────────────────────────────
 // Thresholds for warning/handoff injection
 const WARN_PROMPT_COUNT = 100;   // soft warning
@@ -131,7 +158,7 @@ function buildSessionHandoff(db, sessionId, project) {
       if (recentObs.length) {
         lines.push('Что было сделано в прошлой сессии:');
         for (const o of recentObs.slice(0, 7)) {
-          lines.push(`- ${o.summary.slice(0, 150)}`);
+          lines.push(`- ${truncateSmart(o.summary, HANDOFF_BUDGET.recent)}`);
         }
         lines.push('');
       }
@@ -147,7 +174,7 @@ function buildSessionHandoff(db, sessionId, project) {
       if (errors.length) {
         lines.push('Нерешённые проблемы:');
         for (const e of errors) {
-          lines.push(`- ${e.summary.slice(0, 150)}`);
+          lines.push(`- ${truncateSmart(e.summary, HANDOFF_BUDGET.errors)}`);
         }
         lines.push('');
       }
@@ -203,15 +230,21 @@ async function main() {
   }, TIMEOUT_MS);
 
   try {
-    const { upsertSession, logHookError, getDb, saveEffortClassification } = await import(srcDir + 'db.js');
-    const { buildContext }  = await import(srcDir + 'search.js');
+    const { upsertSession, logHookError, getDb, saveEffortClassification, saveInjectionStat } = await import(srcDir + 'db.js');
+    const { buildContextWithMetrics }  = await import(srcDir + 'search.js');
 
     upsertSession(sessionId, project);
 
-    const context = await buildContext(prompt, project);
+    const { text: context, bytes, tokensEst, sections, budgetHit } =
+      await buildContextWithMetrics(prompt, project);
 
     if (context) {
       process.stdout.write(context + '\n\n');
+      // #90: record every injection so `claudeye injection-stats` can show the
+      // RAG tax over time and trigger a health warning when p95 creeps up.
+      try {
+        saveInjectionStat({ sessionId, project, bytes, tokensEst, sections, budgetHit });
+      } catch { /* never break inject-hook on stats failure */ }
     }
 
     // Effort classification (#63) — rule-based, zero-latency

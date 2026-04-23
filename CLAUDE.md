@@ -46,7 +46,11 @@ Surface will extend beyond Claude Code (writers, PMs, researchers — anyone usi
 ## Current status
 
 **Runtime:** better-sqlite3 (native SQLite with FTS5). Fully operational.
-**Unified scheduler (#87):** launchd agent `com.claudeye.daily-insights` запускается ежедневно. Wrapper `~/.claudeye/insights-runner.sh` — dispatcher: каждый день → `insights-standalone.mjs` (rule-based alerts); по понедельникам → `claudeye advises generate` (Claude-powered behavioral advisor). Heartbeat `~/.claudeye/logs/insights-heartbeat.log` пишет breakdown по каждому подмодулю.
+**Unified scheduler (#87):** launchd agent `com.claudeye.daily-insights` запускается ежедневно. Wrapper `~/.claudeye/insights-runner.sh` — dispatcher: каждый день → `claudeye import cowork` (Cowork transcript import #88) + `insights-standalone.mjs` (rule-based alerts); по понедельникам → `claudeye advises generate` (Claude-powered behavioral advisor). Heartbeat `~/.claudeye/logs/insights-heartbeat.log` пишет breakdown по каждому подмодулю.
+**Cowork ingestion (#88):** Cowork desktop-app sessions не триггерят Claude Code hooks (другой runtime), поэтому `claudeye import cowork` читает транскрипты из `~/Library/Application Support/Claude/local-agent-mode-sessions/**/local_<uuid>.json` + `.claude/projects/.../<cliSessionId>.jsonl` и превращает каждый user prompt / assistant message / tool call в observation. Dedup — через таблицу `cowork_imports` (UNIQUE по `cli_session_id`). Project = `userSelectedFolders[0]` если есть, иначе synthetic `cowork://<name>`.
+**Injection budget (#90):** `inject-hook` измеряет размер RAG-контекста в байтах и токенах, пишет в `injection_stats` (session_id, project, bytes, tokens_est, sections_json, budget_hit). Budget gate: `inject_budget_tokens` в `~/.claudeye/settings.json` (default 1000) — при превышении `buildContextWithMetrics` дропает секции от низкоприоритетных (cross → searched → recent), уважая floor. CLI: `claudeye injection-stats [-d 7] [-p project]`. Health check warns если p95 > 1500 tok.
+**Error retention (#89):** `hook_errors` ротейтится через `claudeye cleanup` — rows старше 30 дней удаляются. Health check смотрит 24h window с trend-glyph (↑/↓/─), не 7d, чтобы исторические спайки от уже-зафикшенных багов не красили health в красное.
+**Session handoff smart-truncate (#91):** `inject-hook.js:buildSessionHandoff` использует `truncateSmart()` по границе слова + per-section budget (`errors: 250`, `recent: 200`, `file: 200`) вместо хардкод `slice(0, 150)`. decisions никогда не обрезаются.
 **Cowork scheduled tasks:** `claudeye-analyzer` runs daily at 13:05 — агрегирует метрики и сверяет readiness criteria. Issues создаёт отдельный `claudeye-dev-agent` (14:08).
 **GitHub Project:** https://github.com/users/leetio-varsha/projects/4
 
@@ -81,6 +85,7 @@ claudeye/
 │   ├── import-notion.js        # Notion import — pages + database rows (#9)
 │   ├── import-jira.js          # Jira Cloud import — issues + comments (#10)
 │   ├── import-linear.js        # Linear import — issues + comments via GraphQL (#10)
+│   ├── import-cowork.js        # Cowork transcript import (#88) — парсит .jsonl сессий из desktop app
 │   ├── export.js               # memory export → Markdown (#11)
 │   └── server.js               # Express web viewer, localhost:47777
 │
@@ -127,6 +132,9 @@ All data lives in `~/.claudeye/` (mode 0700).
 **`fts_obs`** — FTS5 virtual table (when available, otherwise LIKE fallback)
 **`issues`** — auto-detected issue lifecycle
 **`digests`** — cached weekly advisor reports
+**`hook_errors`** — diagnostic rows from failing hooks (retention 30d, #89)
+**`injection_stats`** — per-prompt RAG injection size + section breakdown (#90)
+**`cowork_imports`** — dedup for `claudeye import cowork` (#88)
 **`session_ratings`** — user ratings 1-5 per session
 **`import_sources`** — idempotent import tracking
 **`advises`** (#87) — Claude-powered behavioral advises. Поля: `category`, `observation`, `why`, `proposal`, `code_draft`, `confidence`, `status` (new/shown/accepted/dismissed/applied), `observation_hash` (dedup). Источник: `behavioral-advisor.js` → Claude CLI → JSON → таблица. Показываются через `inject-hook` (top-1 new) и CLI `claudeye advises`.

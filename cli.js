@@ -157,12 +157,50 @@ program.command('viewer')
     console.log(chalk.gray('  Press Ctrl+C to stop\n'));
   });
 
+// ─── injection-stats (#90) ──────────────────────────────────────────────
+
+program.command('injection-stats')
+  .description('Show RAG injection size stats (inject-hook — how much context per prompt)')
+  .option('-d, --days <n>', 'Days to look back', '7')
+  .option('-p, --project <path>', 'Filter by project')
+  .action(async (opts) => {
+    const { getInjectionStats } = await import('./src/db.js');
+    const stats = getInjectionStats({ days: parseInt(opts.days, 10), project: opts.project });
+
+    console.log(chalk.bold('\n📊 Injection Stats (' + opts.days + 'd)' + (opts.project ? ` — ${opts.project}` : '') + '\n'));
+    if (!stats.totalPrompts) {
+      console.log(chalk.gray('  No injection data yet. Send a prompt in Claude Code with hooks installed.\n'));
+      return;
+    }
+    console.log(`  Prompts injected:  ${chalk.cyan(stats.totalPrompts)}`);
+    console.log(`  Avg bytes:         ${chalk.cyan(stats.avgBytes)}`);
+    console.log(`  Max bytes:         ${chalk.cyan(stats.maxBytes)}`);
+    console.log(`  Tokens p50 / p95:  ${chalk.cyan(stats.p50)} / ${chalk.yellow(stats.p95)}`);
+    console.log(`  Tokens p99:        ${chalk.yellow(stats.p99)}`);
+    console.log(`  Budget gate hits:  ${stats.budgetHits ? chalk.yellow(stats.budgetHits) : chalk.green(0)}`);
+
+    if (stats.perSection.length) {
+      console.log(chalk.bold('\n  By section (avg bytes):'));
+      for (const s of stats.perSection) {
+        console.log(`    ${chalk.green(s.name.padEnd(12))} ${String(s.avgBytes).padStart(5)} B  ×${s.count}`);
+      }
+    }
+    if (stats.perProject.length) {
+      console.log(chalk.bold('\n  Top projects (avg bytes):'));
+      for (const p of stats.perProject) {
+        const short = p.project.replace(process.env.HOME, '~');
+        console.log(`    ${chalk.green(short.padEnd(50))} ${String(p.avgBytes).padStart(5)} B  ×${p.count}`);
+      }
+    }
+    console.log('');
+  });
+
 // ─── health ──────────────────────────────────────────────────────────────
 
 program.command('health')
   .description('Diagnostic check: DB, API keys, hooks, errors')
   .action(async () => {
-    const { getDb, getStats, getErrorStats } = await import('./src/db.js');
+    const { getDb, getStats, getErrorStats, getErrorHealthSnapshot, getInjectionStats } = await import('./src/db.js');
     const { isEmbeddingEnabled } = await import('./src/embeddings.js');
     const { existsSync, statSync } = await import('fs');
     const { join } = await import('path');
@@ -236,14 +274,40 @@ program.command('health')
       checks.push({ name: 'Session closure', ok: true, detail: 'check skipped' });
     }
 
-    // Error budget
+    // Error budget (#89: focus on actionable 24h window, show 7d trend for context).
+    // Stale spikes from already-fixed bugs used to keep this red forever — now
+    // health follows the rolling rate, and `claudeye cleanup` expires rows >30d.
     try {
-      const errors = getErrorStats(7);
-      const errOk = errors.total < 50;
-      checks.push({ name: 'Error budget (7d)', ok: errOk, detail: `${errors.total} errors` + (errors.byHook.length ? ' — ' + errors.byHook.slice(0,3).map(e => `${e.hook}:${e.error_type}(${e.count})`).join(', ') : '') });
+      const snap = getErrorHealthSnapshot();
+      const errOk = snap.last24h < 20;  // 20 errs/day is the new threshold
+      const trendGlyph = snap.trend === 'growing' ? '↑' : snap.trend === 'decaying' ? '↓' : '─';
+      const trendColor = snap.trend === 'growing' ? chalk.red : snap.trend === 'decaying' ? chalk.green : chalk.gray;
+      const hookBreakdown = snap.byHook.length
+        ? ' — ' + snap.byHook.slice(0,3).map(e => `${e.hook}:${e.error_type}(${e.count})`).join(', ')
+        : '';
+      checks.push({
+        name: 'Error budget (24h)',
+        ok: errOk,
+        detail: `${snap.last24h} errors ${trendColor(trendGlyph)} (7d: ${snap.last7d})${hookBreakdown}`,
+      });
     } catch {
       checks.push({ name: 'Error budget', ok: true, detail: '0 errors' });
     }
+
+    // Injection size (#90) — RAG tax on every prompt. Warn if p95 > 1500 tokens.
+    try {
+      const inj = getInjectionStats({ days: 7 });
+      if (inj.totalPrompts > 0) {
+        const injOk = inj.p95 <= 1500;
+        checks.push({
+          name: 'Injection size (7d)',
+          ok: injOk,
+          detail: `p50 ${inj.p50}tok · p95 ${inj.p95}tok · max ${inj.maxBytes}B · ${inj.totalPrompts} prompts`
+            + (inj.budgetHits ? ` · budget hits: ${inj.budgetHits}` : '')
+            + (!injOk ? ` — set ${chalk.yellow('inject_budget_tokens')} in settings.json` : ''),
+        });
+      }
+    } catch { /* skip if table not yet migrated */ }
 
     // Weekly digest freshness (#79)
     try {
@@ -539,6 +603,7 @@ program.command('cleanup')
       if (counts.medImportance) console.log(`    ${counts.medImportance} medium importance (0.3–0.7, >180 days)`);
       if (counts.highImportance) console.log(`    ${counts.highImportance} high importance (≥0.7, >365 days)`);
       if (counts.gitCommit) console.log(`    ${counts.gitCommit} old git-commit (importance <0.5, >14 days, beyond top 50/project)`);
+      if (counts.hookErrors) console.log(`    ${counts.hookErrors} hook_errors (>30 days — #89)`);
     } else {
       retSpinner.succeed('Nothing to delete — all data within retention policy.');
     }
@@ -685,11 +750,12 @@ program.command('clear')
 // ─── import ───────────────────────────────────────────────────────────────
 program.command('import')
   .description('Import history from external sources')
-  .argument('<source>', 'Source type: git | notion | jira | linear')
+  .argument('<source>', 'Source type: git | notion | jira | linear | cowork')
   .option('-p, --path <path>', 'Repository path (git)', process.cwd())
   .option('--since <date>', 'Only import commits since date (git)')
   .option('-n, --limit <n>', 'Max items to import (git | jira | linear)')
   .option('--skip-ai', 'Skip AI compression (faster, less rich)')
+  .option('--force', 'Re-import sessions already in import_sources (cowork)')
   .option('--token <token>', 'API token (notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY)')
   .option('--database-only', 'Import only database rows (notion)')
   .option('--pages-only', 'Import only standalone pages (notion)')
@@ -839,8 +905,45 @@ program.command('import')
       return;
     }
 
+    // ── cowork (#88) ─────────────────────────────────────────────────
+    if (source === 'cowork') {
+      const { importAllCoworkSessions, listCoworkSessions } = await import('./src/import-cowork.js');
+      const sessions = listCoworkSessions();
+      if (!sessions.length) {
+        console.log(chalk.yellow(`
+  No Cowork sessions found.
+  Looked in ~/Library/Application Support/Claude/local-agent-mode-sessions/
+`));
+        return;
+      }
+      const spinner = ora(`Importing ${sessions.length} Cowork sessions...`).start();
+      try {
+        const result = importAllCoworkSessions({ force: opts.force || false });
+        spinner.succeed(
+          `Cowork import: ${result.imported} imported, ${result.skipped} skipped, ` +
+          `${result.errors} errors — ${result.observations} observations from ${result.total} sessions`
+        );
+        // Surface projects touched so user can validate what ended up where.
+        const byProject = new Map();
+        for (const d of result.details) {
+          if (!d.project || !d.imported) continue;
+          byProject.set(d.project, (byProject.get(d.project) || 0) + d.imported);
+        }
+        if (byProject.size) {
+          console.log(chalk.bold('\n  Observations by project:'));
+          for (const [p, n] of [...byProject.entries()].sort((a, b) => b[1] - a[1])) {
+            const short = p.replace(process.env.HOME, '~');
+            console.log(`    ${chalk.green(short.padEnd(60))} ${chalk.yellow(n)}`);
+          }
+        }
+      } catch (err) {
+        spinner.fail(`Cowork import failed: ${err.message}`);
+      }
+      return;
+    }
+
     console.log(chalk.red(`
-  Unknown source: ${source}. Supported: git | notion | jira | linear
+  Unknown source: ${source}. Supported: git | notion | jira | linear | cowork
 `));
   });
 

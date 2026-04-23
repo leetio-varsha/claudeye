@@ -12,8 +12,44 @@
 
 import { ftsSearch, getObservationsWithEmbeddings, getRecentObservations, getDb } from './db.js';
 import { embed, cosineSimilarity, bufToFloat32 } from './embeddings.js';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 const RRF_K = 60;
+
+// ─── Token budget (#90) ──────────────────────────────────────────────────
+//
+// inject-hook prepends context to every user prompt, so any bloat here is
+// silently amortized over hundreds of prompts per session. Budget caps the
+// total injection size so we don't balloon context on prompts that happen
+// to hit a project with many high-importance decisions + a handoff + an
+// advise all at once.
+//
+// The gate drops lowest-priority sections first (cross-project, then low-
+// scoring searched hits), never dropping decisions or recent below a floor.
+
+const DEFAULT_INJECT_BUDGET_TOKENS = 1000;   // ≈ 4KB total
+const TOKEN_TO_BYTES = 4;                    // rough; keeps the math boring
+// Section floors — we will never trim below these even under budget pressure.
+const SECTION_FLOOR = {
+  decisions: 2,
+  recent:    2,
+  searched:  3,
+  cross:     0,  // cross-project is purely optional
+};
+
+function readInjectBudgetTokens() {
+  const env = parseInt(process.env.CLAUDEYE_INJECT_BUDGET_TOKENS, 10);
+  if (Number.isFinite(env) && env > 0) return env;
+  try {
+    const p = join(homedir(), '.claudeye', 'settings.json');
+    if (!existsSync(p)) return DEFAULT_INJECT_BUDGET_TOKENS;
+    const cfg = JSON.parse(readFileSync(p, 'utf8'));
+    const v = parseInt(cfg.inject_budget_tokens ?? cfg.injectBudgetTokens, 10);
+    return Number.isFinite(v) && v > 0 ? v : DEFAULT_INJECT_BUDGET_TOKENS;
+  } catch { return DEFAULT_INJECT_BUDGET_TOKENS; }
+}
 
 /**
  * Normalize worktree paths to parent project (#78).
@@ -99,8 +135,29 @@ export async function hybridSearch(query, project, {
 /**
  * Build the context string to inject into Claude Code.
  * Combines recent observations + hybrid search results.
+ *
+ * Backwards-compatible wrapper around buildContextWithMetrics (#90).
  */
 export async function buildContext(userPrompt, project, opts = {}) {
+  const { text } = await buildContextWithMetrics(userPrompt, project, opts);
+  return text;
+}
+
+/**
+ * Full version: returns the injected text plus a metrics object describing
+ * size and per-section breakdown, so inject-hook can record it in
+ * injection_stats (#90).
+ *
+ * @returns {{
+ *   text: string|null,
+ *   bytes: number,
+ *   tokensEst: number,
+ *   sections: Array<{ name, count, bytes }>,
+ *   budgetHit: boolean,
+ *   budgetTokens: number,
+ * }}
+ */
+export async function buildContextWithMetrics(userPrompt, project, opts = {}) {
   // Normalize worktree paths so worktrees get context from parent project (#78)
   const normalizedProject = normalizeProject(project);
 
@@ -132,46 +189,104 @@ export async function buildContext(userPrompt, project, opts = {}) {
     `).all(project);
   } catch { /* decision_rationale column may not exist yet */ }
 
-  const lines = [];
+  // Build per-section line arrays so the budget gate can trim them later.
+  const sections = [
+    {
+      name:   'decisions',
+      header: '## Key decisions (project context)',
+      lines:  decisions.map(d => `- ${d.decision_rationale}`),
+    },
+    {
+      name:   'recent',
+      header: '## Recent session context',
+      lines:  recent.map(o => `- ${o.summary}`),
+    },
+    {
+      name:   'searched',
+      header: '## Relevant past context',
+      lines:  dedupedSearch.map(obs => {
+        const tags = JSON.parse(obs.tags || '[]').join(', ');
+        return `- ${obs.summary}${tags ? ` [${tags}]` : ''}`;
+      }),
+    },
+    {
+      name:   'cross',
+      header: '## Cross-project context (reference only — verify before applying)',
+      lines:  crossFiltered.map(obs => {
+        const projName = obs.project?.split('/').pop() || 'unknown';
+        const tags = JSON.parse(obs.tags || '[]').join(', ');
+        return `- [${projName}] ${obs.summary}${tags ? ` [${tags}]` : ''}`;
+      }),
+    },
+  ];
 
-  if (decisions.length) {
-    lines.push('## Key decisions (project context)');
-    for (const d of decisions) {
-      lines.push(`- ${d.decision_rationale}`);
-    }
+  const budgetTokens = readInjectBudgetTokens();
+  const { budgetHit } = applyInjectBudget(sections, budgetTokens);
+
+  const used = sections.filter(s => s.lines.length > 0);
+  if (!used.length) {
+    return { text: null, bytes: 0, tokensEst: 0, sections: [], budgetHit: false, budgetTokens };
   }
 
-  if (recent.length) {
-    lines.push('\n## Recent session context');
-    for (const obs of recent) {
-      lines.push(`- ${obs.summary}`);
-    }
-  }
+  const bodyLines = [];
+  used.forEach((s, i) => {
+    if (i > 0) bodyLines.push('');
+    bodyLines.push(s.header);
+    bodyLines.push(...s.lines);
+  });
 
-  if (dedupedSearch.length) {
-    lines.push('\n## Relevant past context');
-    for (const obs of dedupedSearch) {
-      const tags = JSON.parse(obs.tags || '[]').join(', ');
-      lines.push(`- ${obs.summary}${tags ? ` [${tags}]` : ''}`);
-    }
-  }
-
-  if (crossFiltered.length) {
-    lines.push('\n## Cross-project context (reference only — verify before applying)');
-    for (const obs of crossFiltered) {
-      const projName = obs.project?.split('/').pop() || 'unknown';
-      const tags = JSON.parse(obs.tags || '[]').join(', ');
-      lines.push(`- [${projName}] ${obs.summary}${tags ? ` [${tags}]` : ''}`);
-    }
-  }
-
-  if (!lines.length) return null;
-
-  return [
+  const text = [
     '<!-- claude-mem: injected context — do not edit -->',
-    ...lines,
+    ...bodyLines,
     '<!-- end claude-mem context -->',
   ].join('\n');
+
+  const bytes = Buffer.byteLength(text, 'utf8');
+  const tokensEst = Math.ceil(bytes / TOKEN_TO_BYTES);
+
+  const metricsSections = sections.map(s => ({
+    name:  s.name,
+    count: s.lines.length,
+    bytes: s.lines.reduce((n, l) => n + Buffer.byteLength(l, 'utf8') + 1, 0),
+  }));
+
+  return { text, bytes, tokensEst, sections: metricsSections, budgetHit, budgetTokens };
+}
+
+/**
+ * Drop lines from least-important sections until the projected injection size
+ * fits under the token budget. Mutates `sections` in place.
+ */
+function applyInjectBudget(sections, budgetTokens) {
+  const byteBudget = budgetTokens * TOKEN_TO_BYTES;
+  let budgetHit = false;
+
+  const currentBytes = () => {
+    let n = 0;
+    for (const s of sections) {
+      if (!s.lines.length) continue;
+      n += Buffer.byteLength(s.header, 'utf8') + 1;
+      for (const l of s.lines) n += Buffer.byteLength(l, 'utf8') + 1;
+    }
+    return n;
+  };
+
+  if (currentBytes() <= byteBudget) return { budgetHit: false };
+  budgetHit = true;
+
+  // Trim from lowest-priority to highest, respecting per-section floor.
+  const order = ['cross', 'searched', 'recent', 'decisions'];
+  for (const name of order) {
+    const s = sections.find(x => x.name === name);
+    if (!s) continue;
+    const floor = SECTION_FLOOR[name] ?? 0;
+    while (s.lines.length > floor && currentBytes() > byteBudget) {
+      s.lines.pop();
+    }
+    if (currentBytes() <= byteBudget) break;
+  }
+
+  return { budgetHit };
 }
 
 // ─── Internal ─────────────────────────────────────────────────────────────
