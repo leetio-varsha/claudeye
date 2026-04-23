@@ -192,8 +192,11 @@ claudeye import linear --team ENG --limit 200
 # Cowork (#88) — desktop-app sessions don't fire Claude Code hooks, so import
 # their transcripts from disk. Deduped via cowork_imports (UNIQUE cli_session_id).
 # Daily run is wired into the unified scheduler.
+# Noise filter + intra-session dedup + assistant-text bundling (#93) keep the
+# import lean — empty TodoWrite, repeated `screenshot {}`, 'Да', etc. are dropped.
 claudeye import cowork
-claudeye import cowork --force               # re-import already-seen sessions
+claudeye import cowork --force               # wipes + re-imports (applies new filters)
+claudeye cleanup --cowork-noise              # also clears already-imported noise/dupes
 
 # Injection stats (#90) — RAG "tax" per user prompt
 claudeye injection-stats                     # last 7 days, p50/p95/p99
