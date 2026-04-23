@@ -43,6 +43,7 @@ claudeye import git --since 2024-01-01 # only recent commits
 claudeye import notion --token <token> # import Notion pages + databases
 claudeye import jira   --url <https://org.atlassian.net> --email <you@x> --token <api-token>
 claudeye import linear --token <api-key>
+claudeye import cowork                 # import Claude desktop Cowork sessions (#88)
 ```
 
 Repeat for each project you want Claudeye to know about.
@@ -187,6 +188,16 @@ claudeye import jira --project-key ENG --limit 200
 claudeye import linear --token <api-key>
 claudeye import linear --team ENG --limit 200
 # LINEAR_API_KEY env var also accepted
+
+# Cowork (#88) — desktop-app sessions don't fire Claude Code hooks, so import
+# their transcripts from disk. Deduped via cowork_imports (UNIQUE cli_session_id).
+# Daily run is wired into the unified scheduler.
+claudeye import cowork
+claudeye import cowork --force               # re-import already-seen sessions
+
+# Injection stats (#90) — RAG "tax" per user prompt
+claudeye injection-stats                     # last 7 days, p50/p95/p99
+claudeye injection-stats -d 30 -p /path      # scope to project / window
 
 # Analytics
 claudeye analytics                            # global overview
