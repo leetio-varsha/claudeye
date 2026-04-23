@@ -124,17 +124,104 @@ export function parseTranscript(path) {
         }
       }
     } else if (row.type === 'assistant' && row.message?.content) {
+      // #93: bundle all text blocks of a single assistant response into one
+      // event, so one assistant turn becomes one observation instead of 3-5
+      // fragments — the old behavior inflated CoworkAssistantText to 1358/day.
+      const parts = [];
       for (const c of row.message.content) {
         if (c.type === 'text' && c.text?.trim()) {
-          events.push({ kind: 'assistant', text: c.text, ts, uuid: row.uuid });
+          parts.push(c.text);
         } else if (c.type === 'tool_use') {
           toolCalls.set(c.id, { name: c.name, input: c.input, ts });
         }
+      }
+      if (parts.length) {
+        events.push({
+          kind: 'assistant',
+          text: parts.join('\n\n'),
+          ts,
+          uuid: row.uuid,
+        });
       }
     }
   }
 
   return events;
+}
+
+// ─── Noise filter (#93) ───────────────────────────────────────────────────
+
+// Tool inputs that carry no information (same JSON every call) — bundling or
+// skipping these prevents `screenshot × 7`, `list_scheduled_tasks × 7` etc.
+// from each becoming its own observation + embedding.
+const EMPTY_INPUT_TOOLS = new Set([
+  'mcp__computer-use__screenshot',
+  'mcp__scheduled-tasks__list_scheduled_tasks',
+  'mcp__session_info__list_sessions',
+  'mcp__computer-use__list_granted_applications',
+]);
+
+// Low-info service tools — keep but down-weight (importance 0.15) so they
+// still exist for debugging but don't drown the advisor signal.
+const SERVICE_TOOLS = new Set(['ToolSearch', 'TaskList', 'TaskGet']);
+
+const SHORT_PROMPTS = new Set([
+  'да', 'нет', 'ок', 'ok', 'yes', 'no',
+  'продолжай', 'go', 'next', 'далее', 'дальше',
+  'no response requested.', 'no response requested',
+]);
+
+/**
+ * @returns true if this event should NOT be saved as an observation.
+ */
+export function isNoiseEvent(ev) {
+  if (ev.kind === 'user') {
+    const t = (ev.text || '').trim().toLowerCase();
+    if (!t) return true;
+    if (SHORT_PROMPTS.has(t)) return true;
+    return false;
+  }
+  if (ev.kind === 'tool') {
+    const input = (ev.input || '').trim();
+    // Empty-input service calls — `{}` / `""` / JSON with no keys.
+    if (EMPTY_INPUT_TOOLS.has(ev.tool) && (!input || input === '{}' || input === '""')) {
+      return true;
+    }
+    // TodoWrite with an empty todo list — `{"todos":[]}`
+    if (ev.tool === 'TodoWrite') {
+      try {
+        const parsed = JSON.parse(input);
+        if (Array.isArray(parsed.todos) && parsed.todos.length === 0) return true;
+      } catch { /* not JSON — keep */ }
+    }
+    return false;
+  }
+  if (ev.kind === 'assistant') {
+    const t = (ev.text || '').trim();
+    if (!t) return true;
+    if (t.length < 20) return true;  // "ok", "done", "готово"
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Deduplicate repeated (tool, input) pairs within a single session. The first
+ * occurrence is kept; subsequent identical calls are dropped. Returns filtered
+ * events + a count of dropped duplicates for stats.
+ */
+export function dedupEvents(events) {
+  const seen = new Set();
+  const kept = [];
+  let dropped = 0;
+  for (const ev of events) {
+    if (ev.kind !== 'tool') { kept.push(ev); continue; }
+    const key = ev.tool + '|' + (ev.input || '').slice(0, 500);
+    if (seen.has(key)) { dropped++; continue; }
+    seen.add(key);
+    kept.push(ev);
+  }
+  return { events: kept, dropped };
 }
 
 // ─── Import orchestration ─────────────────────────────────────────────────
@@ -165,11 +252,24 @@ export function importCoworkSession(session, { force = false } = {}) {
     return { imported: 0, skipped: 1, reason: 'transcript missing: ' + transcriptPath };
   }
 
-  const events = parseTranscript(transcriptPath);
-  if (!events.length) return { imported: 0, skipped: 1, reason: 'empty transcript' };
+  const rawEvents = parseTranscript(transcriptPath);
+  if (!rawEvents.length) return { imported: 0, skipped: 1, reason: 'empty transcript' };
+
+  // #93: pre-filter noise and dedup repeated tool calls inside the session.
+  const afterNoise = rawEvents.filter(e => !isNoiseEvent(e));
+  const { events, dropped: dedupDropped } = dedupEvents(afterNoise);
+  const noiseDropped = rawEvents.length - afterNoise.length;
 
   const project = resolveProject(meta);
   const storedSessionId = 'cowork-' + cliSessionId;
+
+  // #93: on force re-import, wipe previously-imported rows for this session
+  // so the new filters (noise drop + assistant bundling) actually take effect
+  // instead of stacking on top of the old output.
+  if (force) {
+    db.prepare(`DELETE FROM observations WHERE session_id = ?`).run(storedSessionId);
+  }
+
   upsertSession(storedSessionId, project);
 
   let imported = 0;
@@ -194,11 +294,14 @@ export function importCoworkSession(session, { force = false } = {}) {
       model:           meta.model,
       createdAt:       meta.createdAt,
       lastActivityAt:  meta.lastActivityAt,
+      raw_events:      rawEvents.length,
+      noise_dropped:   noiseDropped,
+      dedup_dropped:   dedupDropped,
     }));
   });
   tx();
 
-  return { imported, skipped: 0 };
+  return { imported, skipped: 0, noiseDropped, dedupDropped, rawEvents: rawEvents.length };
 }
 
 /**
@@ -207,11 +310,24 @@ export function importCoworkSession(session, { force = false } = {}) {
  */
 export function importAllCoworkSessions({ force = false } = {}) {
   const sessions = listCoworkSessions();
-  const summary = { total: sessions.length, imported: 0, skipped: 0, observations: 0, errors: 0, details: [] };
+  const summary = {
+    total: sessions.length,
+    imported: 0,
+    skipped: 0,
+    observations: 0,
+    noiseDropped: 0,
+    dedupDropped: 0,
+    rawEvents: 0,
+    errors: 0,
+    details: [],
+  };
   for (const s of sessions) {
     try {
       const r = importCoworkSession(s, { force });
-      summary.observations += r.imported;
+      summary.observations  += r.imported;
+      summary.noiseDropped  += r.noiseDropped || 0;
+      summary.dedupDropped  += r.dedupDropped || 0;
+      summary.rawEvents     += r.rawEvents    || 0;
       if (r.imported > 0) summary.imported++; else summary.skipped++;
       summary.details.push({
         coworkSessionId: s.meta.sessionId,
@@ -274,37 +390,49 @@ function eventToObservation(ev, meta) {
   if (ev.kind === 'user') {
     const text = (ev.text || '').trim();
     if (!text) return null;
+    // #93: short prompts (but not pure noise — SHORT_PROMPTS was filtered)
+    // get low importance so they don't crowd the advisor. ≤5 words = terse.
+    const wordCount = text.split(/\s+/).length;
+    const importance = wordCount <= 5 ? 0.2 : 0.55;
     return {
       tool: 'CoworkUserPrompt',
       summary: text.slice(0, 500),
       rawInput: text,
       rawOutput: null,
       tags: ['cowork', 'user'],
-      importance: 0.55,
+      importance,
     };
   }
   if (ev.kind === 'assistant') {
     const text = (ev.text || '').trim();
     if (!text) return null;
+    // #93: one observation per assistant turn (text blocks already bundled in
+    // parseTranscript). Importance 0.3 — secondary source vs. tool calls.
     return {
       tool: 'CoworkAssistantText',
       summary: text.slice(0, 500),
       rawInput: null,
       rawOutput: text,
       tags: ['cowork', 'assistant'],
-      importance: 0.4,
+      importance: 0.3,
     };
   }
   if (ev.kind === 'tool') {
     const toolName = ev.tool || 'Tool';
     const summary = `[${toolName}] ${(ev.input || '').slice(0, 200)}`;
+    // #93: service tools (ToolSearch, TaskList, TaskGet) are operational
+    // chatter, not work-signal — keep but down-weight.
+    let importance;
+    if (toolName === 'Edit' || toolName === 'Write') importance = 0.6;
+    else if (SERVICE_TOOLS.has(toolName))             importance = 0.15;
+    else                                              importance = 0.4;
     return {
       tool: toolName,
       summary: summary.slice(0, 500),
       rawInput: ev.input,
       rawOutput: ev.output,
       tags: ['cowork', 'tool'],
-      importance: toolName === 'Edit' || toolName === 'Write' ? 0.6 : 0.4,
+      importance,
     };
   }
   return null;

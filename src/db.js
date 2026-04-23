@@ -641,6 +641,71 @@ export function getErrorHealthSnapshot() {
   return { last24h, last7d, trend, perDay, byHook };
 }
 
+// ─── Cowork noise cleanup (#93) ─────────────────────────────────────────────
+
+/**
+ * Remove Cowork-sourced observations that match the noise/dedup rules we
+ * enforce at import time (#93). Run after updating the importer so already-
+ * ingested sessions stop bloating the DB.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun — count rows without deleting.
+ * @returns {{ noise: number, duplicates: number, total: number }}
+ */
+export function cleanupCoworkNoise({ dryRun = false } = {}) {
+  const db = getDb();
+
+  // 1. Noise observations that match the import-time filter.
+  const noiseWhere = `
+    tags LIKE '%"cowork"%'
+    AND (
+      (tool = 'TodoWrite' AND raw_input LIKE '%"todos":[]%')
+      OR (tool IN ('mcp__computer-use__screenshot',
+                   'mcp__scheduled-tasks__list_scheduled_tasks',
+                   'mcp__session_info__list_sessions',
+                   'mcp__computer-use__list_granted_applications')
+          AND (raw_input IS NULL OR raw_input = '' OR raw_input = '{}' OR raw_input = '""'))
+      OR (tool = 'CoworkUserPrompt'
+          AND LOWER(TRIM(COALESCE(raw_input, ''))) IN
+              ('да','нет','ок','ok','yes','no','продолжай','go','next',
+               'далее','дальше','no response requested.','no response requested'))
+      OR (tool = 'CoworkAssistantText' AND LENGTH(COALESCE(raw_output,'')) < 20)
+    )
+  `;
+
+  const noise = db.prepare(`SELECT COUNT(*) as n FROM observations WHERE ${noiseWhere}`).get().n;
+
+  // 2. Duplicates inside a Cowork session: same session_id + tool + raw_input,
+  // keep the first occurrence (lowest id), delete the rest.
+  const dupSql = `
+    id IN (
+      SELECT id FROM (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                 PARTITION BY session_id, tool, COALESCE(raw_input, '')
+                 ORDER BY id
+               ) AS rn
+        FROM observations
+        WHERE tags LIKE '%"cowork"%'
+          AND session_id LIKE 'cowork-%'
+          AND tool NOT IN ('CoworkUserPrompt', 'CoworkAssistantText')
+      ) WHERE rn > 1
+    )
+  `;
+  const duplicates = db.prepare(`SELECT COUNT(*) as n FROM observations WHERE ${dupSql}`).get().n;
+  const total = noise + duplicates;
+
+  if (dryRun || total === 0) return { noise, duplicates, total };
+
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM observations WHERE ${noiseWhere}`).run();
+    db.prepare(`DELETE FROM observations WHERE ${dupSql}`).run();
+  });
+  tx();
+
+  return { noise, duplicates, total };
+}
+
 // ─── Injection stats (#90) ──────────────────────────────────────────────────
 
 /**
