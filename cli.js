@@ -685,15 +685,20 @@ program.command('clear')
 // ─── import ───────────────────────────────────────────────────────────────
 program.command('import')
   .description('Import history from external sources')
-  .argument('<source>', 'Source type: git | notion')
+  .argument('<source>', 'Source type: git | notion | jira | linear')
   .option('-p, --path <path>', 'Repository path (git)', process.cwd())
   .option('--since <date>', 'Only import commits since date (git)')
-  .option('-n, --limit <n>', 'Max commits to import (git)')
+  .option('-n, --limit <n>', 'Max items to import (git | jira | linear)')
   .option('--skip-ai', 'Skip AI compression (faster, less rich)')
-  .option('--token <token>', 'API token (notion: integration token, or set NOTION_API_KEY env)')
+  .option('--token <token>', 'API token (notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY)')
   .option('--database-only', 'Import only database rows (notion)')
   .option('--pages-only', 'Import only standalone pages (notion)')
-  .option('--project <label>', 'Project label for imported observations (notion)', 'notion')
+  .option('--project <label>', 'Project label for imported observations')
+  .option('--url <url>', 'Jira base URL (e.g. https://<workspace>.atlassian.net) — or set JIRA_URL')
+  .option('--email <email>', 'Jira account email for API token auth — or set JIRA_EMAIL')
+  .option('--jql <jql>', 'Custom JQL (jira)')
+  .option('--project-key <key>', 'Restrict to Jira project key (jira)')
+  .option('--team <key>', 'Restrict to Linear team key (linear)')
   .action(async (source, opts) => {
     const ora = (await import('ora')).default;
 
@@ -757,8 +762,85 @@ program.command('import')
       return;
     }
 
+    // ── jira ────────────────────────────────────────────────────────
+    if (source === 'jira') {
+      const baseUrl = opts.url   || process.env.JIRA_URL;
+      const email   = opts.email || process.env.JIRA_EMAIL;
+      const token   = opts.token || process.env.JIRA_API_TOKEN;
+      if (!baseUrl || !email || !token) {
+        console.log(chalk.red(`
+  Jira requires: --url <https://workspace.atlassian.net> --email <you@example.com> --token <api-token>
+  (or set JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN env vars)
+
+  Create an API token: https://id.atlassian.com/manage-profile/security/api-tokens
+`));
+        return;
+      }
+
+      const { importJira } = await import('./src/import-jira.js');
+      const spinner = ora('Connecting to Jira API...').start();
+      let lastMsg = '';
+      try {
+        const result = await importJira({ baseUrl, email, token }, {
+          skipAi:  opts.skipAi  || false,
+          jql:     opts.jql     || null,
+          project: opts.projectKey || null,
+          limit:   opts.limit ? parseInt(opts.limit) : null,
+          label:   opts.project || 'jira',
+          onProgress: ({ done, total }) => {
+            const msg = `Importing Jira issues... ${done}/${total}`;
+            if (msg !== lastMsg) { spinner.text = msg; lastMsg = msg; }
+          },
+        });
+        spinner.succeed(
+          `Jira import complete: ${result.imported} imported, ` +
+          `${result.skipped} skipped, ${result.errors} errors (${result.total} total)`
+        );
+      } catch (err) {
+        spinner.fail(`Jira import failed: ${err.message}`);
+      }
+      return;
+    }
+
+    // ── linear ──────────────────────────────────────────────────────
+    if (source === 'linear') {
+      const token = opts.token || process.env.LINEAR_API_KEY;
+      if (!token) {
+        console.log(chalk.red(`
+  Linear API key required.
+  Pass --token <api-key> or set LINEAR_API_KEY environment variable.
+
+  Create an API key: https://linear.app/settings/api
+`));
+        return;
+      }
+
+      const { importLinear } = await import('./src/import-linear.js');
+      const spinner = ora('Connecting to Linear API...').start();
+      let lastMsg = '';
+      try {
+        const result = await importLinear(token, {
+          skipAi: opts.skipAi || false,
+          team:   opts.team   || null,
+          limit:  opts.limit ? parseInt(opts.limit) : null,
+          label:  opts.project || 'linear',
+          onProgress: ({ done, total }) => {
+            const msg = `Importing Linear issues... ${done}/${total}`;
+            if (msg !== lastMsg) { spinner.text = msg; lastMsg = msg; }
+          },
+        });
+        spinner.succeed(
+          `Linear import complete: ${result.imported} imported, ` +
+          `${result.skipped} skipped, ${result.errors} errors (${result.total} seen)`
+        );
+      } catch (err) {
+        spinner.fail(`Linear import failed: ${err.message}`);
+      }
+      return;
+    }
+
     console.log(chalk.red(`
-  Unknown source: ${source}. Supported: git | notion
+  Unknown source: ${source}. Supported: git | notion | jira | linear
 `));
   });
 

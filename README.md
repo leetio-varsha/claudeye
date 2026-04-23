@@ -41,6 +41,8 @@ cd ~/my-project
 claudeye import git                    # import from current repo
 claudeye import git --since 2024-01-01 # only recent commits
 claudeye import notion --token <token> # import Notion pages + databases
+claudeye import jira   --url <https://org.atlassian.net> --email <you@x> --token <api-token>
+claudeye import linear --token <api-key>
 ```
 
 Repeat for each project you want Claudeye to know about.
@@ -175,7 +177,16 @@ claudeye import notion --token <token>        # import Notion pages + database r
 claudeye import notion --database-only        # only database rows
 claudeye import notion --pages-only           # only standalone pages
 # NOTION_API_KEY env var also accepted
-claudeye import jira                          # (coming soon — Issue #10)
+
+# Jira Cloud — issues + inline comments
+claudeye import jira --url https://acme.atlassian.net --email you@acme --token <api-token>
+claudeye import jira --project-key ENG --limit 200
+# JIRA_URL / JIRA_EMAIL / JIRA_API_TOKEN env vars also accepted
+
+# Linear — issues + comments (GraphQL)
+claudeye import linear --token <api-key>
+claudeye import linear --team ENG --limit 200
+# LINEAR_API_KEY env var also accepted
 
 # Analytics
 claudeye analytics                            # global overview
@@ -383,8 +394,8 @@ Select via `settings.embedding_provider` (`openai` | `voyage` | `fallback`) or a
 
 ### Phase 4: Import Layer & Integrations (May 2026)
 
-- [ ] Notion import (#9)
-- [ ] Jira/Linear import (#10)
+- [x] Notion import (#9)
+- [x] Jira/Linear import (#10)
 - [ ] Memory export as markdown (#11)
 - [ ] Read-first integrations: GitLab, Jira, Slack, Gmail, Sentry (#23)
 
