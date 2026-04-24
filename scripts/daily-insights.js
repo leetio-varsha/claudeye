@@ -276,6 +276,7 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
 
   // DB size + auto-compact (#74)
   const metrics = getDbMetrics();
+  let autoCompactNoOp = false;
 
   // Auto-compact when DB exceeds threshold — runs cleanup + compact + vacuum
   if (metrics.fileSizeMB > THRESHOLDS.DB_SIZE_AUTO_COMPACT_MB) {
@@ -283,6 +284,7 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
       const cleanupResult = cleanup({ vacuum: false });
       const compactResult = compact();
       const totalCleaned = cleanupResult.total + compactResult.total;
+      autoCompactNoOp = totalCleaned === 0;
 
       if (totalCleaned > 0) {
         // Run VACUUM after both cleanup and compact
@@ -313,13 +315,23 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
   }
 
   if (metrics.fileSizeMB > THRESHOLDS.DB_SIZE_WARN_MB) {
-    alerts.push({
-      severity: 'warning',
-      category: 'infra',
-      title: `База данных ${metrics.fileSizeMB}MB`,
-      detail: `Рекомендуемый максимум: ${THRESHOLDS.DB_SIZE_WARN_MB}MB. Поиск может замедлиться.`,
-      action: 'Запусти `claudeye cleanup --vacuum` для принудительной очистки.',
-    });
+    if (autoCompactNoOp) {
+      alerts.push({
+        severity: 'insight',
+        category: 'infra',
+        title: `База данных ${metrics.fileSizeMB}MB (в пределах retention)`,
+        detail: `Рекомендуемый максимум: ${THRESHOLDS.DB_SIZE_WARN_MB}MB, но auto-compact уже отработал и ничего не нашёл к удалению. Данные в рамках retention policy.`,
+        action: null,
+      });
+    } else {
+      alerts.push({
+        severity: 'warning',
+        category: 'infra',
+        title: `База данных ${metrics.fileSizeMB}MB`,
+        detail: `Рекомендуемый максимум: ${THRESHOLDS.DB_SIZE_WARN_MB}MB. Поиск может замедлиться.`,
+        action: 'Запусти `claudeye cleanup` для принудительной очистки.',
+      });
+    }
   }
 
   // Hook errors
