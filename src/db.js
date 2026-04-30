@@ -172,6 +172,20 @@ function _migrateAnalytics(db) {
       CREATE INDEX IF NOT EXISTS idx_advises_hash        ON advises(observation_hash);
       CREATE INDEX IF NOT EXISTS idx_advises_created     ON advises(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_advises_status_conf ON advises(status, confidence);
+
+      -- Agent actions (#20) — log of all Agent v1 runs for feedback loop
+      CREATE TABLE IF NOT EXISTS agent_actions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent        TEXT    NOT NULL,              -- 'cross-repo-context' | 'pr-review'
+        query        TEXT,                          -- user query or diff summary
+        project      TEXT,                          -- project where agent ran
+        result       TEXT,                          -- JSON: { results_count, top_projects, ... }
+        dry_run      INTEGER NOT NULL DEFAULT 0,    -- 1 if dry-run mode
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_actions_agent   ON agent_actions(agent);
+      CREATE INDEX IF NOT EXISTS idx_agent_actions_created ON agent_actions(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_actions_project ON agent_actions(project);
     `);
   } catch (err) {
     console.error('[mem:db] analytics migration failed:', err.message);

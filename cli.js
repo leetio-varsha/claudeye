@@ -1441,4 +1441,168 @@ program.command('export')
 // Register analytics commands (analytics, advise, rate, digest)
 registerAnalyticsCommands(program);
 
+// ─── agent (#20) ─────────────────────────────────────────────────────────────
+
+const agentCmd = program.command('agent')
+  .description('Agent v1 — automated tasks using Claudeye memory as context');
+
+agentCmd
+  .command('context <query>')
+  .description('Cross-repo context: search across ALL projects for a query')
+  .option('-p, --project <path>', 'Current project (for logging)', process.cwd())
+  .option('-n, --limit <n>',      'Max results',                   '15')
+  .option('--dry-run',            'Show results without logging',  false)
+  .action(async (query, opts) => {
+    const { crossRepoContext } = await import('./src/agent.js');
+    const ora = (await import('ora')).default;
+
+    const spinner = ora(`Searching across all projects for: "${query}"`).start();
+    try {
+      const { results, projects, totalResults } = await crossRepoContext(query, {
+        project: opts.project,
+        limit:   parseInt(opts.limit, 10),
+        dryRun:  !!opts.dryRun,
+      });
+      spinner.stop();
+
+      if (!totalResults) {
+        console.log(chalk.yellow('\n  No results across any project.\n'));
+        return;
+      }
+
+      const dryTag = opts.dryRun ? chalk.gray(' [dry-run]') : '';
+      console.log(chalk.bold(`\n🤖 Cross-repo context: "${query}"${dryTag}\n`));
+
+      for (const grp of projects) {
+        console.log(chalk.cyan(`  📁 ${grp.shortProject}`) + chalk.gray(` (${grp.count} result${grp.count === 1 ? '' : 's'})`));
+        const items = results
+          .filter(o => o.project === grp.project)
+          .slice(0, 3);
+        for (const obs of items) {
+          const score = (obs.hybridScore * 100).toFixed(1);
+          const tags  = JSON.parse(obs.tags || '[]');
+          const imp   = obs.importance >= 0.8 ? chalk.red('🔴') :
+                        obs.importance >= 0.5 ? chalk.yellow('🟡') : chalk.green('🟢');
+          console.log(`    ${imp} ${obs.summary.slice(0, 120)}`);
+          if (tags.length) console.log(`       ${chalk.gray('#' + tags.slice(0, 4).join(' #'))}`);
+          console.log(`       ${chalk.gray(obs.created_at.slice(0, 10))} ${chalk.yellow(`score: ${score}`)}`);
+        }
+        console.log('');
+      }
+
+      if (!opts.dryRun) {
+        console.log(chalk.gray(`  Logged to agent_actions.\n`));
+      }
+    } catch (err) {
+      spinner.fail(err.message);
+      process.exit(1);
+    }
+  });
+
+agentCmd
+  .command('pr-review')
+  .description('PR review: get git diff context from Claudeye memory')
+  .option('-p, --project <path>', 'Git repo path', process.cwd())
+  .option('--diff <text>',        'Pre-supplied diff (overrides git call)')
+  .option('-n, --limit <n>',      'Max context observations', '10')
+  .option('--dry-run',            'Show context without logging', false)
+  .action(async (opts) => {
+    const { prReview } = await import('./src/agent.js');
+    const ora = (await import('ora')).default;
+
+    const spinner = ora('Fetching git diff and searching Claudeye memory…').start();
+    try {
+      const { query, changedFiles, projectResults, crossResults, decisions } = await prReview({
+        project: opts.project,
+        diff:    opts.diff || null,
+        limit:   parseInt(opts.limit, 10),
+        dryRun:  !!opts.dryRun,
+      });
+      spinner.stop();
+
+      const dryTag = opts.dryRun ? chalk.gray(' [dry-run]') : '';
+      console.log(chalk.bold(`\n🤖 PR Review Context${dryTag}\n`));
+
+      if (changedFiles.length) {
+        console.log(chalk.bold('  Changed files:'));
+        for (const f of changedFiles) console.log(`    ${chalk.cyan(f)}`);
+        console.log('');
+      }
+
+      if (decisions.length) {
+        console.log(chalk.bold('  ⚡ Relevant decisions in this project:'));
+        for (const obs of decisions.slice(0, 5)) {
+          const tags = JSON.parse(obs.tags || '[]');
+          console.log(`    ${chalk.red('🔴')} ${obs.summary.slice(0, 120)}`);
+          if (tags.length) console.log(`       ${chalk.gray('#' + tags.slice(0, 3).join(' #'))}`);
+          console.log(`       ${chalk.gray(obs.created_at.slice(0, 10))}`);
+        }
+        console.log('');
+      }
+
+      const otherResults = projectResults.filter(o => {
+        const tags = JSON.parse(o.tags || '[]');
+        return !tags.includes('decision') && o.importance < 0.8;
+      });
+      if (otherResults.length) {
+        console.log(chalk.bold('  📋 Project context:'));
+        for (const obs of otherResults.slice(0, 5)) {
+          const score = (obs.hybridScore * 100).toFixed(1);
+          console.log(`    ${chalk.yellow('●')} ${obs.summary.slice(0, 120)}`);
+          console.log(`       ${chalk.gray(obs.created_at.slice(0, 10))} ${chalk.gray(`score: ${score}`)}`);
+        }
+        console.log('');
+      }
+
+      if (crossResults.length) {
+        console.log(chalk.bold('  🌐 Cross-project experience:'));
+        for (const obs of crossResults) {
+          const proj = (obs.project || '').replace(process.env.HOME || '', '~');
+          console.log(`    ${chalk.cyan('●')} [${proj.split('/').pop()}] ${obs.summary.slice(0, 100)}`);
+        }
+        console.log('');
+      }
+
+      if (!projectResults.length && !crossResults.length) {
+        console.log(chalk.yellow('  No relevant context found in memory.\n'));
+      }
+
+      if (!opts.dryRun) {
+        console.log(chalk.gray(`  Logged to agent_actions.\n`));
+      }
+    } catch (err) {
+      spinner.fail(err.message);
+      process.exit(1);
+    }
+  });
+
+agentCmd
+  .command('history')
+  .description('Show recent agent action log')
+  .option('--agent <name>', 'Filter by agent name')
+  .option('-n, --limit <n>', 'Max rows', '20')
+  .action(async (opts) => {
+    const { getAgentHistory } = await import('./src/agent.js');
+    const rows = getAgentHistory({ agent: opts.agent, limit: parseInt(opts.limit, 10) });
+
+    if (!rows.length) {
+      console.log(chalk.yellow('\n  No agent actions yet. Run `claudeye agent context <query>` or `claudeye agent pr-review`.\n'));
+      return;
+    }
+
+    console.log(chalk.bold('\n🤖 Agent Action History\n'));
+    for (const row of rows) {
+      const dryTag  = row.dry_run ? chalk.gray(' [dry]') : '';
+      const result  = row.result ? JSON.parse(row.result) : {};
+      const summary = Object.entries(result).map(([k, v]) =>
+        typeof v === 'object' ? null : `${k}=${v}`
+      ).filter(Boolean).join(', ');
+      console.log(`  ${chalk.cyan(row.created_at.slice(0, 16))}  ${chalk.bold(row.agent)}${dryTag}`);
+      if (row.query) console.log(`    Query: ${chalk.gray(row.query.slice(0, 80))}`);
+      if (row.project) console.log(`    Project: ${chalk.gray(row.project.replace(process.env.HOME || '', '~'))}`);
+      if (summary) console.log(`    ${chalk.gray(summary)}`);
+      console.log('');
+    }
+  });
+
 program.parse();
