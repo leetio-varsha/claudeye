@@ -52,6 +52,7 @@ Surface will extend beyond Claude Code (writers, PMs, researchers — anyone usi
 **Injection budget (#90):** `inject-hook` измеряет размер RAG-контекста в байтах и токенах, пишет в `injection_stats` (session_id, project, bytes, tokens_est, sections_json, budget_hit). Budget gate: `inject_budget_tokens` в `~/.claudeye/settings.json` (default 1000) — при превышении `buildContextWithMetrics` дропает секции от низкоприоритетных (cross → searched → recent), уважая floor. CLI: `claudeye injection-stats [-d 7] [-p project]`. Health check warns если p95 > 1500 tok.
 **Error retention (#89):** `hook_errors` ротейтится через `claudeye cleanup` — rows старше 30 дней удаляются. Health check смотрит 24h window с trend-glyph (↑/↓/─), не 7d, чтобы исторические спайки от уже-зафикшенных багов не красили health в красное.
 **Session handoff smart-truncate (#91):** `inject-hook.js:buildSessionHandoff` использует `truncateSmart()` по границе слова + per-section budget (`errors: 250`, `recent: 200`, `file: 200`) вместо хардкод `slice(0, 150)`. decisions никогда не обрезаются.
+**Agent v1 (#20):** `src/agent.js` — два use-case: `crossRepoContext()` (hybridSearch по всем проектам, grouped by project) и `prReview()` (git diff → Claudeye context → decisions + cross-project experience). Все запросы логируются в таблицу `agent_actions` (feedback loop). CLI: `claudeye agent context <query>`, `claudeye agent pr-review [--dry-run]`, `claudeye agent history`.
 **Cowork scheduled tasks:** `claudeye-analyzer` runs daily at 13:05 — агрегирует метрики и сверяет readiness criteria. Issues создаёт отдельный `claudeye-dev-agent` (14:08).
 **GitHub Project:** https://github.com/users/leetio-varsha/projects/4
 
@@ -88,6 +89,7 @@ claudeye/
 │   ├── import-linear.js        # Linear import — issues + comments via GraphQL (#10)
 │   ├── import-cowork.js        # Cowork transcript import (#88) — парсит .jsonl сессий из desktop app
 │   ├── export.js               # memory export → Markdown (#11)
+│   ├── agent.js                # Agent v1 (#20) — crossRepoContext(), prReview(), logAgentAction(), getAgentHistory()
 │   └── server.js               # Express web viewer, localhost:47777
 │
 ├── scripts/
@@ -110,7 +112,8 @@ claudeye/
     ├── embeddings.test.js      # cosineSimilarity, bufToFloat32
     ├── embeddings-provider.test.js # multi-provider selection, voyage/openai/fallback (#41)
     ├── auto-issues.test.js     # deduplication, issue formatting, friction trends, local-DB persistence (#83)
-    └── export.test.js          # renderMarkdown + edge cases (#11)
+    ├── export.test.js          # renderMarkdown + edge cases (#11)
+    └── agent.test.js           # agent_actions schema + CRUD tests (#20)
 ```
 
 ---
@@ -308,9 +311,9 @@ npm test                              # run all tests (node:test) — 120 tests
 
 ### Phase 3: Agent v1 (April-May 2026) ← CURRENT
 - [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
-- [ ] One agent, one use-case, full cycle through Claudeye (#20) ← #15, #16
-- [ ] Feedback loop: system learns from its own actions (#21) ← #20
-- [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20
+- [x] One agent, one use-case, full cycle through Claudeye (#20) — cross-repo-context + pr-review, agent_actions feedback loop
+- [ ] Feedback loop: system learns from its own actions (#21) ← #20 ✅ UNBLOCKED
+- [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20 ✅ UNBLOCKED
 
 ### Phase 4: Import Layer & Integrations (May 2026)
 - [x] Notion import (#9)
