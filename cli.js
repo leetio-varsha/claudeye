@@ -938,11 +938,12 @@ program.command('import')
       }
       const spinner = ora(`Importing ${sessions.length} Cowork sessions...`).start();
       try {
-        const result = importAllCoworkSessions({ force: opts.force || false });
+        const result = await importAllCoworkSessions({ force: opts.force || false });
         const dropped = (result.noiseDropped || 0) + (result.dedupDropped || 0);
+        const embStr = result.embeddings ? `, ${result.embeddings} embeddings` : '';
         spinner.succeed(
           `Cowork import: ${result.imported} imported, ${result.skipped} skipped, ` +
-          `${result.errors} errors — ${result.observations} observations from ${result.total} sessions` +
+          `${result.errors} errors — ${result.observations} observations${embStr} from ${result.total} sessions` +
           (dropped ? ` (filtered ${result.noiseDropped} noise + ${result.dedupDropped} dups from ${result.rawEvents} raw)` : '')
         );
         // Surface projects touched so user can validate what ended up where.
