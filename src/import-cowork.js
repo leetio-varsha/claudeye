@@ -26,7 +26,14 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { getDb, saveObservation, upsertSession, closeSession } from './db.js';
+import { getDb, saveObservation, saveEmbedding, upsertSession, closeSession } from './db.js';
+import { embedWithMeta, isEmbeddingEnabled } from './embeddings.js';
+
+// Embed only high-importance Cowork observations to keep imports fast.
+// Threshold matches the effective-coverage definition in getDbMetrics(): obs
+// with importance < 0.5 are pruned by the compactor anyway, so embedding them
+// would just be wasted API calls.
+const COWORK_EMBED_IMPORTANCE_MIN = 0.5;
 
 const COWORK_ROOT = join(
   homedir(),
@@ -232,9 +239,11 @@ export function dedupEvents(events) {
  * @param {object} session   — entry from listCoworkSessions()
  * @param {object} [opts]
  * @param {boolean} [opts.force]   — re-import even if dedup says done
- * @returns {{ imported: number, skipped: number, reason?: string }}
+ * @param {boolean} [opts.skipEmbeddings]  — disable post-import embedding pass
+ *                                           (used by tests + sandboxed runs)
+ * @returns {{ imported: number, embedded: number, skipped: number, reason?: string }}
  */
-export function importCoworkSession(session, { force = false } = {}) {
+export async function importCoworkSession(session, { force = false, skipEmbeddings = false } = {}) {
   const db = getDb();
   ensureImportSourcesTable(db);
 
@@ -273,15 +282,22 @@ export function importCoworkSession(session, { force = false } = {}) {
   upsertSession(storedSessionId, project);
 
   let imported = 0;
+  // Collect (obsId, summary) for high-importance observations so we can embed
+  // them after the synchronous transaction commits — embedWithMeta is async
+  // and shouldn't run inside the better-sqlite3 transaction.
+  const toEmbed = [];
   const tx = db.transaction(() => {
     for (const ev of events) {
       const obs = eventToObservation(ev, meta);
       if (!obs) continue;
-      saveObservation({
+      const obsId = saveObservation({
         sessionId: storedSessionId,
         project,
         ...obs,
       });
+      if (obs.importance >= COWORK_EMBED_IMPORTANCE_MIN && obs.summary) {
+        toEmbed.push({ obsId, summary: obs.summary });
+      }
       imported++;
     }
     closeSession(storedSessionId);
@@ -301,20 +317,37 @@ export function importCoworkSession(session, { force = false } = {}) {
   });
   tx();
 
-  return { imported, skipped: 0, noiseDropped, dedupDropped, rawEvents: rawEvents.length };
+  // Best-effort embedding pass — never fail the import if embeddings break.
+  // Skipped when caller requests it (tests) or when no real provider is
+  // configured (don't waste cycles on the keyword fallback).
+  let embedded = 0;
+  if (!skipEmbeddings && toEmbed.length && isEmbeddingEnabled()) {
+    for (const { obsId, summary } of toEmbed) {
+      try {
+        const embMeta = await embedWithMeta(summary);
+        if (embMeta?.vector) {
+          saveEmbedding(obsId, embMeta.vector, embMeta.model);
+          embedded++;
+        }
+      } catch { /* swallow — best-effort */ }
+    }
+  }
+
+  return { imported, embedded, skipped: 0, noiseDropped, dedupDropped, rawEvents: rawEvents.length };
 }
 
 /**
  * Import every Cowork session found on disk. Deduped via import_sources,
  * so safe to run repeatedly / on a schedule.
  */
-export function importAllCoworkSessions({ force = false } = {}) {
+export async function importAllCoworkSessions({ force = false, skipEmbeddings = false } = {}) {
   const sessions = listCoworkSessions();
   const summary = {
     total: sessions.length,
     imported: 0,
     skipped: 0,
     observations: 0,
+    embeddings: 0,
     noiseDropped: 0,
     dedupDropped: 0,
     rawEvents: 0,
@@ -323,8 +356,9 @@ export function importAllCoworkSessions({ force = false } = {}) {
   };
   for (const s of sessions) {
     try {
-      const r = importCoworkSession(s, { force });
+      const r = await importCoworkSession(s, { force, skipEmbeddings });
       summary.observations  += r.imported;
+      summary.embeddings    += r.embedded || 0;
       summary.noiseDropped  += r.noiseDropped || 0;
       summary.dedupDropped  += r.dedupDropped || 0;
       summary.rawEvents     += r.rawEvents    || 0;
