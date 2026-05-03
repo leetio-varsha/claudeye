@@ -9,7 +9,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync, statSync } from 'fs';
+import { existsSync, mkdirSync, statSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -1085,8 +1085,36 @@ export function cleanup({ dryRun = false, vacuum = false } = {}) {
  * @param {boolean} opts.dryRun
  * @returns {{ embeddingsPruned: number, rawCompacted: number, total: number }}
  */
+/**
+ * Read compact-related settings from ~/.claudeye/settings.json.
+ * All fields are optional — defaults used if missing or unparseable.
+ *
+ * @returns {{ embeddingRetentionDays: number, embeddingRetentionDaysHigh: number }}
+ *   embeddingRetentionDays     — delete embeddings for importance < 0.5 older than N days (default 7)
+ *   embeddingRetentionDaysHigh — delete embeddings for importance < 0.8 older than N days (default 90);
+ *                                set to 0 to disable this second tier.
+ */
+function readCompactSettings() {
+  try {
+    const p = join(DATA_DIR, 'settings.json');
+    if (!existsSync(p)) return {};
+    const cfg = JSON.parse(readFileSync(p, 'utf8'));
+    const result = {};
+    const low = parseInt(cfg.embedding_retention_days ?? cfg.embeddingRetentionDays, 10);
+    if (Number.isFinite(low) && low > 0) result.embeddingRetentionDays = low;
+    const high = parseInt(cfg.embedding_retention_days_high ?? cfg.embeddingRetentionDaysHigh, 10);
+    if (Number.isFinite(high) && high >= 0) result.embeddingRetentionDaysHigh = high;
+    return result;
+  } catch { return {}; }
+}
+
 export function compact({ dryRun = false } = {}) {
   const db = getDb();
+
+  // Read configurable retention windows from ~/.claudeye/settings.json (#96)
+  const cfg = readCompactSettings();
+  const LOW_RETENTION_DAYS  = cfg.embeddingRetentionDays     ?? 7;   // importance < 0.5
+  const HIGH_RETENTION_DAYS = cfg.embeddingRetentionDaysHigh ?? 90;  // importance < 0.8 (second tier)
 
   // Count embedding prune candidates
   // Git-commit: vector search caps at 50/project (GIT_CAP in getObservationsWithEmbeddings),
@@ -1100,30 +1128,46 @@ export function compact({ dryRun = false } = {}) {
     )
   `).get().n;
 
-  // Low-importance embeddings > 7 days — FTS5 still works for text search,
-  // only vector similarity is lost. Saves ~6KB per pruned embedding.
+  // Tier 1: Low-importance embeddings (< 0.5) older than LOW_RETENTION_DAYS.
+  // FTS5 still works for text search, only vector similarity is lost. ~6KB/embedding.
   const lowEmbCount = db.prepare(`
     SELECT COUNT(*) as n FROM embeddings e
     JOIN observations o ON o.id = e.observation_id
     WHERE o.tool != 'git-commit'
       AND o.importance < 0.5
-      AND o.created_at < datetime('now', '-7 days')
-  `).get().n;
+      AND o.created_at < datetime('now', '-' || ? || ' days')
+  `).get(LOW_RETENTION_DAYS).n;
+
+  // Tier 2: Medium-importance embeddings (0.5 ≤ importance < 0.8) older than HIGH_RETENTION_DAYS.
+  // For data this old, FTS + decision_rationale provide sufficient context without the vector blob.
+  const highEmbCount = HIGH_RETENTION_DAYS > 0
+    ? db.prepare(`
+        SELECT COUNT(*) as n FROM embeddings e
+        JOIN observations o ON o.id = e.observation_id
+        WHERE o.tool != 'git-commit'
+          AND o.importance >= 0.5 AND o.importance < 0.8
+          AND o.created_at < datetime('now', '-' || ? || ' days')
+      `).get(HIGH_RETENTION_DAYS).n
+    : 0;
 
   // Count raw data compaction candidates
   const rawCount = db.prepare(`
     SELECT COUNT(*) as n FROM observations
     WHERE (
       (tool = 'git-commit' AND created_at < datetime('now', '-3 days'))
-      OR (importance < 0.5 AND created_at < datetime('now', '-7 days'))
+      OR (importance < 0.5 AND created_at < datetime('now', '-' || ? || ' days'))
     )
     AND (raw_input IS NOT NULL OR raw_output IS NOT NULL)
-  `).get().n;
+  `).get(LOW_RETENTION_DAYS).n;
 
-  const embeddingsPruned = gitEmbCount + lowEmbCount;
+  const embeddingsPruned = gitEmbCount + lowEmbCount + highEmbCount;
   const total = embeddingsPruned + rawCount;
 
-  if (dryRun || total === 0) return { embeddingsPruned, embGit: gitEmbCount, embLow: lowEmbCount, rawCompacted: rawCount, total };
+  if (dryRun || total === 0) return {
+    embeddingsPruned, embGit: gitEmbCount, embLow: lowEmbCount, embHigh: highEmbCount,
+    rawCompacted: rawCount, total,
+    config: { LOW_RETENTION_DAYS, HIGH_RETENTION_DAYS },
+  };
 
   const run = db.transaction(() => {
     // Prune git-commit embeddings beyond newest 50 per project
@@ -1136,28 +1180,45 @@ export function compact({ dryRun = false } = {}) {
       )
     `).run();
 
+    // Tier 1: low-importance
     db.prepare(`
       DELETE FROM embeddings WHERE observation_id IN (
         SELECT o.id FROM observations o
         WHERE o.tool != 'git-commit'
           AND o.importance < 0.5
-          AND o.created_at < datetime('now', '-7 days')
+          AND o.created_at < datetime('now', '-' || ? || ' days')
       )
-    `).run();
+    `).run(LOW_RETENTION_DAYS);
+
+    // Tier 2: medium-importance aged out (configurable, off by default when HIGH=90)
+    if (HIGH_RETENTION_DAYS > 0) {
+      db.prepare(`
+        DELETE FROM embeddings WHERE observation_id IN (
+          SELECT o.id FROM observations o
+          WHERE o.tool != 'git-commit'
+            AND o.importance >= 0.5 AND o.importance < 0.8
+            AND o.created_at < datetime('now', '-' || ? || ' days')
+        )
+      `).run(HIGH_RETENTION_DAYS);
+    }
 
     // Strip raw data
     db.prepare(`
       UPDATE observations SET raw_input = NULL, raw_output = NULL
       WHERE (
         (tool = 'git-commit' AND created_at < datetime('now', '-3 days'))
-        OR (importance < 0.5 AND created_at < datetime('now', '-7 days'))
+        OR (importance < 0.5 AND created_at < datetime('now', '-' || ? || ' days'))
       )
       AND (raw_input IS NOT NULL OR raw_output IS NOT NULL)
-    `).run();
+    `).run(LOW_RETENTION_DAYS);
   });
   run();
 
-  return { embeddingsPruned, embGit: gitEmbCount, embLow: lowEmbCount, rawCompacted: rawCount, total };
+  return {
+    embeddingsPruned, embGit: gitEmbCount, embLow: lowEmbCount, embHigh: highEmbCount,
+    rawCompacted: rawCount, total,
+    config: { LOW_RETENTION_DAYS, HIGH_RETENTION_DAYS },
+  };
 }
 
 /**
