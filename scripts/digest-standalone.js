@@ -171,11 +171,16 @@ async function generateDigest() {
   monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
   const weekStart = monday.toISOString().slice(0, 10);
 
-  // Check if already exists
+  // Skip only if already generated TODAY — allow regeneration if digest was created
+  // earlier in the week (so the Sunday scheduler can update a mid-week manual digest
+  // with a full week of data).
+  const today = new Date().toISOString().slice(0, 10);
   try {
-    const existing = db.prepare('SELECT id FROM digests WHERE week_start = ?').get(weekStart);
+    const existing = db.prepare(
+      "SELECT id FROM digests WHERE week_start = ? AND date(created_at) = ?"
+    ).get(weekStart, today);
     if (existing) {
-      console.error(`[digest] Already exists for week ${weekStart}`);
+      console.error(`[digest] Already generated today for week ${weekStart}, skipping`);
       return null;
     }
   } catch {} // table might not exist yet
