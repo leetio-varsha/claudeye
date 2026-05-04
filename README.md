@@ -397,12 +397,21 @@ Select via `settings.embedding_provider` (`openai` | `voyage` | `fallback`) or a
 - [x] npm test — node:test runner with 29 tests (#72)
 - [x] GitHub Actions CI — automated tests on push (#66) ← #72
 - [x] Tool distribution anomaly — git-commit filtered from analytics (#67)
-- [x] DB auto-compact — daily auto-compact at 100MB, alert at 150MB (#74)
+- [x] DB auto-compact — daily auto-compact at 150MB, alert at 250MB (#74, threshold raised 2026-05-04)
+
+### Phase 2.6: Stability gate (May 2026)
+
+Goal: 14 consecutive days of all-green invariants → Beta MVP unblocked.
+
+- [ ] Invariants-mode analyzer — checklist replaces open-ended bug discovery (#99)
+- [ ] Regression policy — every closed bug-issue ships with `test/issue-N.test.js` (#100)
+- [x] Smoke regression tests for top recurrence classes — schedulers, schema migrations, session tracking
+- [x] Behavioral advisor TCC fix — standalone wrapper in `~/.claudeye/` (follow-up to #87)
 
 ### Phase 3: Agent v1 (April-May 2026)
 
 - [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
-- [ ] One agent, one use-case, full cycle through Claudeye (#20) ← #15, #16
+- [x] One agent, one use-case, full cycle through Claudeye (#20) ← #15, #16
 - [ ] Feedback loop: system learns from its own actions (#21) ← #20
 - [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20
 
