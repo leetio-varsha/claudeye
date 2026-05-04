@@ -215,13 +215,16 @@ program.command('health')
       const { getDbMetrics } = await import('./src/db.js');
       const stats = getStats();
       const metrics = getDbMetrics();
-      const sizeWarn = metrics.fileSizeMB > 100;
-      const sizeCrit = metrics.fileSizeMB > 200;
+      // Thresholds: 150MB action (run archive), 250MB critical. Steady-state floor
+      // after `claudeye archive` is ~100MB (recent + high-importance hot data) — alerting
+      // on >100 caused noise immediately after a successful archive.
+      const sizeWarn = metrics.fileSizeMB > 150;
+      const sizeCrit = metrics.fileSizeMB > 250;
       const embCoverage = metrics.obsCount > 0 ? Math.round(metrics.embCount / metrics.obsCount * 100) : 0;
       const gitPct = metrics.obsCount > 0 ? Math.round(metrics.gitCommitCount / metrics.obsCount * 100) : 0;
       let sizeAdvice = '';
-      if (sizeCrit) sizeAdvice = ` 🔴 >200MB — run ${chalk.red('claudeye archive')} to move old obs to archive.db`;
-      else if (sizeWarn) sizeAdvice = ` ⚠️  >100MB — run ${chalk.yellow('claudeye archive --dry-run')} to see what can be archived`;
+      if (sizeCrit) sizeAdvice = ` 🔴 >250MB — run ${chalk.red('claudeye archive')} to move old obs to archive.db`;
+      else if (sizeWarn) sizeAdvice = ` ⚠️  >150MB — run ${chalk.yellow('claudeye archive --dry-run')} to see what can be archived`;
       const effCov = metrics.effectiveCoverage;
       const embCovWarn = effCov < 80;
       checks.push({

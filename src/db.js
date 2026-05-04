@@ -1290,10 +1290,12 @@ export function getDbMetrics() {
  * Designed to be cheap to call — does a quick size check first.
  *
  * @param {object} opts
- * @param {number} opts.maxSizeMB  — trigger threshold (default 100MB)
+ * @param {number} opts.maxSizeMB  — trigger threshold (default 150MB).
+ *   Aligned with `claudeye health` warn level (was 100MB, raised to 150MB
+ *   so auto-compact doesn't fire right after a successful `claudeye archive`).
  * @returns {{ ran: boolean, compact?: object, cleanup?: object, vacuumed?: boolean }}
  */
-export function autoCleanup({ maxSizeMB = 100 } = {}) {
+export function autoCleanup({ maxSizeMB = 150 } = {}) {
   let fileSizeMB = 0;
   try {
     fileSizeMB = +(statSync(DB_PATH).size / 1024 / 1024).toFixed(1);
