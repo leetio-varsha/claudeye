@@ -265,6 +265,14 @@ export function migrate(db = getDb()) {
     CREATE INDEX IF NOT EXISTS idx_obs_session    ON observations(session_id);
     CREATE INDEX IF NOT EXISTS idx_obs_created_at ON observations(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_obs_importance ON observations(importance DESC);
+    -- Composite indexes for project-scoped vector search (#96):
+    -- idx_obs_project_created: covers ORDER BY created_at DESC within a project
+    --   → 12x speedup on large projects (39ms→3ms for 13k-obs astrosphere).
+    -- idx_obs_project_tool_created: used when filtering by tool as well.
+    CREATE INDEX IF NOT EXISTS idx_obs_project_created
+      ON observations(project, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_obs_project_tool_created
+      ON observations(project, tool, created_at DESC);
   `);
 
   console.error('[mem:db] migrations applied');
