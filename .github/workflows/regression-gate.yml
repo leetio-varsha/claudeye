@@ -1,0 +1,117 @@
+name: Regression Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  check-regression-test:
+    name: Regression test required for bug fixes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check regression test policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+
+          # Extract referenced issue numbers from PR title and body
+          COMBINED="$PR_TITLE
+          $PR_BODY"
+
+          # Look for "closes #N", "fixes #N", "resolves #N" patterns (case-insensitive)
+          ISSUE_NUMS=$(echo "$COMBINED" | grep -oiE '(closes|fixes|resolves|close|fix|resolve)[[:space:]]+#[0-9]+' \
+            | grep -oE '[0-9]+' || true)
+
+          if [ -z "$ISSUE_NUMS" ]; then
+            echo "ℹ️  No issue references found in PR — regression check skipped."
+            exit 0
+          fi
+
+          echo "📌 Referenced issues: $ISSUE_NUMS"
+
+          # Check which of those issues have label 'bug'
+          BUG_ISSUES=""
+          for NUM in $ISSUE_NUMS; do
+            LABELS=$(gh api "repos/$REPO/issues/$NUM" --jq '.labels[].name' 2>/dev/null || echo "")
+            if echo "$LABELS" | grep -qi "bug"; then
+              BUG_ISSUES="$BUG_ISSUES $NUM"
+              echo "🐛 Issue #$NUM has label 'bug'"
+            else
+              echo "  Issue #$NUM — no 'bug' label, skipping"
+            fi
+          done
+
+          if [ -z "$BUG_ISSUES" ]; then
+            echo "ℹ️  No bug issues referenced — regression check skipped."
+            exit 0
+          fi
+
+          # Check if PR adds/modifies a regression test file
+          # Convention: test/issue-N.test.js OR test/regression-*.test.js
+          CHANGED_FILES=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json files --jq '.files[].path' 2>/dev/null || \
+            git diff --name-only origin/main...HEAD)
+
+          echo "📂 Changed files:"
+          echo "$CHANGED_FILES"
+
+          REGRESSION_FOUND=false
+          SKIP_MARKER=false
+
+          # Check for regression:skip in PR title
+          if echo "$PR_TITLE" | grep -qi "regression:[[:space:]]*skip"; then
+            SKIP_MARKER=true
+          fi
+
+          if [ "$SKIP_MARKER" = "true" ]; then
+            echo "⏭️  'regression: skip' found in PR title — policy exemption applied."
+            exit 0
+          fi
+
+          # Check for issue-specific test files
+          for NUM in $BUG_ISSUES; do
+            if echo "$CHANGED_FILES" | grep -qE "test/issue-${NUM}\.test\.(js|ts|mjs)"; then
+              REGRESSION_FOUND=true
+              echo "✅ Found regression test: test/issue-${NUM}.test.*"
+              break
+            fi
+          done
+
+          # Check for modified regression-*.test.js files
+          if [ "$REGRESSION_FOUND" = "false" ]; then
+            if echo "$CHANGED_FILES" | grep -qE "test/regression-[^/]+\.test\.(js|ts|mjs)"; then
+              REGRESSION_FOUND=true
+              echo "✅ Found modified regression test file."
+            fi
+          fi
+
+          # Check if existing test file was modified (test/ any file)
+          if [ "$REGRESSION_FOUND" = "false" ]; then
+            if echo "$CHANGED_FILES" | grep -qE "^test/"; then
+              echo "⚠️  A test file was modified, but no issue-N.test.* or regression-*.test.* found."
+              echo "    Accepting — but prefer naming 'test/issue-${BUG_ISSUES## }.test.js' for traceability."
+              REGRESSION_FOUND=true
+            fi
+          fi
+
+          if [ "$REGRESSION_FOUND" = "false" ]; then
+            echo ""
+            echo "❌ REGRESSION POLICY VIOLATION"
+            echo "   Bug fix PR (issues:${BUG_ISSUES}) must include a regression test."
+            echo "   Expected: test/issue-N.test.js OR modified test/regression-*.test.js"
+            echo "   To skip: add 'regression: skip' to PR title with justification in body."
+            echo ""
+            echo "   See CLAUDE.md section 'Regression policy' for details."
+            exit 1
+          fi
+
+          echo "✅ Regression policy satisfied."
