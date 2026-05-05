@@ -4,9 +4,9 @@ HEARTBEAT="/Users/lord/.claudeye/logs/insights-heartbeat.log"
 DOW=$(date +%u)   # 1=Mon ... 7=Sun
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [runner] start (dow=$DOW)" >> "$HEARTBEAT"
 
-# Always: Cowork session import (#88)
+# Always: Cowork session import (#88, TCC fix — standalone avoids cli.js in ~/Documents)
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] import-cowork" >> "$HEARTBEAT"
-/opt/homebrew/bin/claudeye import cowork >>/Users/lord/.claudeye/logs/insights-stdout.log 2>>/Users/lord/.claudeye/logs/insights-stderr.log
+/opt/homebrew/bin/node /Users/lord/.claudeye/import-cowork-standalone.mjs >>/Users/lord/.claudeye/logs/insights-stdout.log 2>>/Users/lord/.claudeye/logs/insights-stderr.log
 rc_cowork=$?
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] import-cowork exit=$rc_cowork" >> "$HEARTBEAT"
 
