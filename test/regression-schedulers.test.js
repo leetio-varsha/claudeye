@@ -14,8 +14,9 @@ import { homedir } from 'os';
 
 const PAIRS = [
   // [source-in-repo, deployed-copy-in-home]
-  ['scripts/insights-runner.sh',          join(homedir(), '.claudeye/insights-runner.sh')],
-  ['scripts/behavioral-standalone.mjs',   join(homedir(), '.claudeye/behavioral-standalone.mjs')],
+  ['scripts/insights-runner.sh',               join(homedir(), '.claudeye/insights-runner.sh')],
+  ['scripts/behavioral-standalone.mjs',        join(homedir(), '.claudeye/behavioral-standalone.mjs')],
+  ['scripts/import-cowork-standalone.mjs',     join(homedir(), '.claudeye/import-cowork-standalone.mjs')],
   // digest-standalone.mjs and insights-standalone.mjs lived in ~/.claudeye/
   // before being mirrored into the repo — pair them up once they're added
   // to scripts/. Until then this list grows as standalones are formalized.
