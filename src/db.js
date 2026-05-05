@@ -969,11 +969,12 @@ export function getAutoIssueStats(days = 30) {
  * Embeddings cascade-delete via FK. FTS5 syncs via triggers.
  *
  * @param {object} opts
- * @param {boolean} opts.dryRun  — if true, return counts without deleting
- * @param {boolean} opts.vacuum  — if true, run VACUUM after cleanup (reclaims disk space)
- * @returns {{ lowImportance: number, medImportance: number, highImportance: number, gitCommit: number, total: number }}
+ * @param {boolean} opts.dryRun          — if true, return counts without deleting
+ * @param {boolean} opts.vacuum          — if true, run VACUUM after cleanup (reclaims disk space)
+ * @param {number}  opts.safetyMaxRatio  — skip deletion if candidates / total_obs exceeds this ratio (default 0.3 = 30%)
+ * @returns {{ lowImportance: number, medImportance: number, highImportance: number, gitCommit: number, total: number, skipped?: boolean, skipReason?: string }}
  */
-export function cleanup({ dryRun = false, vacuum = false } = {}) {
+export function cleanup({ dryRun = false, vacuum = false, safetyMaxRatio = 0.3 } = {}) {
   const db = getDb();
 
   const counts = {
@@ -1029,6 +1030,14 @@ export function cleanup({ dryRun = false, vacuum = false } = {}) {
   counts.total = counts.lowImportance + counts.medImportance + counts.highImportance + counts.gitCommit + counts.hookErrors;
 
   if (dryRun || counts.total === 0) return counts;
+
+  // Safety valve: skip deletion if candidates exceed safetyMaxRatio of total observations (#102)
+  if (safetyMaxRatio < 1.0) {
+    const totalObs = db.prepare('SELECT COUNT(*) as n FROM observations').get().n;
+    if (totalObs > 0 && counts.total / totalObs > safetyMaxRatio) {
+      return { ...counts, skipped: true, skipReason: 'safety_ratio', totalObs };
+    }
+  }
 
   // Execute deletions in a transaction
   const run = db.transaction(() => {
