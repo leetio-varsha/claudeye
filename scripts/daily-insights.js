@@ -52,7 +52,7 @@ const THRESHOLDS = {
   // Infrastructure
   HOOK_SILENCE_HOURS: 36,          // 🔴 no observations for 36+ hours
   DB_SIZE_WARN_MB: 150,            // 🟡 database getting large
-  DB_SIZE_AUTO_COMPACT_MB: 100,    // auto-run compact when DB exceeds this
+  DB_SIZE_AUTO_COMPACT_MB: 150,    // auto-run compact when DB exceeds this (aligned with db.js autoCleanup, #102)
   ERROR_RATE_CRIT: 20,             // 🔴 >20 hook errors in 24h
 
   // Activity
@@ -278,30 +278,58 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
   const metrics = getDbMetrics();
   let autoCompactNoOp = false;
 
-  // Auto-compact when DB exceeds threshold — runs cleanup + compact + vacuum
+  // Auto-compact when DB exceeds threshold — runs cleanup + compact + vacuum (#74, #102)
   if (metrics.fileSizeMB > THRESHOLDS.DB_SIZE_AUTO_COMPACT_MB) {
     try {
-      const cleanupResult = cleanup({ vacuum: false });
-      const compactResult = compact();
-      const totalCleaned = cleanupResult.total + compactResult.total;
-      autoCompactNoOp = totalCleaned === 0;
+      // Pre-purge dry-run: check how many observations would be deleted (#102)
+      const totalObs = db.prepare('SELECT COUNT(*) as n FROM observations').get().n;
+      const dryRunResult = cleanup({ dryRun: true });
+      const purgeRatio = totalObs > 0 ? dryRunResult.total / totalObs : 0;
 
-      if (totalCleaned > 0) {
-        // Run VACUUM after both cleanup and compact
-        db.exec('VACUUM');
-        const newMetrics = getDbMetrics();
-        const savedMB = (metrics.fileSizeMB - newMetrics.fileSizeMB).toFixed(1);
-
+      if (purgeRatio > 0.2) {
+        // More than 20% would be deleted — emit warning and skip automatic cleanup
         alerts.push({
-          severity: 'insight',
+          severity: 'warning',
           category: 'infra',
-          title: `Auto-compact: освобождено ${savedMB}MB (${metrics.fileSizeMB}MB → ${newMetrics.fileSizeMB}MB)`,
-          detail: `Cleanup: ${cleanupResult.total} observations удалено. Compact: ${compactResult.embeddingsPruned} embeddings + ${compactResult.rawCompacted} raw data.`,
-          action: null,
+          title: `Pre-purge warning: retention хочет удалить ${dryRunResult.total} obs (${Math.round(purgeRatio * 100)}%)`,
+          detail: `Обнаружено ${dryRunResult.total} observations к удалению из ${totalObs} (${Math.round(purgeRatio * 100)}%). Превышает 20% safety threshold — автоматическая очистка пропущена.`,
+          action: 'Запусти `claudeye cleanup` вручную если уверен, или проверь retention settings в ~/.claudeye/settings.json.',
         });
+        autoCompactNoOp = true;
+      } else {
+        // Safe to proceed with actual cleanup (safety valve also enforced inside cleanup() at 30%)
+        const cleanupResult = cleanup({ vacuum: false });
+        const compactResult = compact();
+        const totalCleaned = (cleanupResult.total ?? 0) + (compactResult.total ?? 0);
+        autoCompactNoOp = totalCleaned === 0;
 
-        // Update metrics reference for the size warning check below
-        metrics.fileSizeMB = newMetrics.fileSizeMB;
+        if (cleanupResult.skipped) {
+          // Safety valve fired inside cleanup() — shouldn't happen since we checked at 20%, but guard anyway
+          alerts.push({
+            severity: 'warning',
+            category: 'infra',
+            title: `Cleanup пропущен: safety valve (${Math.round(purgeRatio * 100)}% obs к удалению)`,
+            detail: `cleanup() отказался удалять ${cleanupResult.total} observations — превышен порог безопасности.`,
+            action: 'Запусти `claudeye cleanup --force` вручную для принудительной очистки.',
+          });
+          autoCompactNoOp = true;
+        } else if (totalCleaned > 0) {
+          // Run VACUUM after both cleanup and compact
+          db.exec('VACUUM');
+          const newMetrics = getDbMetrics();
+          const savedMB = (metrics.fileSizeMB - newMetrics.fileSizeMB).toFixed(1);
+
+          alerts.push({
+            severity: 'insight',
+            category: 'infra',
+            title: `Auto-compact: освобождено ${savedMB}MB (${metrics.fileSizeMB}MB → ${newMetrics.fileSizeMB}MB)`,
+            detail: `Cleanup: ${cleanupResult.total} observations удалено. Compact: ${compactResult.embeddingsPruned} embeddings + ${compactResult.rawCompacted} raw data.`,
+            action: null,
+          });
+
+          // Update metrics reference for the size warning check below
+          metrics.fileSizeMB = newMetrics.fileSizeMB;
+        }
       }
     } catch (e) {
       alerts.push({
