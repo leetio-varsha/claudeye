@@ -123,10 +123,14 @@ export async function compressObservation({ tool, input, output, project }) {
       env: { ...process.env, CLAUDEYE_INTERNAL: '1' },
     }).trim();
 
-    // Extract JSON from response (claude --print may wrap in markdown)
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON in response');
-    const parsed = JSON.parse(jsonMatch[0]);
+    // Extract JSON from response (claude --print may wrap in markdown).
+    // Use brace-depth counting instead of a greedy /\{[\s\S]*\}/ regex —
+    // the greedy form matches from the first '{' to the LAST '}' in the full
+    // response, which breaks when Claude appends any trailing text or when the
+    // JSON contains nested objects followed by further output.
+    const extracted = extractFirstJson(text);
+    if (!extracted) throw new Error('No JSON in response');
+    const parsed = JSON.parse(extracted);
 
     const tags = Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8) : [];
     let importance = Math.min(1, Math.max(0, parseFloat(parsed.importance) || 0.5));
@@ -187,6 +191,36 @@ export async function compressSession({ observations, project }) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Extract the first complete JSON object from a string using brace-depth
+ * counting.  More reliable than a greedy /\{[\s\S]*\}/ regex when the
+ * response contains trailing text or multiple closing braces.
+ *
+ * Examples that previously broke the greedy regex:
+ *   '{"k":"v"} some note {unrelated}'  → correctly returns '{"k":"v"}'
+ *   '```json\n{"k":"v"}\n```'          → correctly returns '{"k":"v"}'
+ */
+function extractFirstJson(text) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
 
 const NOISE_PATTERNS = [
   /^(ls|pwd|echo|cat|which|type|man|help|clear|history)\b/,
