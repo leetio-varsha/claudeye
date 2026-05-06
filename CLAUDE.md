@@ -176,6 +176,8 @@ Output: `{ summary: string, tags: string[], importance: float }`.
 
 Noise fast-path: bash commands matching `/^(ls|pwd|echo|cat|which|clear)/` skip AI entirely, stored with importance 0.05.
 
+**JSON extraction (2026-05-06):** greedy `/\{[\s\S]*\}/` заменён на `extractFirstJson()` (brace-depth counting) — фиксит `SyntaxError: Expected ',' or '}'` когда Claude добавлял trailing text после JSON. Тот же фикс в `src/behavioral-advisor.js` и `scripts/behavioral-standalone.mjs`.
+
 Importance scale:
 - `0.9+` — architectural decisions, security fixes, breaking changes
 - `0.8`  — decisions with rationale (auto-boosted by Decision Memory #25)
@@ -268,7 +270,7 @@ claudeye export --project <substring> --since <YYYY-MM-DD> --output <path>
 claudeye export --include-raw --no-git
 
 # Testing
-npm test                              # run all tests (node:test) — 120 tests
+npm test                              # run all tests (node:test) — 170 tests
 ```
 
 ---
