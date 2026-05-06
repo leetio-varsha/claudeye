@@ -262,11 +262,34 @@ function observationHash(category, observation) {
   return createHash('sha256').update(`${category}|${normalized}`).digest('hex').slice(0, 16);
 }
 
+// Brace-depth JSON extractor — avoids greedy /\{[\s\S]*\}/ overcapture.
+// Same fix as compress.js and behavioral-advisor.js.
+function extractFirstJson(text) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 function parseBehavioralJSON(raw) {
   let text = String(raw).trim();
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-  const m = text.match(/\{[\s\S]*\}/);
-  if (m) text = m[0];
+  const extracted = extractFirstJson(text);
+  if (extracted) text = extracted;
   try {
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed.advises)) {
