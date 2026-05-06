@@ -209,6 +209,80 @@ describe('Error Extraction', () => {
   });
 });
 
+// ─── JSON extraction (regression: greedy regex overcapture) ─────────────
+//
+// The earlier /\{[\s\S]*\}/ regex matched from the first '{' to the LAST '}'
+// in the entire response. When Claude appended trailing text or the JSON
+// contained nested objects followed by further output, the regex over-captured
+// and JSON.parse threw SyntaxError ("Expected ',' or '}' after property value").
+// Fixed by using brace-depth counting (extractFirstJson) — these tests guard
+// against the regression.
+
+function extractFirstJson(text) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+describe('extractFirstJson', () => {
+  it('extracts plain JSON object', () => {
+    const json = '{"summary":"test","tags":[],"importance":0.5}';
+    assert.equal(extractFirstJson(json), json);
+  });
+
+  it('extracts JSON from markdown code fence', () => {
+    const text = '```json\n{"summary":"s","tags":[],"importance":0.5}\n```';
+    const result = extractFirstJson(text);
+    assert.ok(result);
+    assert.doesNotThrow(() => JSON.parse(result));
+    assert.equal(JSON.parse(result).summary, 's');
+  });
+
+  it('stops at first complete object, ignores trailing text', () => {
+    // This is the regression case — greedy regex returned invalid JSON
+    const text = '{"summary":"s","tags":[],"importance":0.5} some note {unrelated}';
+    const result = extractFirstJson(text);
+    assert.ok(result);
+    assert.doesNotThrow(() => JSON.parse(result));
+    assert.equal(JSON.parse(result).summary, 's');
+  });
+
+  it('handles nested objects correctly', () => {
+    const text = '{"summary":"s","meta":{"key":"val"},"importance":0.7} trailing';
+    const result = extractFirstJson(text);
+    assert.ok(result);
+    const parsed = JSON.parse(result);
+    assert.equal(parsed.meta.key, 'val');
+  });
+
+  it('handles escaped quotes inside strings', () => {
+    const text = '{"summary":"he said \\"hello\\"","tags":[],"importance":0.3}';
+    const result = extractFirstJson(text);
+    assert.ok(result);
+    assert.doesNotThrow(() => JSON.parse(result));
+  });
+
+  it('returns null when no JSON object present', () => {
+    assert.equal(extractFirstJson('no json here'), null);
+    assert.equal(extractFirstJson(''), null);
+  });
+});
+
 // ─── Claude binary resolution (regression: claude-code-vm ENOEXEC) ───────
 //
 // The earlier resolver picked up ~/Library/Application Support/Claude/
