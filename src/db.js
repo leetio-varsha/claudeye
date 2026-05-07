@@ -345,7 +345,19 @@ export function getObservationsWithEmbeddings(project = null, limit = 500) {
       )
     `).all(project, limit, project, GIT_CAP);
   }
-  return db.prepare(`
+  // Global (cross-project) query: load a broad pool then resample in JS to ensure
+  // diverse representation across projects. The naive SQL approach (ORDER BY
+  // created_at DESC LIMIT N) biases heavily toward the most active project
+  // (e.g. astrosphere with 10k obs dominates all 300 slots). A window-function
+  // approach fixes diversity but costs ~74ms vs 7ms. JS resampling preserves
+  // the fast SQL while capping each project post-load.
+  //
+  // Load a larger pool (limit * 2) so the resample has enough candidates even
+  // for projects that appear late in created_at order. Then cap per project and
+  // trim to `limit`.
+  const PER_PROJECT_CAP = 100;
+  const poolSize = limit * 2;          // 600 rows — still fast to load
+  const rawRows = db.prepare(`
     SELECT * FROM (
       SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
       FROM observations o JOIN embeddings e ON e.observation_id = o.id
@@ -359,7 +371,21 @@ export function getObservationsWithEmbeddings(project = null, limit = 500) {
       WHERE o.tool = 'git-commit'
       ORDER BY o.created_at DESC LIMIT ?
     )
-  `).all(limit, GIT_CAP);
+  `).all(poolSize, GIT_CAP);
+
+  // Per-project cap: keep at most PER_PROJECT_CAP rows per project (most-recent first).
+  // Rows are already ordered by created_at DESC from the SQL, so we just count.
+  const projectCounts = new Map();
+  const resampled = [];
+  for (const row of rawRows) {
+    if (row.tool === 'git-commit') { resampled.push(row); continue; }
+    const n = projectCounts.get(row.project) || 0;
+    if (n < PER_PROJECT_CAP) {
+      projectCounts.set(row.project, n + 1);
+      resampled.push(row);
+    }
+  }
+  return resampled.slice(0, limit + GIT_CAP);
 }
 
 export function getRecentObservations(project = null, limit = 10) {
