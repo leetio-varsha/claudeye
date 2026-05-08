@@ -51,6 +51,51 @@ describe('normalizeProject', () => {
   });
 });
 
+// ─── Vector search performance regression (#96) ────────────────────────
+//
+// Guards against cosine similarity latency regression.
+// Baseline (2026-05-08): 300 rows × 1536 dims ≈ 1.9ms on MacBook Pro M3.
+// Hard limit set at 50ms to avoid flakiness on slower CI/remote machines.
+
+function cosineSimilarity(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+describe('Vector search performance (#96)', () => {
+  it('cosine similarity over 300 rows × 1536 dims completes under 50ms', () => {
+    const DIMS = 1536;
+    const ROWS = 300;
+    // Deterministic fake vectors
+    const queryVec = new Float32Array(DIMS).map((_, i) => Math.sin(i / 100));
+    const rows = Array.from({ length: ROWS }, (_, r) =>
+      new Float32Array(DIMS).map((_, i) => Math.cos((i + r) / 100))
+    );
+
+    const start = performance.now();
+    for (const vec of rows) cosineSimilarity(queryVec, vec);
+    const elapsed = performance.now() - start;
+
+    assert.ok(elapsed < 50, `cosine over ${ROWS} rows took ${elapsed.toFixed(1)}ms (limit: 50ms)`);
+  });
+
+  it('cosine similarity at 3× scale (900 rows) completes under 150ms', () => {
+    const DIMS = 1536;
+    const ROWS = 900;
+    const queryVec = new Float32Array(DIMS).map((_, i) => Math.sin(i / 100));
+    const rows = Array.from({ length: ROWS }, (_, r) =>
+      new Float32Array(DIMS).map((_, i) => Math.cos((i + r) / 100))
+    );
+
+    const start = performance.now();
+    for (const vec of rows) cosineSimilarity(queryVec, vec);
+    const elapsed = performance.now() - start;
+
+    assert.ok(elapsed < 150, `cosine over ${ROWS} rows took ${elapsed.toFixed(1)}ms (limit: 150ms)`);
+  });
+});
+
 // ─── RRF scoring logic ──────────────────────────────────────────────────
 
 const RRF_K = 60;
