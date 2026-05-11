@@ -1445,6 +1445,122 @@ program.command('export')
 // Register analytics commands (analytics, advise, rate, digest)
 registerAnalyticsCommands(program);
 
+// ─── invariants (#99) ────────────────────────────────────────────────────────
+
+program.command('invariants')
+  .description('Run invariant checks — structured stability verification')
+  .option('--json', 'Output raw JSON')
+  .option('--save', 'Persist result to invariant_checks table (default when run standalone)')
+  .option('--no-save', 'Do not persist (default for interactive runs)')
+  .action(async (opts) => {
+    const { checkInvariants, saveInvariantRun, getStabilityStreak } = await import('./src/invariants.js');
+    const { getDb } = await import('./src/db.js');
+    const db = getDb();
+
+    const ora = (await import('ora')).default;
+    const spinner = opts.json ? null : ora('Checking invariants...').start();
+
+    const result = await checkInvariants(db);
+    if (spinner) spinner.stop();
+
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    // Human-readable output
+    const greenChecks = result.checks.filter(c => c.status === 'green');
+    const redChecks   = result.checks.filter(c => c.status === 'red');
+    const skipped     = result.checks.filter(c => c.status === 'skipped');
+
+    console.log(chalk.bold('\n  Claudeye Invariants\n'));
+    for (const c of result.checks) {
+      const icon = c.status === 'green'   ? chalk.green('✓')
+                 : c.status === 'red'     ? chalk.red('✗')
+                 : chalk.gray('~');
+      const idStr = chalk.bold(c.id.padEnd(12));
+      const detail = c.status === 'red' ? chalk.yellow(c.detail) : chalk.gray(c.detail);
+      console.log(`  ${icon} ${idStr} ${detail}`);
+    }
+
+    console.log('');
+    if (result.all_green) {
+      console.log(chalk.green(`  ✅ All ${greenChecks.length} invariants green` + (skipped.length ? chalk.gray(` (${skipped.length} skipped)`) : '') + '\n'));
+    } else {
+      console.log(chalk.red(`  ❌ ${redChecks.length} violation${redChecks.length !== 1 ? 's' : ''}: ${result.violations.join(', ')}`));
+      console.log(chalk.gray(`     ${greenChecks.length} green, ${skipped.length} skipped\n`));
+    }
+
+    // Stability streak
+    const streak = getStabilityStreak(db);
+    if (streak.streak > 0) {
+      const mvp = streak.mvpGate ? chalk.green(' 🎉 MVP gate ready!') : chalk.gray(` (${14 - streak.streak} days to MVP gate)`);
+      console.log(chalk.cyan(`  Stability streak: ${streak.streak} day${streak.streak !== 1 ? 's' : ''} all-green`) + mvp + '\n');
+    }
+
+    // Persist if --save flag
+    if (opts.save) {
+      db.prepare(`
+        INSERT OR REPLACE INTO invariant_checks (run_date, all_green, green_count, red_count, violations, result_json)
+        VALUES (date('now'), ?, ?, ?, ?, ?)
+      `).run(
+        result.all_green ? 1 : 0,
+        greenChecks.length,
+        redChecks.length,
+        JSON.stringify(result.violations),
+        JSON.stringify(result.checks),
+      );
+      console.log(chalk.gray('  Saved to invariant_checks.\n'));
+    }
+  });
+
+// ─── stability (#99) ─────────────────────────────────────────────────────────
+
+program.command('stability')
+  .description('Show invariant stability streak — days of consecutive all-green runs')
+  .option('--days <n>', 'History to show', '14')
+  .action(async (opts) => {
+    const { getStabilityStreak } = await import('./src/invariants.js');
+    const { getDb } = await import('./src/db.js');
+    const db = getDb();
+
+    const streak = getStabilityStreak(db);
+    const days   = parseInt(opts.days) || 14;
+
+    const history = db.prepare(`
+      SELECT run_date, all_green, green_count, red_count, violations
+      FROM invariant_checks
+      ORDER BY run_date DESC
+      LIMIT ?
+    `).all(days);
+
+    console.log(chalk.bold('\n  Claudeye Stability\n'));
+
+    if (!history.length) {
+      console.log(chalk.yellow('  No invariant runs yet. Run: claudeye invariants --save\n'));
+      return;
+    }
+
+    for (const row of history) {
+      const icon = row.all_green ? chalk.green('✅') : chalk.red('❌');
+      const viols = row.all_green ? '' : chalk.yellow(` — ${JSON.parse(row.violations).join(', ')}`);
+      console.log(`  ${icon} ${row.run_date}  ${chalk.gray(`${row.green_count}✓ ${row.red_count}✗`)}${viols}`);
+    }
+
+    console.log('');
+    if (streak.streak > 0) {
+      const bar = '█'.repeat(Math.min(streak.streak, 30));
+      console.log(`  Streak: ${chalk.green(bar)} ${chalk.bold(streak.streak)} day${streak.streak !== 1 ? 's' : ''}`);
+      if (streak.mvpGate) {
+        console.log(chalk.green('\n  🎉 MVP gate ready! 14+ consecutive days all-green.\n'));
+      } else {
+        console.log(chalk.gray(`\n  ${14 - streak.streak} more day${14 - streak.streak !== 1 ? 's' : ''} to MVP gate.\n`));
+      }
+    } else {
+      console.log(chalk.red('  Streak: 0 — last run had violations.\n'));
+    }
+  });
+
 // ─── agent (#20) ─────────────────────────────────────────────────────────────
 
 const agentCmd = program.command('agent')
