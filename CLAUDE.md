@@ -58,7 +58,7 @@ Surface will extend beyond Claude Code (writers, PMs, researchers — anyone usi
 **Session handoff smart-truncate (#91):** `inject-hook.js:buildSessionHandoff` использует `truncateSmart()` по границе слова + per-section budget (`errors: 250`, `recent: 200`, `file: 200`) вместо хардкод `slice(0, 150)`. decisions никогда не обрезаются.
 **Agent v1 (#20):** `src/agent.js` — два use-case: `crossRepoContext()` (hybridSearch по всем проектам, grouped by project) и `prReview()` (git diff → Claudeye context → decisions + cross-project experience). Все запросы логируются в таблицу `agent_actions` (feedback loop). CLI: `claudeye agent context <query>`, `claudeye agent pr-review [--dry-run]`, `claudeye agent history`.
 **Cowork scheduled tasks:** `claudeye-analyzer` runs daily at 13:05 — агрегирует метрики и сверяет readiness criteria. Issues создаёт отдельный `claudeye-dev-agent` (14:08).
-**Stability strategy (#99, #100, 2026-05-04):** аналайзер мигрирует с open-ended «найди проблемы» на invariants-mode — конечный чеклист (SCHED-*, DATA-*, TRACK-*, SCHEMA-*, INFRA-*, SEC-*) для проверки. При нарушении создаётся issue по шаблону `observation → why → proposal → code_draft`. Все green 14 дней подряд = **Beta MVP gate**. Параллельно регрессионная политика: каждый закрытый bug-issue приходит с тестом в `test/issue-N.test.js` или `test/regression-<topic>.test.js`. Smoke-тесты для топ-категорий рецидивов уже добавлены: `regression-schedulers.test.js` (drift standalone-копий), `regression-schema.test.js` (идемпотентность миграций), `regression-tracking.test.js` (model/duration/token заполнены). Шаблон новых тестов: `test/_template-regression.test.js`.
+**Invariants-mode (#99, CLOSED 2026-05-11):** `src/invariants.js` реализует 18 инвариантов (SCHED-1..3, DATA-1..4, TRACK-1..3, SCHEMA-1..2, INFRA-1..4, SEC-1..2) — каждый возвращает `{ id, status: green|red|skipped, value, threshold, detail }`. Таблица `invariant_checks` хранит ежедневные runs. CLI: `claudeye invariants [--json|--save]`, `claudeye stability` (streak + MVP gate). Standalone: `scripts/invariants-runner.mjs` деплоится в `~/.claudeye/` и запускается из unified scheduler ежедневно. **Beta MVP gate = 14 consecutive all-green days** (виден в `claudeye stability`). Регрессионная политика: каждый закрытый bug-issue приходит с тестом в `test/regression-<topic>.test.js`. Уже: `regression-schedulers.test.js`, `regression-schema.test.js`, `regression-tracking.test.js`, `regression-data-quality.test.js`. Шаблон: `test/_template-regression.test.js`.
 **Storage thresholds (2026-05-04):** auto-compact и `claudeye health` warn-уровень подняты со 100MB до 150MB — после `claudeye archive` steady-state floor ~100MB и старый порог давал ложные срабатывания сразу после успешного архива. Critical уровень 250MB.
 **GitHub Project:** https://github.com/users/leetio-varsha/projects/4
 
@@ -263,6 +263,12 @@ claudeye insights                     # daily anomaly detection
 claudeye insights --schedule          # install launchd agent (daily 09:00, #82)
 claudeye insights --status            # scheduler status
 claudeye health                       # self-check (DB, digests, insights freshness)
+
+# Invariants / stability (#99)
+claudeye invariants                   # run all 18 invariant checks (SCHED/DATA/TRACK/SCHEMA/INFRA/SEC)
+claudeye invariants --json            # structured JSON output for CI/automation
+claudeye invariants --save            # run + persist to invariant_checks table
+claudeye stability                    # streak view: consecutive all-green days, MVP gate (14d)
 
 # Export (#11)
 claudeye export                       # memory → ./claudeye-export-YYYY-MM-DD.md
