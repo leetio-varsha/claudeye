@@ -186,6 +186,20 @@ function _migrateAnalytics(db) {
       CREATE INDEX IF NOT EXISTS idx_agent_actions_agent   ON agent_actions(agent);
       CREATE INDEX IF NOT EXISTS idx_agent_actions_created ON agent_actions(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_actions_project ON agent_actions(project);
+
+      -- Invariant check runs (#99) — daily stability tracking
+      CREATE TABLE IF NOT EXISTS invariant_checks (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date    TEXT    NOT NULL,                   -- YYYY-MM-DD (UTC)
+        all_green   INTEGER NOT NULL DEFAULT 0,         -- 1 if all non-skipped invariants passed
+        green_count INTEGER NOT NULL DEFAULT 0,
+        red_count   INTEGER NOT NULL DEFAULT 0,
+        violations  TEXT    NOT NULL DEFAULT '[]',      -- JSON array of invariant IDs that failed
+        result_json TEXT,                               -- full JSON of all checks
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_invariant_checks_date ON invariant_checks(run_date);
+      CREATE INDEX IF NOT EXISTS idx_invariant_checks_green ON invariant_checks(all_green, run_date DESC);
     `);
   } catch (err) {
     console.error('[mem:db] analytics migration failed:', err.message);

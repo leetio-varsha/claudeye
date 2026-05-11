@@ -28,16 +28,22 @@ const LOG_ERR  = join(LOG_DIR, 'insights-stderr.log');
 export function install({ hour = 9, minute = 0 } = {}) {
   if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
-  // Copy standalone insights script to ~/.claudeye/ (TCC-safe, like digest)
+  // Copy standalone scripts to ~/.claudeye/ (TCC-safe, like digest)
   const standaloneSrc  = join(__dirname, 'insights-standalone.js');
   const standaloneDest = join(homedir(), '.claudeye', 'insights-standalone.mjs');
+  const invariantsRunnerSrc  = join(__dirname, 'invariants-runner.mjs');
+  const invariantsRunnerDest = join(homedir(), '.claudeye', 'invariants-runner.mjs');
 
   if (existsSync(standaloneSrc)) {
     copyFileSync(standaloneSrc, standaloneDest);
   }
+  if (existsSync(invariantsRunnerSrc)) {
+    copyFileSync(invariantsRunnerSrc, invariantsRunnerDest);
+  }
 
   // Wrapper: dispatches to subcommands by day-of-week (#87 unified scheduler).
   //   daily   → insights-standalone.mjs  (rule-based alerts)
+  //   daily   → invariants-runner.mjs    (#99 stability tracking)
   //   Mon     → `claudeye advises generate --source behavioral` (Claude-powered)
   //   Fri     → `claudeye advises generate --source automation` (ROI-scored)
   // Each subcommand has its own heartbeat line so we can see which failed.
@@ -54,6 +60,12 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] insights-standalone" >> "$HEARTB
 /opt/homebrew/bin/node ${standaloneDest} 2>>${LOG_ERR}
 rc_insights=$?
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] insights-standalone exit=$rc_insights" >> "$HEARTBEAT"
+
+# Always: invariants check (#99) — saves to invariant_checks table for stability streak
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] invariants-runner" >> "$HEARTBEAT"
+/opt/homebrew/bin/node ${invariantsRunnerDest} 2>>${LOG_ERR}
+rc_inv=$?
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] invariants-runner exit=$rc_inv" >> "$HEARTBEAT"
 
 # Monday: Claude-powered behavioral advisor
 if [ "$DOW" = "1" ]; then
