@@ -184,7 +184,7 @@ describe('Auto-Issues Local DB persistence (#83)', () => {
   });
 
   after(() => {
-    db.close();
+    db?.close();
     try { unlinkSync(TEST_DB); } catch {}
   });
 
