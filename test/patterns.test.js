@@ -86,7 +86,7 @@ before(() => {
 });
 
 after(() => {
-  db.close();
+  db?.close();
   try { unlinkSync(TEST_DB); } catch {}
 });
 

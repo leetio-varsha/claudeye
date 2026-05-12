@@ -39,7 +39,7 @@ before(() => {
 });
 
 after(() => {
-  db.close();
+  db?.close();
   try { unlinkSync(TEST_DB); } catch {}
   try { require('fs').rmdirSync(TEST_DIR); } catch {}
 });

@@ -80,7 +80,7 @@ before(() => {
 });
 
 after(() => {
-  db.close();
+  db?.close();
   if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
 });
 
