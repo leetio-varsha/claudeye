@@ -109,14 +109,18 @@ export async function compressObservation({ tool, input, output, project }) {
 
   try {
     const userMsg = `Project: ${project}\nTool: ${tool}\nInput: ${truncatedInput}\nOutput: ${truncatedOutput}`;
-    const prompt = `${SYSTEM_PROMPT}\n\n${userMsg}`;
 
-    // Pass prompt via stdin to avoid ARG_MAX limits on large tool outputs (#52)
+    // Pass user message via stdin to avoid ARG_MAX limits on large tool outputs (#52)
     // Claude Code 2.1.x removed `-m` (use `--model`) and `--max-tokens` entirely.
     // CLAUDEYE_INTERNAL=1 prevents inject-hook from treating this claude --print
     // call as a real user session, which caused phantom sessions in mem.db.
-    const text = execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '-'], {
-      input: prompt,
+    //
+    // --system-prompt is required (fixes #103): Claude Code 2.1.x+ uses its own
+    // default system prompt which overrides instructions embedded in the user
+    // message, causing conversational replies instead of JSON. Passing SYSTEM_PROMPT
+    // via --system-prompt replaces the default and restores correct JSON output.
+    const text = execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '--system-prompt', SYSTEM_PROMPT, '-'], {
+      input: userMsg,
       encoding: 'utf8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -173,13 +177,15 @@ export async function compressSession({ observations, project }) {
     .join('\n');
 
   try {
-    const prompt = `Summarize this coding session for project "${project}" in 3-5 sentences. Focus on: what was built/fixed, key decisions, any unresolved issues. Be specific.\n\nSession observations:\n${topObs}`;
+    const userMsg = `Summarize this coding session for project "${project}" in 3-5 sentences. Focus on: what was built/fixed, key decisions, any unresolved issues. Be specific.\n\nSession observations:\n${topObs}`;
 
-    // Pass prompt via stdin to avoid ARG_MAX limits (#52)
+    // Pass user message via stdin to avoid ARG_MAX limits (#52)
     // Claude Code 2.1.x removed `-m` (use `--model`) and `--max-tokens` entirely.
     // CLAUDEYE_INTERNAL=1 prevents inject-hook from creating phantom sessions.
-    return execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '-'], {
-      input: prompt,
+    // --system-prompt overrides Claude Code default to get a plain prose summary (#103).
+    const SESSION_SYS = 'You are a coding session summarizer. Respond with a concise plain-text summary only. No markdown headers, no bullet points, no preamble.';
+    return execFileSync(CLAUDE_BIN, ['--print', '--model', 'haiku', '--system-prompt', SESSION_SYS, '-'], {
+      input: userMsg,
       encoding: 'utf8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe'],
