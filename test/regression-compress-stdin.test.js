@@ -128,8 +128,10 @@ describe('issue #85 — compressSession uses CLAUDE_BIN not hardcoded "claude"',
     const fnStart = compressSrc.indexOf('export async function compressSession');
     assert.ok(fnStart >= 0, 'compressSession export must exist');
 
-    // Extract up to closing brace — grab a generous window
-    const fnBody = compressSrc.slice(fnStart, fnStart + 800);
+    // Extract up to closing brace — grab a generous window.
+    // 800 was too short after --system-prompt was added in bd638b6 (#103),
+    // which pushed CLAUDE_BIN past the window boundary. 1500 gives ample room.
+    const fnBody = compressSrc.slice(fnStart, fnStart + 1500);
     assert.ok(
       fnBody.includes('CLAUDE_BIN'),
       'compressSession must use CLAUDE_BIN variable (#85)'
