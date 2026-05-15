@@ -16,6 +16,12 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] insights-standalone" >> "$HEARTB
 rc_insights=$?
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] insights-standalone exit=$rc_insights" >> "$HEARTBEAT"
 
+# Always: weekly digest (idempotent — skips if already generated today for this week)
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] digest-standalone" >> "$HEARTBEAT"
+/opt/homebrew/bin/node /Users/lord/.claudeye/digest-standalone.mjs >>/Users/lord/.claudeye/logs/digest-stdout.log 2>>/Users/lord/.claudeye/logs/digest-stderr.log
+rc_digest=$?
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] digest-standalone exit=$rc_digest" >> "$HEARTBEAT"
+
 # Monday: Claude-powered behavioral advisor (standalone — TCC fix for #87)
 if [ "$DOW" = "1" ]; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] behavioral-standalone start" >> "$HEARTBEAT"
