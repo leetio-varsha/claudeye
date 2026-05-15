@@ -181,7 +181,7 @@ describe('invariants module', () => {
     it('green when git-commit ≤10%', async () => {
       const db = makeDb();
       const sid = 's-data1';
-      db.prepare("INSERT INTO sessions (id, project, ended_at) VALUES (?, '/test', datetime('now'))").run(sid, '/test');
+      db.prepare("INSERT INTO sessions (id, project, ended_at) VALUES (?, '/test', datetime('now'))").run(sid);
       // 1 git-commit + 10 real obs
       db.prepare("INSERT INTO observations (session_id, project, tool, summary, created_at) VALUES (?, '/test', 'git-commit', 'commit', datetime('now'))").run(sid);
       for (let i = 0; i < 10; i++) {
@@ -195,7 +195,7 @@ describe('invariants module', () => {
     it('red when git-commit >10%', async () => {
       const db = makeDb();
       const sid = 's-data1-red';
-      db.prepare("INSERT INTO sessions (id, project, ended_at) VALUES (?, '/test', datetime('now'))").run(sid, '/test');
+      db.prepare("INSERT INTO sessions (id, project, ended_at) VALUES (?, '/test', datetime('now'))").run(sid);
       // 5 git-commits + 3 real obs = 62.5% git
       for (let i = 0; i < 5; i++) {
         db.prepare("INSERT INTO observations (session_id, project, tool, summary, created_at) VALUES (?, '/test', 'git-commit', ?, datetime('now'))").run(sid, `commit ${i}`);
@@ -244,7 +244,7 @@ describe('invariants module', () => {
     it('green when at least one decision this week', async () => {
       const db = makeDb();
       const sid = 's-track3';
-      db.prepare("INSERT INTO sessions (id, project, ended_at) VALUES (?, '/test', datetime('now'))").run(sid, '/test');
+      db.prepare("INSERT INTO sessions (id, project, ended_at) VALUES (?, '/test', datetime('now'))").run(sid);
       db.prepare("INSERT INTO observations (session_id, project, tool, summary, decision_rationale, created_at) VALUES (?, '/test', 'Edit', 'summary', 'chose SQLite over Postgres', datetime('now'))").run(sid);
       const result = await checkInvariants(db);
       const track3 = result.checks.find(c => c.id === 'TRACK-3');
