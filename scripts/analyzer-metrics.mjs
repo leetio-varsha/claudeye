@@ -30,6 +30,24 @@ function run() {
   const result = {
     obs:                safeVal(db, 'SELECT COUNT(*) AS n FROM observations'),
     emb:                safeVal(db, 'SELECT COUNT(*) AS n FROM embeddings'),
+    // emb_embeddable: embeddings for importance>=0.5 obs only (correct coverage denominator — #106)
+    emb_embeddable:     safeVal(db, `
+      SELECT
+        COUNT(e.observation_id) AS embedded,
+        COUNT(o.id)             AS embeddable
+      FROM observations o
+      LEFT JOIN embeddings e ON e.observation_id = o.id
+      WHERE o.importance >= 0.5
+        AND (
+          o.tool != 'git-commit'
+          OR o.id IN (
+            SELECT id FROM (
+              SELECT id, ROW_NUMBER() OVER (PARTITION BY project ORDER BY created_at DESC) AS rn
+              FROM observations WHERE tool = 'git-commit'
+            ) WHERE rn <= 50
+          )
+        )
+    `),
     sessions:           safeVal(db, 'SELECT COUNT(*) AS n FROM sessions'),
     ai_summaries:       safeVal(db, `SELECT COUNT(*) AS n FROM sessions WHERE summary IS NOT NULL AND summary NOT LIKE '%Session with%' AND summary NOT LIKE '%auto-closed%'`),
     decisions:          safeVal(db, 'SELECT COUNT(*) AS n FROM observations WHERE decision_rationale IS NOT NULL'),
