@@ -10,6 +10,13 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] import-cowork" >> "$HEARTBEAT"
 rc_cowork=$?
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] import-cowork exit=$rc_cowork" >> "$HEARTBEAT"
 
+# Always: embedding backfill for obs added without embeddings (#105)
+# import-cowork-standalone skips embeddings; this fills the gap (max 100/run)
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] reindex-standalone" >> "$HEARTBEAT"
+/opt/homebrew/bin/node /Users/lord/.claudeye/reindex-standalone.mjs >>/Users/lord/.claudeye/logs/insights-stdout.log 2>>/Users/lord/.claudeye/logs/insights-stderr.log
+rc_reindex=$?
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] reindex-standalone exit=$rc_reindex" >> "$HEARTBEAT"
+
 # Always: daily rule-based insights (standalone, no ~/Documents access — #82)
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [dispatch] insights-standalone" >> "$HEARTBEAT"
 /opt/homebrew/bin/node /Users/lord/.claudeye/insights-standalone.mjs 2>>/Users/lord/.claudeye/logs/insights-stderr.log
