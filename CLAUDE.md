@@ -46,7 +46,7 @@ Surface will extend beyond Claude Code (writers, PMs, researchers — anyone usi
 ## Current status
 
 **Runtime:** better-sqlite3 (native SQLite with FTS5). Fully operational.
-**Unified scheduler (#87):** launchd agent `com.claudeye.daily-insights` запускается ежедневно. Wrapper `~/.claudeye/insights-runner.sh` — dispatcher: каждый день → `claudeye import cowork` (Cowork transcript import #88) + `insights-standalone.mjs` (rule-based alerts); по понедельникам → `node ~/.claudeye/behavioral-standalone.mjs --days 14` (Claude-powered behavioral advisor). Heartbeat `~/.claudeye/logs/insights-heartbeat.log` пишет breakdown по каждому подмодулю.
+**Unified scheduler (#87):** launchd agent `com.claudeye.daily-insights` запускается ежедневно. Wrapper `~/.claudeye/insights-runner.sh` — dispatcher: каждый день → `import-cowork-standalone.mjs` + `reindex-standalone.mjs` (embedding backfill #105) + `insights-standalone.mjs` (rule-based alerts) + `digest-standalone.mjs` (weekly digest, idempotent); по понедельникам → `behavioral-standalone.mjs --days 14`. Heartbeat `~/.claudeye/logs/insights-heartbeat.log` пишет breakdown по каждому подмодулю.
 
 **TCC fix для behavioral advisor (2026-05-04):** ранее запускали `claudeye advises generate` напрямую, но launchd падал с EPERM на `cli.js` (TCC блокирует чтение `~/Documents` из launchd-процессов). Аналогично #82 (insights) и #65 (digest) сделан standalone: `scripts/behavioral-standalone.mjs` копируется в `~/.claudeye/` и обращается только к `~/.claudeye/mem.db`. Вызывает `claude --print` через `resolveClaude()`, пишет в таблицу `advises` с дедупом по `observation_hash`. Регрессионный тест: `test/regression-schedulers.test.js` ловит drift между источником и deployed копией.
 **Cowork ingestion (#88):** Cowork desktop-app sessions не триггерят Claude Code hooks (другой runtime), поэтому `claudeye import cowork` читает транскрипты из `~/Library/Application Support/Claude/local-agent-mode-sessions/**/local_<uuid>.json` + `.claude/projects/.../<cliSessionId>.jsonl` и превращает каждый user prompt / assistant message / tool call в observation. Dedup — через таблицу `cowork_imports` (UNIQUE по `cli_session_id`). Project = `userSelectedFolders[0]` если есть, иначе synthetic `cowork://<name>`.
@@ -323,6 +323,8 @@ npm test                              # run all tests (node:test) — 170 tests
 - [x] DB retention tightening — git-commit 50/14d, compact 7d, effective coverage metric (#76)
 - [x] Embedding coverage — effectiveCoverage metric, smart reindex (#75)
 - [x] Friction analysis — worktree normalization, friction breakdown script (#78)
+- [x] Embedding backfill standalone — reindex-standalone.mjs в scheduler (#105)
+- [x] Analyzer coverage metric fix — emb_embeddable (реальный denominator importance>=0.5) (#106)
 
 ### Phase 3: Agent v1 (April-May 2026) ← CURRENT
 - [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
