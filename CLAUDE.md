@@ -35,11 +35,11 @@ Surface will extend beyond Claude Code (writers, PMs, researchers — anyone usi
 ## Core principles (don't violate these)
 
 - **No background daemon** — hooks call Node scripts directly. Nothing running 24/7.
-- **No open ports by default** — viewer is opt-in (`claudeye viewer`), localhost only.
+- **No open ports by default** — viewer is opt-in (`claudeye viewer`), localhost only. Personal API routes are always localhost-only. `/shared/:token/*` routes accept remote connections but require a valid, non-expired share token.
 - **Never block Claude Code** — all hooks exit 0 on failure. Memory failure = silent skip.
 - **Claude CLI only** — use `claude --print` for AI calls. No Anthropic SDK, no API keys for compression/advice. Uses the user's existing Claude Code subscription.
 - **Multi-provider embeddings (#41)** — pluggable provider abstraction (`src/embeddings.js`). Default: OpenAI `text-embedding-3-small` (1536 dims). Optional: Voyage AI (`voyage-3-lite` / `voyage-code-3` / `voyage-large-2`). Keyword-hash fallback (128 dims) when no key is configured. Selection via `settings.embedding_provider` or auto-detect from available keys.
-- **Security first** — settings file mode 0600, no sensitive data in GET responses, localhost-only for viewer.
+- **Security first** — settings file mode 0600, no sensitive data in GET responses, localhost-only for viewer. Share tokens expose only aggregate analytics + sessions (no raw observations).
 
 ---
 
@@ -215,6 +215,7 @@ claudeye search <query>     # hybrid FTS + vector search
 claudeye recent [n]         # recent observations
 claudeye sessions           # browse sessions
 claudeye viewer             # web UI at localhost:47777
+claudeye share              # create a read-only share link (--project, --label, --ttl, --list, --revoke)
 claudeye clear              # clear data
 
 # Import
@@ -325,6 +326,7 @@ npm test                              # run all tests (node:test) — 170 tests
 - [x] Friction analysis — worktree normalization, friction breakdown script (#78)
 - [x] Embedding backfill standalone — reindex-standalone.mjs в scheduler (#105)
 - [x] Analyzer coverage metric fix — emb_embeddable (реальный denominator importance>=0.5) (#106)
+- [x] Shared read-only viewer (#33) — share_tokens table + CRUD, /shared/:token/* routes (stats/trends/sessions, no raw data), CLI: claudeye share [--list|--revoke|--project|--label|--ttl]
 
 ### Phase 3: Agent v1 (April-May 2026) ← CURRENT
 - [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
@@ -363,7 +365,7 @@ npm test                              # run all tests (node:test) — 170 tests
 - [ ] Knowledge Graph: entity relationships (#26)
 - [ ] Personal AI OS: unified memory, entry, control (#27)
 - [ ] Self-Improving Workflow Engine: coach + optimizer (#28)
-- [ ] Shared read-only viewer: share dashboard by link (#33)
+- [x] Shared read-only viewer: share dashboard by link (#33)
 - [ ] Scalability: hot/cold storage, L2 compression, vector index (#30)
 
 ### Dependency graph (key chains)

@@ -170,6 +170,10 @@ claudeye search "how we fixed the auth bug"   # hybrid search across all project
 claudeye recent                               # last 15 observations, current project
 claudeye sessions                             # browse session history
 claudeye viewer                               # web UI at localhost:47777
+claudeye share                                # create a read-only share link
+claudeye share --list                         # list active share links
+claudeye share --revoke <token>               # revoke a share link
+claudeye share --project <path> --ttl 14      # scope to project, 14-day TTL
 
 # Import
 claudeye import git                           # import git history from current repo
@@ -454,7 +458,7 @@ All items depend on Team Sync Layer (#34) + Team Roles (#35):
 - [ ] Knowledge Graph: entity relationships (#26)
 - [ ] Personal AI OS: unified memory, entry, control (#27)
 - [ ] Self-Improving Workflow Engine: coach + optimizer (#28)
-- [ ] Shared read-only viewer: share dashboard by link (#33)
+- [x] Shared read-only viewer: share dashboard by link (#33)
 - [ ] Scalability: hot/cold storage, L2 compression, vector index (#30)
 
 ### Dependency graph (key chains)
