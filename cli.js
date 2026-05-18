@@ -1442,6 +1442,72 @@ program.command('export')
     }
   });
 
+// ─── share (#33) ─────────────────────────────────────────────────────────────
+
+program.command('share')
+  .description('Share your dashboard via a read-only link')
+  .option('--project <path>',    'Scope share to a specific project path (default: all projects)')
+  .option('--label <text>',      'Human-readable label shown in the shared view')
+  .option('--ttl <days>',        'Link validity in days (default: 7)', '7')
+  .option('--list',              'List all active share links')
+  .option('--revoke <token>',    'Revoke a share link by token (or token prefix)')
+  .option('--port <port>',       'Port the viewer is running on (default: 47777)', '47777')
+  .action(async (opts) => {
+    const { createShareToken, listShareTokens, revokeShareToken } = await import('./src/db.js');
+
+    console.log(chalk.bold('\n  Claudeye Share\n'));
+
+    // ── List ──
+    if (opts.list) {
+      const tokens = listShareTokens();
+      if (!tokens.length) {
+        console.log(chalk.gray('  No active share links.\n'));
+        return;
+      }
+      for (const t of tokens) {
+        const proj = t.project ? chalk.cyan(t.project.split('/').pop()) : chalk.gray('all projects');
+        const label = t.label ? chalk.white(t.label) + ' ' : '';
+        const exp = chalk.gray(`expires ${t.expires_at.slice(0, 10)}`);
+        console.log(`  ${label}${chalk.dim(t.token.slice(0, 8)+'…')}  ${proj}  ${exp}`);
+        console.log(chalk.gray(`    http://localhost:${opts.port}/shared/${t.token}`));
+      }
+      console.log();
+      return;
+    }
+
+    // ── Revoke ──
+    if (opts.revoke) {
+      const ok = revokeShareToken(opts.revoke);
+      if (ok) {
+        console.log(chalk.green(`  ✓ Share link revoked.\n`));
+      } else {
+        console.log(chalk.yellow(`  ⚠ No matching share link found.\n`));
+      }
+      return;
+    }
+
+    // ── Create ──
+    const ttlDays = Math.max(1, Math.min(365, parseInt(opts.ttl, 10) || 7));
+    const { token, expiresAt } = createShareToken({
+      project: opts.project || null,
+      label:   opts.label   || (opts.project ? opts.project.split('/').pop() : ''),
+      ttlDays,
+    });
+    const port = parseInt(opts.port, 10) || 47777;
+    const url = `http://localhost:${port}/shared/${token}`;
+
+    console.log(chalk.green('  ✓ Share link created!\n'));
+    console.log(chalk.white(`  URL:     `) + chalk.cyan(url));
+    console.log(chalk.white(`  Token:   `) + chalk.dim(token));
+    console.log(chalk.white(`  Expires: `) + chalk.gray(expiresAt.slice(0, 10)));
+    if (opts.project) {
+      console.log(chalk.white(`  Scope:   `) + chalk.gray(opts.project));
+    }
+    console.log();
+    console.log(chalk.gray('  To share with a colleague, expose port ' + port + ' and send them the URL.'));
+    console.log(chalk.gray('  To revoke: claudeye share --revoke ' + token.slice(0, 8) + '\n'));
+  });
+
 // Register analytics commands (analytics, advise, rate, digest)
 registerAnalyticsCommands(program);
 

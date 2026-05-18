@@ -1,12 +1,13 @@
 /**
  * src/server.js — Minimal web viewer API
  * Serves the viewer UI + REST endpoints for browsing observations.
- * Localhost only. No auth needed (personal tool, local only).
+ * Localhost-only for all personal routes.
+ * /shared/:token/* routes accept remote connections — protected by token (#33).
  */
 
 import express from 'express';
 import { join } from 'path';
-import { getDb, getStats } from './db.js';
+import { getDb, getStats, createShareToken, getShareToken, listShareTokens, revokeShareToken } from './db.js';
 
 const __dir = new URL('.', import.meta.url).pathname;
 
@@ -29,8 +30,9 @@ export function createServer(port = 47777) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  // Only accept localhost connections
+  // All routes except /shared/:token/* are localhost-only (#33)
   app.use((req, res, next) => {
+    if (req.path.startsWith('/shared/')) return next(); // share routes handle their own auth
     const ip = req.ip || req.connection.remoteAddress || '';
     if (!['::1', '127.0.0.1', '::ffff:127.0.0.1'].includes(ip)) {
       return res.status(403).json({ error: 'Localhost only' });
@@ -346,6 +348,128 @@ export function createServer(port = 47777) {
     }
   });
 
+  // ─── Share token management (localhost-only) (#33) ────────────────────
+
+  /** POST /api/share — create a new share link */
+  app.post('/api/share', (req, res) => {
+    const { project, label, ttlDays } = req.body || {};
+    const ttl = safeInt(ttlDays, { min: 1, max: 365, def: 7 });
+    const result = createShareToken({
+      project: project ? safeStr(project) : null,
+      label: safeStr(label || '', 100) || '',
+      ttlDays: ttl,
+    });
+    res.json(result);
+  });
+
+  /** GET /api/share — list active share tokens */
+  app.get('/api/share', (req, res) => {
+    res.json(listShareTokens());
+  });
+
+  /** DELETE /api/share/:token — revoke a token */
+  app.delete('/api/share/:token', (req, res) => {
+    const revoked = revokeShareToken(req.params.token);
+    res.json({ revoked });
+  });
+
+  // ─── Shared read-only viewer (#33) ─────────────────────────────────────
+
+  /** Middleware: validate share token and attach to req.shareToken */
+  function requireShareToken(req, res, next) {
+    const tokenVal = req.params.token;
+    if (!tokenVal || !/^[0-9a-f]{32}$/.test(tokenVal)) {
+      return res.status(400).json({ error: 'Invalid token format' });
+    }
+    const tok = getShareToken(tokenVal);
+    if (!tok) return res.status(401).json({ error: 'Invalid or expired share link' });
+    req.shareToken = tok;
+    next();
+  }
+
+  /** GET /shared/:token — read-only dashboard viewer page */
+  app.get('/shared/:token', requireShareToken, (req, res) => {
+    res.send(sharedViewerHTML(req.shareToken));
+  });
+
+  /** GET /shared/:token/api/stats — aggregate stats (no raw data) */
+  app.get('/shared/:token/api/stats', requireShareToken, (req, res) => {
+    const db = getDb();
+    const tok = req.shareToken;
+    const projectFilter = tok.project ? 'WHERE project = ?' : '';
+    const params = tok.project ? [tok.project] : [];
+
+    const totalObs = db.prepare(`SELECT COUNT(*) as n FROM observations ${projectFilter}`).get(...params).n;
+    const totalSessions = db.prepare(`SELECT COUNT(*) as n FROM sessions ${tok.project ? 'WHERE project = ?' : ''}`).get(...params).n;
+    const projectCount = db.prepare(`SELECT COUNT(DISTINCT project) as n FROM observations ${projectFilter}`).get(...params).n;
+    const recentActivity = db.prepare(`
+      SELECT date(created_at) as day, COUNT(*) as n
+      FROM observations
+      WHERE created_at >= date('now', '-30 days') ${tok.project ? 'AND project = ?' : ''}
+      GROUP BY day ORDER BY day DESC
+    `).all(...params);
+
+    res.json({ totalObs, totalSessions, projectCount, recentActivity, label: tok.label, expiresAt: tok.expires_at });
+  });
+
+  /** GET /shared/:token/api/trends — weekly trends */
+  app.get('/shared/:token/api/trends', requireShareToken, (req, res) => {
+    const db = getDb();
+    const tok = req.shareToken;
+    const pf = tok.project ? 'AND project = ?' : '';
+    const params = tok.project ? [tok.project] : [];
+
+    const thisWeek = db.prepare(`
+      SELECT COUNT(*) as obs, COUNT(DISTINCT session_id) as sessions,
+             SUM(CASE WHEN importance >= 0.8 THEN 1 ELSE 0 END) as critical,
+             ROUND(AVG(importance), 3) as avg_imp
+      FROM observations WHERE created_at >= date('now', '-7 days') AND tool != 'git-commit' ${pf}
+    `).get(...params);
+
+    const lastWeek = db.prepare(`
+      SELECT COUNT(*) as obs, COUNT(DISTINCT session_id) as sessions,
+             SUM(CASE WHEN importance >= 0.8 THEN 1 ELSE 0 END) as critical,
+             ROUND(AVG(importance), 3) as avg_imp
+      FROM observations WHERE created_at >= date('now', '-14 days') AND created_at < date('now', '-7 days') AND tool != 'git-commit' ${pf}
+    `).get(...params);
+
+    const daily = db.prepare(`
+      SELECT date(created_at) as day, COUNT(*) as obs,
+             ROUND(AVG(importance), 3) as avg_imp
+      FROM observations WHERE created_at >= date('now', '-14 days') AND tool != 'git-commit' ${pf}
+      GROUP BY day ORDER BY day
+    `).all(...params);
+
+    const tools = db.prepare(`
+      SELECT tool, COUNT(*) as count
+      FROM observations WHERE tool != 'git-commit' ${pf}
+      GROUP BY tool ORDER BY count DESC LIMIT 8
+    `).all(...params);
+
+    res.json({ thisWeek, lastWeek, daily, tools });
+  });
+
+  /** GET /shared/:token/api/sessions — session list (no raw obs) */
+  app.get('/shared/:token/api/sessions', requireShareToken, (req, res) => {
+    const db = getDb();
+    const tok = req.shareToken;
+    const pf = tok.project ? 'AND s.project = ?' : '';
+    const params = tok.project ? [tok.project] : [];
+
+    const sessions = db.prepare(`
+      SELECT s.id, s.project, s.started_at, s.ended_at, s.summary,
+             COUNT(o.id) as obs_count,
+             ROUND(AVG(o.importance), 2) as avg_imp
+      FROM sessions s
+      LEFT JOIN observations o ON o.session_id = s.id
+      WHERE 1=1 ${pf}
+      GROUP BY s.id
+      ORDER BY s.started_at DESC
+      LIMIT 30
+    `).all(...params);
+    res.json(sessions);
+  });
+
   // ─── Global error handler (#70) ────────────────────────────────────────
   app.use((err, req, res, _next) => {
     console.error('[server] Unhandled error:', err.message);
@@ -357,7 +481,8 @@ export function createServer(port = 47777) {
     res.send(viewerHTML());
   });
 
-  app.listen(port, '127.0.0.1', () => {
+  // Listen on all interfaces so /shared/:token/* is reachable remotely (#33)
+  app.listen(port, '0.0.0.0', () => {
     console.log(`[mem:viewer] http://localhost:${port}`);
   });
 
@@ -792,3 +917,159 @@ loadInsights();
 </body>
 </html>`;
 }
+
+// ─── Shared read-only viewer HTML (#33) ─────────────────────────────────────
+
+function sharedViewerHTML(tok) {
+  const label = tok.label ? esc2(tok.label) : 'Claudeye';
+  const expires = tok.expires_at ? tok.expires_at.slice(0, 10) : '';
+  const base = `/shared/${tok.token}`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${label} — Claudeye (shared)</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; }
+    header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+    header h1 { font-size: 18px; font-weight: 600; color: #f0f6fc; }
+    .badge { background: #0d419d; color: #58a6ff; border-radius: 4px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
+    .expiry { font-size: 12px; color: #8b949e; margin-left: auto; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .kpi-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; text-align: center; }
+    .kpi .val { font-size: 32px; font-weight: 700; color: #f0f6fc; }
+    .kpi .lbl { font-size: 12px; color: #8b949e; margin-top: 4px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+    .card.wide { grid-column: 1 / -1; }
+    .card h3 { font-size: 14px; color: #8b949e; margin-bottom: 16px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+    .trend-kpi { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .tkpi { text-align: center; }
+    .tkpi .v { font-size: 22px; font-weight: 700; color: #f0f6fc; }
+    .tkpi .l { font-size: 11px; color: #8b949e; margin-top: 2px; }
+    .tkpi .d { font-size: 12px; margin-top: 3px; }
+    .up { color: #3fb950; } .dn { color: #f85149; } .ne { color: #8b949e; }
+    .sess-item { padding: 10px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+    .sess-item:last-child { border-bottom: none; }
+    .sess-proj { color: #58a6ff; font-weight: 600; font-size: 12px; }
+    .sess-sum { color: #c9d1d9; margin-top: 3px; line-height: 1.4; }
+    .sess-meta { color: #6e7681; font-size: 11px; margin-top: 2px; }
+    .bar { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; font-size: 12px; }
+    .bar-label { width: 100px; color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar-fill { height: 14px; border-radius: 3px; background: #1f6feb; min-width: 2px; }
+    .bar-count { color: #6e7681; margin-left: 4px; }
+    .readonly-badge { font-size: 11px; background: #161b22; border: 1px solid #30363d; color: #6e7681; border-radius: 4px; padding: 2px 8px; }
+    @media (max-width: 768px) { .kpi-row, .grid2, .trend-kpi { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>${label}</h1>
+  <span class="badge">read-only</span>
+  ${expires ? `<span class="expiry">Expires ${expires}</span>` : ''}
+</header>
+<main>
+  <div class="kpi-row" id="kpi-row"><div class="kpi"><div class="val">…</div><div class="lbl">Loading</div></div></div>
+  <div class="grid2">
+    <div class="card">
+      <h3>This week vs last week</h3>
+      <div class="trend-kpi" id="trend-kpi"></div>
+    </div>
+    <div class="card">
+      <h3>Top tools</h3>
+      <div id="tools-bars"></div>
+    </div>
+    <div class="card wide">
+      <h3>Daily activity (14 days)</h3>
+      <canvas id="activity-chart" height="80"></canvas>
+    </div>
+    <div class="card wide">
+      <h3>Recent sessions</h3>
+      <div id="sessions-list"></div>
+    </div>
+  </div>
+</main>
+<script>
+const BASE = '${base}';
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s||''); return d.innerHTML; }
+function fmt(n) { return n >= 1000 ? (n/1000).toFixed(1)+'k' : String(n||0); }
+function delta(a, b, lbl) {
+  if (b === 0) return '<span class="ne">—</span>';
+  const d = ((a-b)/b*100).toFixed(0);
+  const cls = a >= b ? 'up' : 'dn';
+  const sign = a >= b ? '+' : '';
+  return '<span class="'+cls+'">'+sign+d+'% '+lbl+'</span>';
+}
+
+async function loadAll() {
+  const [stats, trends, sessions] = await Promise.all([
+    fetch(BASE+'/api/stats').then(r=>r.json()),
+    fetch(BASE+'/api/trends').then(r=>r.json()),
+    fetch(BASE+'/api/sessions').then(r=>r.json()),
+  ]);
+
+  // KPIs
+  document.getElementById('kpi-row').innerHTML = [
+    { val: fmt(stats.totalObs), lbl: 'Observations' },
+    { val: fmt(stats.totalSessions), lbl: 'Sessions' },
+    { val: fmt(stats.projectCount), lbl: 'Projects' },
+  ].map(k => '<div class="kpi"><div class="val">'+k.val+'</div><div class="lbl">'+k.lbl+'</div></div>').join('');
+
+  // Trends
+  const tw = trends.thisWeek || {}, lw = trends.lastWeek || {};
+  document.getElementById('trend-kpi').innerHTML = [
+    { v: fmt(tw.obs||0),      l: 'Observations', d: delta(tw.obs, lw.obs, 'w/w') },
+    { v: fmt(tw.sessions||0), l: 'Sessions',     d: delta(tw.sessions, lw.sessions, 'w/w') },
+    { v: fmt(tw.critical||0), l: 'Critical obs', d: delta(tw.critical, lw.critical, 'w/w') },
+    { v: ((tw.avg_imp||0)*100).toFixed(0)+'%', l: 'Avg importance', d: '' },
+  ].map(k => '<div class="tkpi"><div class="v">'+k.v+'</div><div class="l">'+k.l+'</div>'+(k.d?'<div class="d">'+k.d+'</div>':'')+'</div>').join('');
+
+  // Tools bars
+  const toolsMax = Math.max(...(trends.tools||[]).map(t=>t.count), 1);
+  document.getElementById('tools-bars').innerHTML = (trends.tools||[]).map(t =>
+    '<div class="bar"><span class="bar-label" title="'+esc(t.tool)+'">'+esc(t.tool)+'</span>' +
+    '<div class="bar-fill" style="width:'+Math.round(t.count/toolsMax*200)+'px"></div>' +
+    '<span class="bar-count">'+fmt(t.count)+'</span></div>'
+  ).join('');
+
+  // Activity chart
+  const days = (trends.daily||[]);
+  if (days.length) {
+    new Chart(document.getElementById('activity-chart'), {
+      type: 'bar',
+      data: {
+        labels: days.map(d => d.day.slice(5)),
+        datasets: [{ label: 'Observations', data: days.map(d=>d.obs), backgroundColor: '#1f6feb', borderRadius: 3 }]
+      },
+      options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { x: { ticks: { color: '#6e7681' }, grid: { color: '#21262d' } },
+                  y: { ticks: { color: '#6e7681' }, grid: { color: '#21262d' } } } }
+    });
+  }
+
+  // Sessions
+  document.getElementById('sessions-list').innerHTML = sessions.length
+    ? sessions.map(s => {
+        const proj = (s.project||'').split('/').pop();
+        const started = (s.started_at||'').slice(0,16).replace('T',' ');
+        return '<div class="sess-item">' +
+          '<div class="sess-proj">'+esc(proj)+'</div>' +
+          (s.summary ? '<div class="sess-sum">'+esc(s.summary)+'</div>' : '') +
+          '<div class="sess-meta">'+started+' · '+fmt(s.obs_count)+' obs</div>' +
+          '</div>';
+      }).join('')
+    : '<div style="color:#6e7681;padding:20px 0">No sessions found.</div>';
+}
+loadAll().catch(e => console.error(e));
+</script>
+</body>
+</html>`;
+}
+
+// Simple HTML-escape helper (not in module scope)
+function esc2(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
