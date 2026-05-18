@@ -126,6 +126,20 @@ function safeReadJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
 }
 
+// Find <cliSessionId>.jsonl inside localDir/.claude/projects/ by scanning subdirs.
+// Cowork changed the project-dir naming scheme (was `-sessions-<processName>`,
+// now uses the full outputs-path with slashes/spaces/underscores → dashes).
+// Scanning is robust to future renames and works for both old and new layouts.
+function findTranscript(localDir, cliSessionId) {
+  const projectsDir = join(localDir, '.claude', 'projects');
+  if (!existsSync(projectsDir)) return null;
+  for (const sub of safeReaddir(projectsDir)) {
+    const candidate = join(projectsDir, sub, cliSessionId + '.jsonl');
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 function listCoworkSessions() {
   if (!existsSync(COWORK_ROOT)) return [];
   const out = [];
@@ -141,12 +155,7 @@ function listCoworkSessions() {
         const meta = safeReadJson(metaPath);
         if (!meta || !meta.sessionId || !meta.cliSessionId) continue;
         const localDir = join(spaceDir, meta.sessionId);
-        const processName = meta.processName || meta.vmProcessName || '';
-        const transcript = join(
-          localDir, '.claude', 'projects',
-          '-sessions-' + processName,
-          meta.cliSessionId + '.jsonl'
-        );
+        const transcript = findTranscript(localDir, meta.cliSessionId);
         out.push({ meta, metaPath, transcriptPath: transcript, spaceId, userId });
       }
     }
@@ -322,7 +331,7 @@ function importSession(db, session, { force = false } = {}) {
     if (already) return { imported: 0, skipped: 1, reason: 'already imported' };
   }
 
-  if (!existsSync(transcriptPath)) {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
     return { imported: 0, skipped: 1, reason: 'transcript missing' };
   }
 
