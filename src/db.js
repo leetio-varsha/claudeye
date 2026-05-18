@@ -201,9 +201,73 @@ function _migrateAnalytics(db) {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_invariant_checks_date ON invariant_checks(run_date);
       CREATE INDEX IF NOT EXISTS idx_invariant_checks_green ON invariant_checks(all_green, run_date DESC);
     `);
+
+    // share_tokens: read-only dashboard sharing (#33)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS share_tokens (
+        token       TEXT    PRIMARY KEY,           -- 32-char hex
+        label       TEXT    NOT NULL DEFAULT '',   -- human-readable label (e.g. project name)
+        project     TEXT,                          -- NULL = all projects, otherwise scoped
+        expires_at  TEXT    NOT NULL,              -- datetime string (UTC)
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_share_tokens_expires ON share_tokens(expires_at);
+    `);
   } catch (err) {
     console.error('[mem:db] analytics migration failed:', err.message);
   }
+}
+
+// ─── Share token CRUD (#33) ────────────────────────────────────────────────
+
+import { randomBytes } from 'crypto';
+
+/**
+ * Create a new share token.
+ * @param {object} opts
+ * @param {string|null} opts.project  - scope to project path; null = all projects
+ * @param {string}      opts.label    - human label shown in --list output
+ * @param {number}      opts.ttlDays  - link expiry (default 7)
+ * @returns {{ token: string, expiresAt: string }}
+ */
+export function createShareToken({ project = null, label = '', ttlDays = 7 } = {}) {
+  const db = getDb();
+  const token = randomBytes(16).toString('hex');
+  const expiresAt = new Date(Date.now() + ttlDays * 86400_000).toISOString().replace('T', ' ').slice(0, 19);
+  db.prepare(`
+    INSERT INTO share_tokens (token, label, project, expires_at)
+    VALUES (?, ?, ?, ?)
+  `).run(token, label || '', project || null, expiresAt);
+  return { token, expiresAt };
+}
+
+/**
+ * Look up a token. Returns null if not found or expired.
+ * Automatically cleans up expired tokens as a side-effect.
+ */
+export function getShareToken(token) {
+  const db = getDb();
+  // Clean up expired tokens opportunistically
+  db.prepare(`DELETE FROM share_tokens WHERE expires_at < datetime('now')`).run();
+  return db.prepare(`SELECT * FROM share_tokens WHERE token = ? AND expires_at >= datetime('now')`).get(token) || null;
+}
+
+/** List all active (non-expired) share tokens. */
+export function listShareTokens() {
+  const db = getDb();
+  db.prepare(`DELETE FROM share_tokens WHERE expires_at < datetime('now')`).run();
+  return db.prepare(`SELECT * FROM share_tokens ORDER BY created_at DESC`).all();
+}
+
+/**
+ * Revoke a token by its value or prefix.
+ * Returns true if something was deleted.
+ */
+export function revokeShareToken(tokenOrPrefix) {
+  const db = getDb();
+  const result = db.prepare(`DELETE FROM share_tokens WHERE token = ? OR token LIKE ?`)
+    .run(tokenOrPrefix, tokenOrPrefix + '%');
+  return result.changes > 0;
 }
 
 export function migrate(db = getDb()) {
