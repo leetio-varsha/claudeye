@@ -156,6 +156,33 @@ export function parseTranscript(path) {
   return events;
 }
 
+// ─── System session filter ────────────────────────────────────────────────
+
+/**
+ * Cowork session titles that belong to Claudeye's own scheduled tasks.
+ * Importing these creates a self-observation loop: the dev-agent / analyzer
+ * use osascript to call `gh`, those tool calls land in the Cowork transcript,
+ * and the daily `import cowork` pass re-ingests them as user observations,
+ * inflating osascript counts and polluting behavioral analytics.
+ *
+ * Matching is case-insensitive substring. Add more patterns here if new
+ * scheduled tasks are introduced.
+ */
+export const SYSTEM_SESSION_TITLE_PATTERNS = [
+  'claudeye dev agent',
+  'claudeye analyzer',
+  'claudeye insights',
+];
+
+/**
+ * Returns true if this session was created by a Claudeye scheduled task
+ * and should be skipped during import.
+ */
+export function isSystemSession(meta) {
+  const title = (meta.title || '').toLowerCase();
+  return SYSTEM_SESSION_TITLE_PATTERNS.some(p => title.includes(p));
+}
+
 // ─── Noise filter (#93) ───────────────────────────────────────────────────
 
 // Tool inputs that carry no information (same JSON every call) — bundling or
@@ -249,6 +276,13 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
 
   const { meta, transcriptPath } = session;
   const cliSessionId = meta.cliSessionId;
+
+  // Skip Claudeye's own scheduled-task sessions — importing them creates a
+  // self-observation loop where the dev-agent / analyzer osascript calls
+  // appear as user tool observations and inflate behavioral metrics.
+  if (isSystemSession(meta)) {
+    return { imported: 0, skipped: 1, reason: 'system session (scheduled task)' };
+  }
 
   if (!force) {
     const already = db.prepare(
