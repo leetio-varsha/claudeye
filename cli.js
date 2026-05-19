@@ -530,8 +530,9 @@ program.command('cleanup')
   .option('--dry-run', 'Show what would be deleted/compacted without changes')
   .option('--no-vacuum', 'Skip VACUUM (faster, but does not reclaim disk space)')
   .option('--cowork-noise', 'Also drop Cowork noise + intra-session duplicates (#93)')
+  .option('--system-sessions', 'Remove observations from Claudeye scheduled-task sessions (self-observation loop fix)')
   .action(async (opts) => {
-    const { cleanup, compact, getDbMetrics, closeOrphanedSessions, cleanupCoworkNoise } = await import('./src/db.js');
+    const { cleanup, compact, getDbMetrics, closeOrphanedSessions, cleanupCoworkNoise, cleanupSystemSessionObservations } = await import('./src/db.js');
     const { computeFrictionScore } = await import('./src/analytics.js');
     const ora = (await import('ora')).default;
 
@@ -631,8 +632,24 @@ program.command('cleanup')
       }
     }
 
+    // Step 2.6: System session sweep — remove self-observations from scheduled tasks
+    let sysCounts = { sessions: 0, observations: 0 };
+    if (opts.systemSessions) {
+      const sSpinner = ora(opts.dryRun ? 'Scanning system session observations...' : 'Removing system session observations...').start();
+      sysCounts = cleanupSystemSessionObservations({ dryRun: opts.dryRun });
+      if (sysCounts.observations > 0) {
+        if (opts.dryRun) {
+          sSpinner.info(`Would delete ${chalk.yellow(sysCounts.observations)} observations from ${sysCounts.sessions} system sessions (analyzer/dev-agent/insights):`);
+        } else {
+          sSpinner.succeed(`Deleted ${chalk.green(sysCounts.observations)} observations from ${sysCounts.sessions} system sessions.`);
+        }
+      } else {
+        sSpinner.succeed('No system session observations found.');
+      }
+    }
+
     // Step 3: VACUUM to reclaim disk space
-    if (opts.vacuum !== false && !opts.dryRun && (compactCounts.total > 0 || counts.total > 0 || coworkCounts.total > 0)) {
+    if (opts.vacuum !== false && !opts.dryRun && (compactCounts.total > 0 || counts.total > 0 || coworkCounts.total > 0 || sysCounts.observations > 0)) {
       const vacSpinner = ora('Running VACUUM to reclaim disk space...').start();
       const { getDb } = await import('./src/db.js');
       getDb().exec('VACUUM');

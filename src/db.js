@@ -778,6 +778,56 @@ export function getErrorHealthSnapshot() {
  * @param {boolean} opts.dryRun — count rows without deleting.
  * @returns {{ noise: number, duplicates: number, total: number }}
  */
+/**
+ * Remove observations imported from Claudeye's own scheduled-task sessions
+ * (dev-agent, analyzer, insights). These create a self-observation loop.
+ * Also removes the cowork_imports rows so the sessions won't be re-imported.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun — count without deleting.
+ * @returns {{ sessions: number, observations: number }}
+ */
+export function cleanupSystemSessionObservations({ dryRun = false } = {}) {
+  const db = getDb();
+
+  // Patterns must match SYSTEM_SESSION_TITLE_PATTERNS in import-cowork.js
+  const SYSTEM_PATTERNS = [
+    '%claudeye dev agent%',
+    '%claudeye analyzer%',
+    '%claudeye insights%',
+  ];
+
+  // Find cli_session_ids for system sessions via cowork_imports.meta.title
+  const sessionIdRows = [];
+  for (const pattern of SYSTEM_PATTERNS) {
+    const rows = db.prepare(
+      `SELECT cli_session_id FROM cowork_imports WHERE LOWER(json_extract(meta, '$.title')) LIKE ?`
+    ).all(pattern);
+    sessionIdRows.push(...rows);
+  }
+
+  if (sessionIdRows.length === 0) return { sessions: 0, observations: 0 };
+
+  const sessionIds = [...new Set(sessionIdRows.map(r => 'cowork-' + r.cli_session_id))];
+  const cliIds    = [...new Set(sessionIdRows.map(r => r.cli_session_id))];
+
+  const placeholders = sessionIds.map(() => '?').join(',');
+  const obsCount = db.prepare(
+    `SELECT COUNT(*) as n FROM observations WHERE session_id IN (${placeholders})`
+  ).get(...sessionIds).n;
+
+  if (dryRun || obsCount === 0) return { sessions: cliIds.length, observations: obsCount };
+
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM observations WHERE session_id IN (${placeholders})`).run(...sessionIds);
+    const clipl = cliIds.map(() => '?').join(',');
+    db.prepare(`DELETE FROM cowork_imports WHERE cli_session_id IN (${clipl})`).run(...cliIds);
+  });
+  tx();
+
+  return { sessions: cliIds.length, observations: obsCount };
+}
+
 export function cleanupCoworkNoise({ dryRun = false } = {}) {
   const db = getDb();
 
