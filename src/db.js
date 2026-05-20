@@ -202,6 +202,41 @@ function _migrateAnalytics(db) {
       CREATE INDEX IF NOT EXISTS idx_invariant_checks_green ON invariant_checks(all_green, run_date DESC);
     `);
 
+    // Knowledge Graph (#26) — entities + relations
+    db.exec(`
+      -- Named entities extracted from observations (files, projects, tools, bugs, decisions)
+      CREATE TABLE IF NOT EXISTS entities (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        project     TEXT    NOT NULL,
+        type        TEXT    NOT NULL CHECK(type IN ('file','project','tool','bug','decision','person')),
+        name        TEXT    NOT NULL,
+        metadata    TEXT    NOT NULL DEFAULT '{}',    -- JSON: extra attributes
+        first_seen  TEXT    NOT NULL DEFAULT (datetime('now')),
+        last_seen   TEXT    NOT NULL DEFAULT (datetime('now')),
+        mention_count INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_project_type_name
+        ON entities(project, type, name);
+      CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project);
+      CREATE INDEX IF NOT EXISTS idx_entities_type    ON entities(type);
+
+      -- Relations between entities (or entity ↔ observation)
+      CREATE TABLE IF NOT EXISTS relations (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id    INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        target_id    INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        relation_type TEXT   NOT NULL,  -- caused_by|fixed_by|depends_on|related_to|decided_in|authored_by|belongs_to|touched_in
+        weight       REAL    NOT NULL DEFAULT 1.0,
+        obs_id       INTEGER REFERENCES observations(id) ON DELETE SET NULL,
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_relations_source   ON relations(source_id);
+      CREATE INDEX IF NOT EXISTS idx_relations_target   ON relations(target_id);
+      CREATE INDEX IF NOT EXISTS idx_relations_type     ON relations(relation_type);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_relations_edge
+        ON relations(source_id, target_id, relation_type);
+    `);
+
     // share_tokens: read-only dashboard sharing (#33)
     db.exec(`
       CREATE TABLE IF NOT EXISTS share_tokens (

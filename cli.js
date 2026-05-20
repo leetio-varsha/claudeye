@@ -1117,6 +1117,100 @@ function extractErrorMessage(text) {
   return '';
 }
 
+// ─── graph (#26) ─────────────────────────────────────────────────────────
+
+program.command('graph')
+  .description('Show the Knowledge Graph for this project — top entities and relations')
+  .option('-p, --project <path>', 'Project path', process.cwd())
+  .option('--entity <name>', 'Show relations for a specific entity')
+  .option('--type <type>', 'Filter entities by type: file|project|tool|decision|bug|person')
+  .option('-n, --limit <n>', 'Max entities to show', '20')
+  .option('--rebuild', 'Rebuild graph from existing observations before showing')
+  .action(async (opts) => {
+    const { getProjectGraph, getEntityRelations, getTopEntities, rebuildGraph } = await import('./src/graph.js');
+    const ora = (await import('ora')).default;
+
+    if (opts.rebuild) {
+      const spinner = ora('Rebuilding Knowledge Graph from observations…').start();
+      const { processed } = rebuildGraph({
+        project: opts.project,
+        onProgress: (done, total) => { spinner.text = `Rebuilding… ${done}/${total}`; },
+      });
+      spinner.succeed(`Rebuilt graph from ${processed} observations`);
+    }
+
+    if (opts.entity) {
+      const { entity, relations } = getEntityRelations(opts.entity, opts.project);
+      if (!entity) {
+        console.log(chalk.yellow(`\n  Entity "${opts.entity}" not found.\n`));
+        return;
+      }
+      console.log(chalk.bold(`\n🔗 Entity: ${chalk.cyan(entity.name)} (${entity.type})\n`));
+      console.log(`  Mentioned ${chalk.yellow(entity.mention_count)} times`);
+      console.log(`  First seen: ${chalk.gray(entity.first_seen.slice(0,10))}`);
+      console.log(`  Last seen:  ${chalk.gray(entity.last_seen.slice(0,10))}\n`);
+
+      if (!relations.length) {
+        console.log(chalk.gray('  No relations found.\n'));
+        return;
+      }
+      console.log(chalk.bold('  Relations:\n'));
+      for (const r of relations) {
+        const arrow = r.direction === 'outgoing' ? chalk.green('→') : chalk.blue('←');
+        console.log(`  ${arrow} ${chalk.magenta(r.relation_type.padEnd(12))} ${chalk.cyan(r.other_name)} ${chalk.gray(`(${r.other_type}) ×${r.weight}`)}`);
+      }
+      console.log('');
+      return;
+    }
+
+    const { entities, relations } = getProjectGraph(opts.project);
+    const shortProject = opts.project.replace(process.env.HOME || '', '~');
+
+    if (!entities.length) {
+      console.log(chalk.yellow(`\n  No graph data for ${shortProject}.\n  Run: claudeye graph --rebuild\n`));
+      return;
+    }
+
+    console.log(chalk.bold(`\n🕸  Knowledge Graph — ${chalk.cyan(shortProject)}\n`));
+    console.log(`  Entities: ${chalk.yellow(entities.length)}   Relations: ${chalk.yellow(relations.length)}\n`);
+
+    // Group by type
+    const byType = {};
+    for (const e of entities) {
+      (byType[e.type] = byType[e.type] || []).push(e);
+    }
+    const typeOrder = ['file', 'decision', 'bug', 'tool', 'project', 'person'];
+    const typeEmoji = { file: '📄', decision: '🏛', bug: '🐛', tool: '🔧', project: '📁', person: '👤' };
+
+    const filterType = opts.type;
+    const limit = parseInt(opts.limit);
+
+    for (const t of typeOrder) {
+      if (filterType && t !== filterType) continue;
+      const list = byType[t];
+      if (!list || !list.length) continue;
+      const emoji = typeEmoji[t] || '•';
+      console.log(chalk.bold(`  ${emoji}  ${t.toUpperCase()}S (${list.length})`));
+      for (const e of list.slice(0, limit)) {
+        const bar = '▪'.repeat(Math.min(20, e.mention_count));
+        console.log(`    ${chalk.cyan(e.name.padEnd(45))} ${chalk.yellow(String(e.mention_count).padStart(4))}× ${chalk.gray(bar)}`);
+      }
+      if (list.length > limit) {
+        console.log(chalk.gray(`    … and ${list.length - limit} more`));
+      }
+      console.log('');
+    }
+
+    // Top relations
+    if (relations.length) {
+      console.log(chalk.bold('  🔗 Top Relations\n'));
+      for (const r of relations.slice(0, 15)) {
+        console.log(`    ${chalk.cyan(r.source_name)} ${chalk.green('→')} ${chalk.magenta(r.relation_type)} ${chalk.green('→')} ${chalk.cyan(r.target_name)} ${chalk.gray(`×${r.weight}`)}`);
+      }
+      console.log('');
+    }
+  });
+
 program.command('handoff')
   .description('Generate a session handoff summary — paste into a new session to continue seamlessly')
   .option('-p, --project <path>', 'Filter by project', process.cwd())
