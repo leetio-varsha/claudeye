@@ -253,6 +253,12 @@ claudeye decisions --all              # all projects
 claudeye handoff                      # generate handoff for new session
 claudeye handoff -s <session-id>      # handoff for specific session
 
+# Knowledge Graph (#26)
+claudeye graph                        # top entities + relations for current project
+claudeye graph --entity <name>        # all relations for a specific entity
+claudeye graph --type file            # filter by entity type (file|project|tool|decision|bug|person)
+claudeye graph --rebuild              # rebuild graph from all existing observations
+
 # Pattern Detection & Automation
 claudeye patterns                     # repeat-fixes, hotspots, time sinks
 claudeye patterns --json              # structured output
@@ -362,7 +368,7 @@ npm test                              # run all tests (node:test) — 170 tests
 - [ ] Developer model: style, decisions, partial delegation (#29)
 
 ### Cross-phase (gradual)
-- [ ] Knowledge Graph: entity relationships (#26)
+- [x] Knowledge Graph: entities + relations foundation, wired to all save pipelines (#26)
 - [ ] Personal AI OS: unified memory, entry, control (#27)
 - [ ] Self-Improving Workflow Engine: coach + optimizer (#28)
 - [x] Shared read-only viewer: share dashboard by link (#33)
