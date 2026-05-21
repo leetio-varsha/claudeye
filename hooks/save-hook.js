@@ -128,6 +128,17 @@ async function main() {
       logHookError('save-hook', 'embed_failed', e.message, project);
     }
 
+    // Opportunistic: update Knowledge Graph (#26)
+    try {
+      const { addObservationToGraph } = await import(srcDir + 'graph.js');
+      addObservationToGraph({
+        id: obsId, project, tool, summary,
+        tags: JSON.stringify(tags),
+        importance, decision_rationale: decisionRationale,
+        raw_input: input,
+      });
+    } catch { /* non-critical */ }
+
   } catch (err) {
     try { logHookError('save-hook', 'general', err.message, project); } catch {}
     // Always exit 0 — never block Claude Code

@@ -8,6 +8,7 @@ import { getDb, saveObservation, upsertSession, closeSession, saveEmbedding } fr
 import { computeFrictionScore } from './analytics.js';
 import { compressObservation as compress } from './compress.js';
 import { embedWithMeta } from './embeddings.js';
+import { addObservationToGraph } from './graph.js';
 
 function estimateImportance(msg) {
   const m = msg.toLowerCase();
@@ -121,6 +122,15 @@ export async function importGit(repoPath, opts = {}) {
       const meta = await embedWithMeta(summary);
       if (meta?.vector) saveEmbedding(obsId, meta.vector, meta.model);
     } catch {}
+
+    // Update Knowledge Graph (#26)
+    try {
+      addObservationToGraph({
+        id: obsId, project: repoPath, tool: 'git-commit', summary,
+        tags: JSON.stringify(tags), importance,
+        decision_rationale: null, raw_input: msg,
+      });
+    } catch { /* non-critical */ }
 
     imported++;
     if (imported % 50 === 0) {

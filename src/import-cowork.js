@@ -28,6 +28,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { getDb, saveObservation, saveEmbedding, upsertSession, closeSession } from './db.js';
 import { embedWithMeta, isEmbeddingEnabled } from './embeddings.js';
+import { addObservationToGraph } from './graph.js';
 
 // Embed only high-importance Cowork observations to keep imports fast.
 // Threshold matches the effective-coverage definition in getDbMetrics(): obs
@@ -320,6 +321,7 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
   // them after the synchronous transaction commits — embedWithMeta is async
   // and shouldn't run inside the better-sqlite3 transaction.
   const toEmbed = [];
+  const toGraph = [];
   const tx = db.transaction(() => {
     for (const ev of events) {
       const obs = eventToObservation(ev, meta);
@@ -331,6 +333,9 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
       });
       if (obs.importance >= COWORK_EMBED_IMPORTANCE_MIN && obs.summary) {
         toEmbed.push({ obsId, summary: obs.summary });
+      }
+      if (obs.importance >= 0.2 && obs.summary) {
+        toGraph.push({ id: obsId, project, tool: obs.tool, summary: obs.summary, tags: JSON.stringify(obs.tags || []), importance: obs.importance, decision_rationale: obs.decisionRationale ?? null, raw_input: null });
       }
       imported++;
     }
@@ -365,6 +370,11 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
         }
       } catch { /* swallow — best-effort */ }
     }
+  }
+
+  // Best-effort Knowledge Graph pass (#26)
+  for (const obs of toGraph) {
+    try { addObservationToGraph(obs); } catch { /* non-critical */ }
   }
 
   return { imported, embedded, skipped: 0, noiseDropped, dedupDropped, rawEvents: rawEvents.length };

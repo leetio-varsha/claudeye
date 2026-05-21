@@ -17,6 +17,7 @@ import { getDb, saveObservation, upsertSession, closeSession, saveEmbedding } fr
 import { computeFrictionScore } from './analytics.js';
 import { compressObservation as compress } from './compress.js';
 import { embedWithMeta } from './embeddings.js';
+import { addObservationToGraph } from './graph.js';
 
 const NOTION_API_BASE = 'https://api.notion.com/v1';
 const NOTION_VERSION  = '2022-06-28';
@@ -267,6 +268,7 @@ export async function importNotion(token, opts = {}) {
         const meta = await embedWithMeta(summary);
         if (meta?.vector) saveEmbedding(obsId, meta.vector, meta.model);
       } catch {}
+      try { addObservationToGraph({ id: obsId, project, tool: 'notion-page', summary, tags: JSON.stringify(tags), importance, decision_rationale: null, raw_input: title }); } catch { /* non-critical */ }
 
       markImported(db, id);
       imported++;
@@ -333,6 +335,7 @@ export async function importNotion(token, opts = {}) {
             const meta = await embedWithMeta(summary);
             if (meta?.vector) saveEmbedding(obsId, meta.vector, meta.model);
           } catch {}
+          try { addObservationToGraph({ id: obsId, project, tool: 'notion-database-row', summary, tags: JSON.stringify(tags), importance, decision_rationale: null, raw_input: null }); } catch { /* non-critical */ }
 
           markImported(db, rowId);
           imported++;
