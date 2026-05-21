@@ -21,6 +21,7 @@ import { getDb, saveObservation, upsertSession, closeSession, saveEmbedding } fr
 import { computeFrictionScore } from './analytics.js';
 import { compressObservation as compress } from './compress.js';
 import { embedWithMeta } from './embeddings.js';
+import { addObservationToGraph } from './graph.js';
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────
 
@@ -262,6 +263,7 @@ export async function importJira(cfg, opts = {}) {
             const meta = await embedWithMeta(summary);
             if (meta?.vector) saveEmbedding(obsId, meta.vector, meta.model);
           } catch { /* non-critical */ }
+          try { addObservationToGraph({ id: obsId, project: label, tool: 'jira-issue', summary, tags: JSON.stringify(tags), importance, decision_rationale: null, raw_input: `${key}: ${title}` }); } catch { /* non-critical */ }
 
           // ── Comments: v3 search returns comments in issue.fields.comment.comments
           const comments = issue.fields?.comment?.comments || [];
@@ -291,6 +293,7 @@ export async function importJira(cfg, opts = {}) {
                 const meta = await embedWithMeta(cSummary);
                 if (meta?.vector) saveEmbedding(cId, meta.vector, meta.model);
               } catch { /* non-critical */ }
+              try { addObservationToGraph({ id: cId, project: label, tool: 'jira-comment', summary: cSummary, tags: JSON.stringify(cTags), importance: cImportance, decision_rationale: null, raw_input: null }); } catch { /* non-critical */ }
 
               markImported(db, cKey);
             } catch (err) {
