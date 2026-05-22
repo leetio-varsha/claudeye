@@ -10,13 +10,18 @@
  * RRF score = Σ 1 / (k + rank_i)  where k=60 (standard)
  */
 
-import { ftsSearch, getObservationsWithEmbeddings, getRecentObservations, getDb } from './db.js';
+import Database from 'better-sqlite3';
+import { ftsSearch, getObservationsWithEmbeddings, getRecentObservations, getDb, ARCHIVE_PATH } from './db.js';
 import { embed, cosineSimilarity, bufToFloat32 } from './embeddings.js';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
 const RRF_K = 60;
+
+// Archive fallback: if hot DB returns fewer than this many results, also search archive.db.
+// Keeps historical context accessible without paying the archive cost on every query.
+const ARCHIVE_FALLBACK_MIN = 3;
 
 // ─── Token budget (#90) ──────────────────────────────────────────────────
 //
@@ -83,15 +88,18 @@ const GIT_COMMIT_DEMOTION = 0.3;
  * @returns {Promise<Array>}  — sorted observations with hybrid scores
  */
 export async function hybridSearch(query, project, {
-  limit        = 8,
-  ftsWeight    = 0.4,
-  vectorWeight = 0.6,
+  limit           = 8,
+  ftsWeight       = 0.4,
+  vectorWeight    = 0.6,
+  archiveFallback = true,  // #30 Etap 2: fallback to archive.db when hot has few results
 } = {}) {
 
-  // Run FTS and vector search in parallel
-  const [ftsResults, vectorResults] = await Promise.all([
+  // Run FTS and vector search in parallel.
+  // runVectorSearchWithVec returns {results, queryVec} so we can reuse the embedding
+  // for archive fallback without a second API call.
+  const [ftsResults, { results: vectorResults, queryVec }] = await Promise.all([
     runFTS(query, project),
-    runVectorSearch(query, project),
+    runVectorSearchWithVec(query, project),
   ]);
 
   // Build RRF score map: id → score
@@ -126,10 +134,26 @@ export async function hybridSearch(query, project, {
     }
   }
 
-  return [...scores.values()]
+  const hotResults = [...scores.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(({ obs, score }) => ({ ...obs, hybridScore: score }));
+
+  // #30 Etap 2: archive fallback — search archive.db when hot DB has few results.
+  // Triggered only when archive.db exists and hot results fall below ARCHIVE_FALLBACK_MIN.
+  // Uses the already-computed queryVec to avoid a second embed() API call.
+  if (archiveFallback && hotResults.length < ARCHIVE_FALLBACK_MIN && queryVec) {
+    const remaining = limit - hotResults.length;
+    const archiveResults = await runArchiveHybrid(query, project, queryVec, remaining, {
+      ftsWeight,
+      vectorWeight,
+    });
+    const hotIds = new Set(hotResults.map(o => o.id));
+    const freshArchive = archiveResults.filter(o => !hotIds.has(o.id));
+    return [...hotResults, ...freshArchive].slice(0, limit);
+  }
+
+  return hotResults;
 }
 
 /**
@@ -167,8 +191,9 @@ export async function buildContextWithMetrics(userPrompt, project, opts = {}) {
     hybridSearch(userPrompt, normalizedProject, { limit: 6, ...opts }),
   ]);
 
-  // 2. Cross-project: bring experience from other projects
-  const crossResults = await hybridSearch(userPrompt, null, { limit: 4, ...opts });
+  // 2. Cross-project: bring experience from other projects.
+  // archiveFallback=false: cross-project archive search would be too broad and slow.
+  const crossResults = await hybridSearch(userPrompt, null, { limit: 4, archiveFallback: false, ...opts });
 
   // Dedup
   const seenIds = new Set([...recent.map(o => o.id), ...searched.map(o => o.id)]);
@@ -300,7 +325,11 @@ async function runFTS(query, project) {
   }
 }
 
-async function runVectorSearch(query, project) {
+/**
+ * Run vector search against hot DB.
+ * Returns { results, queryVec } so callers can reuse the embedding for archive fallback.
+ */
+async function runVectorSearchWithVec(query, project) {
   try {
     const queryVec = await embed(query);
     const rows     = getObservationsWithEmbeddings(project, 300);
@@ -320,9 +349,143 @@ async function runVectorSearch(query, project) {
     if (dimMismatchCount > 0) {
       console.error(`[mem:vector] ${dimMismatchCount}/${rows.length} embeddings skipped (dimension mismatch) — run 'claudeye reindex'`);
     }
-    return results;
+    return { results, queryVec };
   } catch (err) {
     console.error('[mem:vector] search failed:', err.message);
+    return { results: [], queryVec: null };
+  }
+}
+
+// ─── Archive fallback (#30 Etap 2) ───────────────────────────────────────────
+
+/**
+ * Open archive.db read-only. Returns null if archive doesn't exist or fails to open.
+ */
+function openArchiveDb() {
+  if (!existsSync(ARCHIVE_PATH)) return null;
+  try {
+    return new Database(ARCHIVE_PATH, { readonly: true });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run FTS5 search on an arbitrary SQLite db instance.
+ */
+function _ftsOnDb(db, query, project, limit = 20) {
+  const safe = query.replace(/[^\w\s]/g, ' ').trim();
+  if (!safe) return [];
+  const ftsQuery = safe.split(/\s+/).filter(Boolean).join(' OR ');
+  try {
+    if (project) {
+      return db.prepare(`
+        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project,
+               bm25(fts_obs) AS fts_score
+        FROM fts_obs
+        JOIN observations o ON o.id = fts_obs.rowid
+        WHERE fts_obs MATCH ? AND o.project = ?
+        ORDER BY fts_score LIMIT ?
+      `).all(ftsQuery, project, limit);
+    }
+    return db.prepare(`
+      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project,
+             bm25(fts_obs) AS fts_score
+      FROM fts_obs
+      JOIN observations o ON o.id = fts_obs.rowid
+      WHERE fts_obs MATCH ?
+      ORDER BY fts_score LIMIT ?
+    `).all(ftsQuery, limit);
+  } catch {
     return [];
+  }
+}
+
+/**
+ * Run vector similarity search on an arbitrary SQLite db instance.
+ * Uses a pre-computed queryVec (Float32Array) — no extra embed() call.
+ */
+function _vectorOnDb(db, queryVec, project, limit = 300) {
+  try {
+    let rows;
+    if (project) {
+      rows = db.prepare(`
+        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
+        FROM observations o JOIN embeddings e ON e.observation_id = o.id
+        WHERE o.project = ?
+        ORDER BY o.created_at DESC LIMIT ?
+      `).all(project, limit);
+    } else {
+      rows = db.prepare(`
+        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
+        FROM observations o JOIN embeddings e ON e.observation_id = o.id
+        ORDER BY o.created_at DESC LIMIT ?
+      `).all(limit);
+    }
+    return rows
+      .map(row => {
+        const vec = bufToFloat32(row.vector);
+        if (queryVec.length !== vec.length) return null;
+        return { ...row, vectorScore: cosineSimilarity(queryVec, vec) };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.vectorScore - a.vectorScore)
+      .slice(0, 30);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Hybrid search against archive.db using a pre-computed query embedding.
+ * Results are tagged with fromArchive: true so callers can optionally label them.
+ *
+ * @param {string}     query     — original query string (for FTS)
+ * @param {string}     project   — project path (or null for cross-project)
+ * @param {Float32Array} queryVec — pre-computed embedding from hot DB search
+ * @param {number}     limit     — max results to return
+ * @param {object}     opts      — ftsWeight, vectorWeight
+ */
+async function runArchiveHybrid(query, project, queryVec, limit, {
+  ftsWeight    = 0.4,
+  vectorWeight = 0.6,
+} = {}) {
+  const archiveDb = openArchiveDb();
+  if (!archiveDb) return [];
+
+  try {
+    const ftsResults    = _ftsOnDb(archiveDb, query, project, 20);
+    const vectorResults = _vectorOnDb(archiveDb, queryVec, project, 300);
+
+    const scores = new Map();
+
+    ftsResults.forEach((obs, rank) => {
+      const key  = `a_${obs.id}`;
+      const prev = scores.get(key) || { obs: { ...obs, fromArchive: true }, score: 0 };
+      prev.score += ftsWeight * (1 / (RRF_K + rank + 1));
+      scores.set(key, prev);
+    });
+
+    vectorResults.forEach((obs, rank) => {
+      const key  = `a_${obs.id}`;
+      const prev = scores.get(key) || { obs: { ...obs, fromArchive: true }, score: 0 };
+      prev.score += vectorWeight * (1 / (RRF_K + rank + 1));
+      prev.score *= (0.5 + obs.importance * 0.5);
+      scores.set(key, prev);
+    });
+
+    // Apply same demotion/boost as hot search
+    for (const entry of scores.values()) {
+      if (entry.obs.tool === 'git-commit') entry.score *= GIT_COMMIT_DEMOTION;
+      const tags = JSON.parse(entry.obs.tags || '[]');
+      if (tags.includes('decision')) entry.score *= 1.5;
+    }
+
+    return [...scores.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(({ obs, score }) => ({ ...obs, hybridScore: score }));
+  } finally {
+    archiveDb.close();
   }
 }
