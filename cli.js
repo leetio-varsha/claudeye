@@ -1902,4 +1902,162 @@ agentCmd
     }
   });
 
+// ─── agent daemon: start / stop / status / config (#18) ──────────────────────
+
+agentCmd
+  .command('start')
+  .description('Install and start the local agent daemon (launchd, runs every hour)')
+  .option('--interval <seconds>', 'Run interval in seconds', '3600')
+  .action(async (opts) => {
+    const { install } = await import('./scripts/agent-daemon-scheduler.js');
+    const ora = (await import('ora')).default;
+    const spinner = ora('Installing agent daemon…').start();
+    try {
+      const result = install({ intervalSeconds: parseInt(opts.interval, 10) });
+      spinner.succeed('Agent daemon installed and loaded');
+      console.log(chalk.gray(`  Plist:      ${result.plist}`));
+      console.log(chalk.gray(`  Standalone: ${result.standalone}`));
+      console.log(chalk.gray(`  Interval:   ${result.intervalSeconds}s (every ${Math.round(result.intervalSeconds / 60)} min)`));
+      console.log(chalk.green('\n  ✅ Daemon will run automatically in the background.\n'));
+      console.log(chalk.gray('  Check status: claudeye agent status'));
+      console.log(chalk.gray('  View logs:    cat ~/.claudeye/logs/daemon-heartbeat.log\n'));
+    } catch (err) {
+      spinner.fail(`Failed to install daemon: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+agentCmd
+  .command('stop')
+  .description('Stop and uninstall the local agent daemon')
+  .action(async () => {
+    const { uninstall } = await import('./scripts/agent-daemon-scheduler.js');
+    const ora = (await import('ora')).default;
+    const spinner = ora('Stopping agent daemon…').start();
+    try {
+      const result = uninstall();
+      if (result.removed) {
+        spinner.succeed('Agent daemon stopped and uninstalled');
+        console.log(chalk.gray(`  Removed: ${result.plist}\n`));
+      } else {
+        spinner.info('Agent daemon was not installed');
+        console.log(chalk.gray(`  ${result.reason}\n`));
+      }
+    } catch (err) {
+      spinner.fail(`Failed to stop daemon: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+agentCmd
+  .command('status')
+  .description('Show local agent daemon status and recent actions')
+  .action(async () => {
+    const { status: daemonStatus } = await import('./scripts/agent-daemon-scheduler.js');
+    const { getDaemonStatus, getDaemonConfig } = await import('./src/agent-daemon.js');
+
+    const launchd = daemonStatus();
+    const runtime = getDaemonStatus();
+    const config  = getDaemonConfig();
+
+    console.log(chalk.bold('\n🤖 Local Agent Daemon Status\n'));
+
+    // Launchd state
+    const installedIcon = launchd.installed ? chalk.green('✅') : chalk.red('✗');
+    const loadedIcon    = launchd.loaded    ? chalk.green('running') : chalk.yellow('not loaded');
+    console.log(`  Installed:   ${installedIcon} ${launchd.installed ? chalk.gray(launchd.plist) : 'no'}`);
+    console.log(`  Launchd:     ${loadedIcon}`);
+    console.log('');
+
+    // Config
+    const modeColor = config.mode === 'auto' ? chalk.green : config.mode === 'confirm' ? chalk.yellow : chalk.red;
+    console.log(`  Mode:        ${modeColor(config.mode)}`);
+    console.log(`  Interval:    ${config.intervalHours}h`);
+    console.log(`  Actions:     ${config.actions.join(', ')}`);
+    console.log('');
+
+    // Lock state
+    const { lock } = runtime;
+    if (lock.locked && !lock.stale) {
+      console.log(`  ${chalk.yellow('⚠')} Lock held by PID ${lock.pid} since ${lock.ts}`);
+    }
+
+    // Last run
+    if (runtime.lastRunAt) {
+      console.log(`  Last run:    ${chalk.cyan(runtime.lastRunAt)}`);
+    } else {
+      console.log(`  Last run:    ${chalk.gray('never')}`);
+    }
+    console.log('');
+
+    // Recent actions
+    if (runtime.recentActions.length) {
+      console.log(chalk.bold('  Recent daemon actions:\n'));
+      for (const row of runtime.recentActions) {
+        const dryTag  = row.dry_run ? chalk.gray(' [confirm]') : '';
+        const action  = row.project || row.agent;
+        let summary   = '';
+        try {
+          const r = JSON.parse(row.result || '{}');
+          if (action === 'session-analysis') {
+            summary = `${r.new_sessions} sessions, ${r.new_observations} obs`;
+          } else if (action === 'db-growth-alert') {
+            const growth = r.growth_mb_per_hour != null ? ` (+${r.growth_mb_per_hour.toFixed(2)} MB/h)` : '';
+            const flag   = r.anomaly ? chalk.red(' ⚠ anomaly') : '';
+            summary = `${r.size_mb} MB${growth}${flag}`;
+          }
+        } catch {}
+        console.log(`    ${chalk.cyan(row.created_at.slice(0, 16))}  ${chalk.bold(action)}${dryTag}  ${chalk.gray(summary)}`);
+      }
+      console.log('');
+    } else {
+      console.log(chalk.gray('  No daemon actions yet. Start with: claudeye agent start\n'));
+    }
+
+    if (!launchd.installed) {
+      console.log(chalk.gray('  Run `claudeye agent start` to install the daemon.\n'));
+    }
+  });
+
+agentCmd
+  .command('config')
+  .description('Show or set daemon configuration')
+  .option('--mode <mode>',    'Set mode: auto | confirm | off')
+  .option('--interval <h>',  'Set run interval in hours (e.g. 1, 2, 6)')
+  .option('--actions <list>', 'Comma-separated action list (e.g. session-analysis,db-growth-alert)')
+  .action(async (opts) => {
+    const { getDaemonConfig, setDaemonConfig, listAvailableActions } = await import('./src/agent-daemon.js');
+
+    const hasUpdate = opts.mode || opts.interval || opts.actions;
+
+    if (hasUpdate) {
+      const updates = {};
+      if (opts.mode) {
+        if (!['auto', 'confirm', 'off'].includes(opts.mode)) {
+          console.error(chalk.red(`  Invalid mode: ${opts.mode}. Use: auto | confirm | off`));
+          process.exit(1);
+        }
+        updates.mode = opts.mode;
+      }
+      if (opts.interval) updates.intervalHours = parseFloat(opts.interval);
+      if (opts.actions)  updates.actions = opts.actions.split(',').map(a => a.trim());
+
+      const next = setDaemonConfig(updates);
+      console.log(chalk.green('\n  ✅ Config updated:\n'));
+      console.log(`  mode:     ${chalk.bold(next.mode)}`);
+      console.log(`  interval: ${next.intervalHours}h`);
+      console.log(`  actions:  ${next.actions.join(', ')}\n`);
+    } else {
+      const config = getDaemonConfig();
+      const available = listAvailableActions();
+      console.log(chalk.bold('\n⚙️  Agent Daemon Config\n'));
+      console.log(`  mode:            ${chalk.bold(config.mode)}`);
+      console.log(`  intervalHours:   ${config.intervalHours}`);
+      console.log(`  actions:         ${config.actions.join(', ')}`);
+      console.log(`  available:       ${available.join(', ')}`);
+      console.log('');
+      console.log(chalk.gray('  Edit: claudeye agent config --mode auto --interval 1 --actions session-analysis,db-growth-alert\n'));
+    }
+  });
+
 program.parse();
