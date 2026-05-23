@@ -34,7 +34,7 @@ Surface will extend beyond Claude Code (writers, PMs, researchers — anyone usi
 
 ## Core principles (don't violate these)
 
-- **No background daemon** — hooks call Node scripts directly. Nothing running 24/7.
+- **Local agent daemon is opt-in** — install with `claudeye agent start`, default mode is `confirm` (dry_run only). Off by default.
 - **No open ports by default** — viewer is opt-in (`claudeye viewer`), localhost only. Personal API routes are always localhost-only. `/shared/:token/*` routes accept remote connections but require a valid, non-expired share token.
 - **Never block Claude Code** — all hooks exit 0 on failure. Memory failure = silent skip.
 - **Claude CLI only** — use `claude --print` for AI calls. No Anthropic SDK, no API keys for compression/advice. Uses the user's existing Claude Code subscription.
@@ -57,6 +57,7 @@ Surface will extend beyond Claude Code (writers, PMs, researchers — anyone usi
 **Error retention (#89):** `hook_errors` ротейтится через `claudeye cleanup` — rows старше 30 дней удаляются. Health check смотрит 24h window с trend-glyph (↑/↓/─), не 7d, чтобы исторические спайки от уже-зафикшенных багов не красили health в красное.
 **Session handoff smart-truncate (#91):** `inject-hook.js:buildSessionHandoff` использует `truncateSmart()` по границе слова + per-section budget (`errors: 250`, `recent: 200`, `file: 200`) вместо хардкод `slice(0, 150)`. decisions никогда не обрезаются.
 **Agent v1 (#20):** `src/agent.js` — два use-case: `crossRepoContext()` (hybridSearch по всем проектам, grouped by project) и `prReview()` (git diff → Claudeye context → decisions + cross-project experience). Все запросы логируются в таблицу `agent_actions` (feedback loop). CLI: `claudeye agent context <query>`, `claudeye agent pr-review [--dry-run]`, `claudeye agent history`.
+**Local agent mode (#18, CLOSED 2026-05-23):** `src/agent-daemon.js` — фоновый демон на launchd (one-shot, запускается раз в час). Архитектура: launchd → `~/.claudeye/agent-daemon-standalone.mjs` → acquireLock → runDaemonCycle → releaseLock → exit. Action registry: `session-analysis` (считает новые сессии/observations за интервал), `db-growth-alert` (мониторит рост БД, >5 MB/h = anomaly). Safety: `confirm` mode (default) — dry_run=1, только наблюдение; `auto` — сохраняет действия; `off` — пропускает. Config: `~/.claudeye/agent-daemon.json`. Lock: `~/.claudeye/daemon.lock` (stale detection 2h). CLI: `claudeye agent start/stop/status/config`. Heartbeat: `~/.claudeye/logs/daemon-heartbeat.log`. Installer: `scripts/agent-daemon-scheduler.js` (`com.claudeye.agent-daemon` plist).
 **Cowork scheduled tasks:** `claudeye-analyzer` runs daily at 13:05 — агрегирует метрики и сверяет readiness criteria. Issues создаёт отдельный `claudeye-dev-agent` (14:08).
 **Invariants-mode (#99, CLOSED 2026-05-11):** `src/invariants.js` реализует 18 инвариантов (SCHED-1..3, DATA-1..4, TRACK-1..3, SCHEMA-1..2, INFRA-1..4, SEC-1..2) — каждый возвращает `{ id, status: green|red|skipped, value, threshold, detail }`. Таблица `invariant_checks` хранит ежедневные runs. CLI: `claudeye invariants [--json|--save]`, `claudeye stability` (streak + MVP gate). Standalone: `scripts/invariants-runner.mjs` деплоится в `~/.claudeye/` и запускается из unified scheduler ежедневно. **Beta MVP gate = 14 consecutive all-green days** (виден в `claudeye stability`). Регрессионная политика: каждый закрытый bug-issue приходит с тестом в `test/regression-<topic>.test.js`. Уже: `regression-schedulers.test.js`, `regression-schema.test.js`, `regression-tracking.test.js`, `regression-data-quality.test.js`. Шаблон: `test/_template-regression.test.js`.
 **Storage thresholds (2026-05-04):** auto-compact и `claudeye health` warn-уровень подняты со 100MB до 150MB — после `claudeye archive` steady-state floor ~100MB и старый порог давал ложные срабатывания сразу после успешного архива. Critical уровень 250MB.
@@ -97,6 +98,7 @@ claudeye/
 │   ├── import-cowork.js        # Cowork transcript import (#88) — парсит .jsonl сессий из desktop app
 │   ├── export.js               # memory export → Markdown (#11)
 │   ├── agent.js                # Agent v1 (#20) — crossRepoContext(), prReview(), logAgentAction(), getAgentHistory()
+│   ├── agent-daemon.js         # Local agent mode (#18) — getDaemonConfig, acquireLock, runDaemonCycle, getDaemonStatus
 │   └── server.js               # Express web viewer, localhost:47777
 │
 ├── scripts/
@@ -108,7 +110,9 @@ claudeye/
 │   ├── digest-scheduler.js     # launchd agent for weekly digest
 │   ├── daily-insights.js       # daily anomaly detection (quota, friction, hook health)
 │   ├── insights-standalone.js  # TCC-safe daily-insights runner (copied to ~/.claudeye/)
-│   └── insights-scheduler.js   # launchd agent for daily insights (#82)
+│   ├── insights-scheduler.js   # launchd agent for daily insights (#82)
+│   ├── agent-daemon-standalone.mjs  # TCC-safe daemon runner (copied to ~/.claudeye/) (#18)
+│   └── agent-daemon-scheduler.js    # launchd install/uninstall/status for com.claudeye.agent-daemon (#18)
 │
 └── test/
     ├── db.test.js              # database CRUD + FTS search tests
@@ -120,7 +124,8 @@ claudeye/
     ├── embeddings-provider.test.js # multi-provider selection, voyage/openai/fallback (#41)
     ├── auto-issues.test.js     # deduplication, issue formatting, friction trends, local-DB persistence (#83)
     ├── export.test.js          # renderMarkdown + edge cases (#11)
-    └── agent.test.js           # agent_actions schema + CRUD tests (#20)
+    ├── agent.test.js           # agent_actions schema + CRUD tests (#20)
+    └── agent-daemon.test.js    # daemon config, lock, schema tests (#18)
 ```
 
 ---
@@ -335,7 +340,7 @@ npm test                              # run all tests (node:test) — 170 tests
 - [x] Shared read-only viewer (#33) — share_tokens table + CRUD, /shared/:token/* routes (stats/trends/sessions, no raw data), CLI: claudeye share [--list|--revoke|--project|--label|--ttl]
 
 ### Phase 3: Agent v1 (April-May 2026) ← CURRENT
-- [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
+- [x] Local agent mode: background analysis and proactive actions (#18) — launchd one-shot, session-analysis + db-growth-alert, confirm/auto/off modes
 - [x] One agent, one use-case, full cycle through Claudeye (#20) — cross-repo-context + pr-review, agent_actions feedback loop
 - [ ] Feedback loop: system learns from its own actions (#21) ← #20 ✅ UNBLOCKED
 - [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20 ✅ UNBLOCKED
@@ -475,4 +480,4 @@ When starting a new session:
 3. Check Known gaps — fix criticals before adding features
 4. Run `claudeye-analyzer` readiness report to see what's ready
 
-**Current priority:** Phase 3 (Agent v1) — #18 local agent mode, #20 one agent one use-case.
+**Current priority:** Phase 3 (Agent v1) — #18 ✅ CLOSED, #20 ✅ CLOSED. Next: #21 Feedback loop, #22 Routing + Control.
