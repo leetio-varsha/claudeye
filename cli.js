@@ -66,13 +66,18 @@ program.command('search <query>')
   .description('Hybrid search observations')
   .option('-p, --project <path>', 'Filter by project', process.cwd())
   .option('-n, --limit <n>', 'Max results', '10')
+  .option('--all', 'Search across ALL projects (Personal AI OS #27)', false)
   .action(async (query, opts) => {
     const { hybridSearch } = await import('./src/search.js');
     const ora = (await import('ora')).default;
 
-    const spinner = ora('Searching...').start();
+    // --all: null project triggers cross-project search in hybridSearch
+    const projectScope = opts.all ? null : opts.project;
+    const spinnerText  = opts.all ? `Searching all projects for: "${query}"` : 'Searching...';
+
+    const spinner = ora(spinnerText).start();
     try {
-      const results = await hybridSearch(query, opts.project, { limit: parseInt(opts.limit) });
+      const results = await hybridSearch(query, projectScope, { limit: parseInt(opts.limit) });
       spinner.stop();
 
       if (!results.length) {
@@ -80,16 +85,54 @@ program.command('search <query>')
         return;
       }
 
-      console.log(chalk.bold(`\n🔍 Results for "${query}"\n`));
+      const header = opts.all
+        ? chalk.bold(`\n🌐 Results across all projects for "${query}"\n`)
+        : chalk.bold(`\n🔍 Results for "${query}"\n`);
+      console.log(header);
+
       for (const obs of results) {
-        const score = (obs.hybridScore * 100).toFixed(1);
-        const tags  = JSON.parse(obs.tags || '[]');
-        console.log(`  ${chalk.cyan('●')} ${obs.summary}`);
+        const score    = (obs.hybridScore * 100).toFixed(1);
+        const tags     = JSON.parse(obs.tags || '[]');
+        const projName = opts.all && obs.project
+          ? chalk.gray(` [${obs.project.split('/').pop()}]`)
+          : '';
+        console.log(`  ${chalk.cyan('●')} ${obs.summary}${projName}`);
         if (tags.length) console.log(`    ${chalk.gray(tags.map(t => `#${t}`).join(' '))}`);
         console.log(`    ${chalk.gray(obs.created_at)} ${chalk.yellow(`score: ${score}`)}\n`);
       }
     } catch (err) {
       spinner.fail(err.message);
+    }
+  });
+
+// ─── projects (#27) ───────────────────────────────────────────────────────
+
+program.command('projects')
+  .description('List all registered projects (Personal AI OS #27)')
+  .option('--json', 'Output as JSON', false)
+  .action(async (opts) => {
+    const { listProjects, projectCount } = await import('./src/project-registry.js');
+    const projects = listProjects();
+
+    if (opts.json) {
+      console.log(JSON.stringify(projects, null, 2));
+      return;
+    }
+
+    if (!projects.length) {
+      console.log(chalk.yellow('\n  No projects registered yet.\n'));
+      console.log(chalk.gray('  Projects are auto-registered when Claudeye hooks run in a directory.\n'));
+      return;
+    }
+
+    console.log(chalk.bold(`\n📁 Registered projects (${projects.length})\n`));
+    for (const p of projects) {
+      const lastSeen  = p.lastSeen.slice(0, 10);
+      const firstSeen = p.firstSeen.slice(0, 10);
+      const shortPath = p.path.replace(process.env.HOME || '', '~');
+      console.log(`  ${chalk.cyan(p.shortName)}`);
+      console.log(`    ${chalk.gray(shortPath)}`);
+      console.log(`    ${chalk.gray(`first: ${firstSeen}  last: ${lastSeen}`)}\n`);
     }
   });
 

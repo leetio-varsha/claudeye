@@ -294,7 +294,7 @@ describe('agent_actions schema (daemon)', () => {
       VALUES (?, ?, ?, ?, ?)
     `).run('daemon', 'DB size check: 300.0 MB', 'db-growth-alert', JSON.stringify(result), 0);
 
-    const row = db.prepare("SELECT * FROM agent_actions WHERE agent = 'daemon' AND project = 'db-growth-alert' ORDER BY created_at DESC LIMIT 1").get();
+    const row = db.prepare("SELECT * FROM agent_actions WHERE agent = 'daemon' AND project = 'db-growth-alert' ORDER BY id DESC LIMIT 1").get();
     const parsed = JSON.parse(row.result);
     assert.equal(parsed.anomaly, true);
     assert.ok(parsed.growth_mb_per_hour > 5, 'growth > 5 MB/h');

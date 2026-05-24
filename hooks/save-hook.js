@@ -139,6 +139,12 @@ async function main() {
       });
     } catch { /* non-critical */ }
 
+    // Opportunistic: auto-register project in registry (#27)
+    try {
+      const { registerProject } = await import(srcDir + 'project-registry.js');
+      registerProject(project);
+    } catch { /* non-critical */ }
+
   } catch (err) {
     try { logHookError('save-hook', 'general', err.message, project); } catch {}
     // Always exit 0 — never block Claude Code
