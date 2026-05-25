@@ -32,12 +32,13 @@ const CONFIG_FILE  = join(CLAUDEYE_DIR, 'agent-daemon.json');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-/** @typedef {{ mode: 'auto'|'confirm'|'off', intervalHours: number, actions: string[] }} DaemonConfig */
+/** @typedef {{ mode: 'auto'|'confirm'|'off', intervalHours: number, actions: string[], maxActionsPerHour: number }} DaemonConfig */
 
 const DEFAULT_CONFIG = {
   mode: 'confirm',
   intervalHours: 1,
   actions: ['session-analysis', 'db-growth-alert'],
+  maxActionsPerHour: 20,
 };
 
 /**
@@ -50,9 +51,12 @@ export function getDaemonConfig() {
     if (!existsSync(CONFIG_FILE)) return { ...DEFAULT_CONFIG };
     const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
     return {
-      mode:          raw.mode          ?? DEFAULT_CONFIG.mode,
-      intervalHours: raw.intervalHours ?? DEFAULT_CONFIG.intervalHours,
-      actions:       Array.isArray(raw.actions) ? raw.actions : DEFAULT_CONFIG.actions,
+      mode:               raw.mode               ?? DEFAULT_CONFIG.mode,
+      intervalHours:      raw.intervalHours      ?? DEFAULT_CONFIG.intervalHours,
+      actions:            Array.isArray(raw.actions) ? raw.actions : DEFAULT_CONFIG.actions,
+      maxActionsPerHour:  typeof raw.maxActionsPerHour === 'number'
+                            ? raw.maxActionsPerHour
+                            : DEFAULT_CONFIG.maxActionsPerHour,
     };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -315,6 +319,35 @@ export async function runDaemonCycle({ dryRunOverride = false } = {}) {
 
   if (config.mode === 'off') {
     return { skipped: true, mode: 'off', results: [] };
+  }
+
+  // ── Rate limiting (#22): enforce maxActionsPerHour ──────────────────────────
+  // Count real (non-dry-run) daemon actions in the past hour.
+  // In 'confirm' mode all actions are dry_run=1, so the counter only applies
+  // to 'auto' mode — where actions actually execute.
+  if (config.mode === 'auto' && !dryRunOverride) {
+    try {
+      const db   = getDb();
+      const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 19);
+      const { cnt } = db.prepare(`
+        SELECT COUNT(*) AS cnt
+        FROM agent_actions
+        WHERE agent = 'daemon' AND dry_run = 0 AND created_at >= ?
+      `).get(hourAgo);
+
+      if (cnt >= config.maxActionsPerHour) {
+        return {
+          skipped:    true,
+          mode:       config.mode,
+          rateLimited: true,
+          actionsThisHour: cnt,
+          limit:      config.maxActionsPerHour,
+          results:    [],
+        };
+      }
+    } catch {
+      // DB unavailable — fail open (don't block the cycle)
+    }
   }
 
   const dryRun = dryRunOverride || config.mode === 'confirm';

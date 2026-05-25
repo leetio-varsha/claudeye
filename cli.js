@@ -2065,13 +2065,14 @@ agentCmd
 agentCmd
   .command('config')
   .description('Show or set daemon configuration')
-  .option('--mode <mode>',    'Set mode: auto | confirm | off')
-  .option('--interval <h>',  'Set run interval in hours (e.g. 1, 2, 6)')
-  .option('--actions <list>', 'Comma-separated action list (e.g. session-analysis,db-growth-alert)')
+  .option('--mode <mode>',          'Set mode: auto | confirm | off')
+  .option('--interval <h>',         'Set run interval in hours (e.g. 1, 2, 6)')
+  .option('--actions <list>',       'Comma-separated action list (e.g. session-analysis,db-growth-alert)')
+  .option('--max-actions <n>',      'Max real actions per hour in auto mode (default 20)')
   .action(async (opts) => {
     const { getDaemonConfig, setDaemonConfig, listAvailableActions } = await import('./src/agent-daemon.js');
 
-    const hasUpdate = opts.mode || opts.interval || opts.actions;
+    const hasUpdate = opts.mode || opts.interval || opts.actions || opts.maxActions;
 
     if (hasUpdate) {
       const updates = {};
@@ -2082,24 +2083,61 @@ agentCmd
         }
         updates.mode = opts.mode;
       }
-      if (opts.interval) updates.intervalHours = parseFloat(opts.interval);
-      if (opts.actions)  updates.actions = opts.actions.split(',').map(a => a.trim());
+      if (opts.interval)   updates.intervalHours     = parseFloat(opts.interval);
+      if (opts.actions)    updates.actions            = opts.actions.split(',').map(a => a.trim());
+      if (opts.maxActions) updates.maxActionsPerHour  = parseInt(opts.maxActions, 10);
 
       const next = setDaemonConfig(updates);
       console.log(chalk.green('\n  ✅ Config updated:\n'));
-      console.log(`  mode:     ${chalk.bold(next.mode)}`);
-      console.log(`  interval: ${next.intervalHours}h`);
-      console.log(`  actions:  ${next.actions.join(', ')}\n`);
+      console.log(`  mode:              ${chalk.bold(next.mode)}`);
+      console.log(`  interval:          ${next.intervalHours}h`);
+      console.log(`  actions:           ${next.actions.join(', ')}`);
+      console.log(`  maxActionsPerHour: ${next.maxActionsPerHour}\n`);
     } else {
       const config = getDaemonConfig();
       const available = listAvailableActions();
       console.log(chalk.bold('\n⚙️  Agent Daemon Config\n'));
-      console.log(`  mode:            ${chalk.bold(config.mode)}`);
-      console.log(`  intervalHours:   ${config.intervalHours}`);
-      console.log(`  actions:         ${config.actions.join(', ')}`);
-      console.log(`  available:       ${available.join(', ')}`);
+      console.log(`  mode:              ${chalk.bold(config.mode)}`);
+      console.log(`  intervalHours:     ${config.intervalHours}`);
+      console.log(`  actions:           ${config.actions.join(', ')}`);
+      console.log(`  maxActionsPerHour: ${config.maxActionsPerHour}`);
+      console.log(`  available:         ${available.join(', ')}`);
       console.log('');
-      console.log(chalk.gray('  Edit: claudeye agent config --mode auto --interval 1 --actions session-analysis,db-growth-alert\n'));
+      console.log(chalk.gray('  Edit: claudeye agent config --mode auto --interval 1 --max-actions 20\n'));
+    }
+  });
+
+// ─── agent route (#22) ────────────────────────────────────────────────────────
+
+agentCmd
+  .command('route <description>')
+  .description('Route a task to the right agent command (Routing + Control)')
+  .option('--project <path>', 'Current project (for context scoping)', process.cwd())
+  .action(async (description, opts) => {
+    const { routeTask, scopeToQueryOpts } = await import('./src/agent-router.js');
+
+    const decision = routeTask(description);
+    const ctxOpts  = scopeToQueryOpts(decision.contextScope, opts.project);
+
+    const confColor = decision.confidence >= 0.8 ? chalk.green
+                    : decision.confidence >= 0.6 ? chalk.yellow
+                    : chalk.red;
+
+    console.log(chalk.bold('\n🧭  Task Router\n'));
+    console.log(`  Query:        ${chalk.cyan(description)}`);
+    console.log(`  Agent:        ${chalk.bold(decision.agent)}`);
+    console.log(`  Command:      ${chalk.magenta(decision.cliHint)}`);
+    console.log(`  Confidence:   ${confColor(decision.confidence.toFixed(2))}`);
+    console.log(`  Reason:       ${chalk.gray(decision.reason)}`);
+    console.log(`  Context:      ${chalk.gray(ctxOpts.note)} (limit ${ctxOpts.limit})`);
+    console.log(`  Description:  ${decision.description}`);
+    if (decision.action) {
+      console.log(`  Action:       ${chalk.gray(decision.action)}`);
+    }
+    console.log('');
+
+    if (decision.confidence < 0.5) {
+      console.log(chalk.yellow('  ⚠️  Low confidence — falling back to search. Try a more specific description.\n'));
     }
   });
 
