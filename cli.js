@@ -355,6 +355,46 @@ program.command('health')
       }
     } catch { /* skip if table not yet migrated */ }
 
+    // Search latency (#30 monitoring) — FTS + vector DB load.
+    // Thresholds from issue #30: FTS > 200ms → Этап 3 trigger, vector > 500ms → Этап 4 trigger.
+    try {
+      const { ftsSearch, getObservationsWithEmbeddings } = await import('./src/db.js');
+      const { bufToFloat32, cosineSimilarity } = await import('./src/embeddings.js');
+      const BENCH_QUERY = 'recent work tool usage';
+
+      // FTS latency
+      const ftsT0 = Date.now();
+      ftsSearch(BENCH_QUERY, null, 10);
+      const ftsMs = Date.now() - ftsT0;
+
+      // Vector DB load + cosine computation (CPU, no API call)
+      const vecT0 = Date.now();
+      const rows = getObservationsWithEmbeddings(null, 300);
+      if (rows.length > 0) {
+        // Simulate one cosine pass with a zero vector — measures DB I/O + JS CPU
+        const zeroDim = rows[0].vector ? bufToFloat32(rows[0].vector).length : 1536;
+        const fakeQ = new Float32Array(zeroDim); // all zeros, but exercises the loop
+        rows.slice(0, 100).forEach(r => {
+          if (r.vector) cosineSimilarity(fakeQ, bufToFloat32(r.vector));
+        });
+      }
+      const vecMs = Date.now() - vecT0;
+
+      const ftsWarn = ftsMs > 200;
+      const vecWarn = vecMs > 500;
+      const latencyOk = !ftsWarn && !vecWarn;
+
+      checks.push({
+        name: 'Search latency',
+        ok: latencyOk,
+        detail: `FTS ${ftsMs}ms · vector ${vecMs}ms (${rows.length} rows sampled)`
+          + (ftsWarn ? ` ⚠️  FTS >200ms — Этап 3 trigger (#30)` : '')
+          + (vecWarn ? ` 🔴 vector >500ms — Этап 4 trigger (#30)` : ''),
+      });
+    } catch {
+      checks.push({ name: 'Search latency', ok: true, detail: 'check skipped' });
+    }
+
     // Weekly digest freshness (#79)
     try {
       const latest = db.prepare('SELECT week_start, created_at FROM digests ORDER BY week_start DESC LIMIT 1').get();
