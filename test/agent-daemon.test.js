@@ -41,7 +41,7 @@ const CONFIG_FILE = join(TEST_DIR, 'agent-daemon.json');
 
 function getDaemonConfig(dir) {
   const f = join(dir, 'agent-daemon.json');
-  const DEFAULT = { mode: 'confirm', intervalHours: 1, actions: ['session-analysis', 'db-growth-alert'] };
+  const DEFAULT = { mode: 'confirm', intervalHours: 1, actions: ['session-analysis', 'db-growth-alert', 'auto-archive'] };
   try {
     if (!existsSync(f)) return { ...DEFAULT };
     const raw = JSON.parse(readFileSync(f, 'utf8'));
@@ -146,7 +146,7 @@ describe('getDaemonConfig', () => {
     const config = getDaemonConfig(TEST_DIR);
     assert.equal(config.mode, 'confirm');
     assert.equal(config.intervalHours, 1);
-    assert.deepEqual(config.actions, ['session-analysis', 'db-growth-alert']);
+    assert.deepEqual(config.actions, ['session-analysis', 'db-growth-alert', 'auto-archive']);
   });
 
   it('reads persisted config', () => {
@@ -169,7 +169,7 @@ describe('setDaemonConfig', () => {
     const next = setDaemonConfig(TEST_DIR, { intervalHours: 4 });
     assert.equal(next.mode, 'auto');
     assert.equal(next.intervalHours, 4);
-    assert.deepEqual(next.actions, ['session-analysis', 'db-growth-alert']);
+    assert.deepEqual(next.actions, ['session-analysis', 'db-growth-alert', 'auto-archive']);
   });
 
   it('persists to disk', () => {
@@ -309,11 +309,71 @@ describe('agent_actions schema (daemon)', () => {
 
 describe('listAvailableActions (inline check)', () => {
   it('action registry contains expected actions', () => {
-    const KNOWN = ['session-analysis', 'db-growth-alert'];
+    const KNOWN = ['session-analysis', 'db-growth-alert', 'auto-archive'];
     // We don't import the real module to avoid HOME dependency, but verify the names are correct strings
     for (const name of KNOWN) {
       assert.ok(typeof name === 'string' && name.length > 0);
     }
+  });
+});
+
+describe('auto-archive daemon action schema (#30)', () => {
+  let db;
+  before(() => { db = createTestDb(join(TEST_DIR, 'mem-archive-test.db')); });
+  after(() => { db?.close(); });
+
+  it('inserts auto-archive dry-run action when below threshold', () => {
+    const result = {
+      size_mb: 180.0, threshold_mb: 250, skipped: true, reason: 'below_threshold',
+    };
+    db.prepare(`
+      INSERT INTO agent_actions (agent, query, project, result, dry_run)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('daemon', 'DB 180.0 MB — below threshold 250 MB', 'auto-archive', JSON.stringify(result), 1);
+
+    const row = db.prepare("SELECT * FROM agent_actions WHERE project = 'auto-archive' ORDER BY id DESC LIMIT 1").get();
+    assert.ok(row, 'row inserted');
+    assert.equal(row.dry_run, 1);
+    const parsed = JSON.parse(row.result);
+    assert.equal(parsed.skipped, true);
+    assert.equal(parsed.reason, 'below_threshold');
+  });
+
+  it('inserts auto-archive dry-run action when above threshold', () => {
+    const result = {
+      size_mb: 282.0, threshold_mb: 250, would_archive: 18085,
+      older_than_days: 14, keep_importance: 0.7, dry_run: true,
+    };
+    db.prepare(`
+      INSERT INTO agent_actions (agent, query, project, result, dry_run)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('daemon', 'DB 282.0 MB > 250 MB — would archive 18085 obs', 'auto-archive', JSON.stringify(result), 1);
+
+    const row = db.prepare("SELECT * FROM agent_actions WHERE project = 'auto-archive' ORDER BY id DESC LIMIT 1").get();
+    const parsed = JSON.parse(row.result);
+    assert.equal(parsed.size_mb, 282.0);
+    assert.equal(parsed.would_archive, 18085);
+    assert.equal(parsed.dry_run, true);
+  });
+
+  it('inserts auto-archive executed action in auto mode (dry_run=0)', () => {
+    const result = {
+      size_mb_before: 282.0, archived: 18085, freed_mb: 48.7,
+      older_than_days: 14, keep_importance: 0.7,
+      archive_path: '/Users/test/.claudeye/archive.db',
+    };
+    db.prepare(`
+      INSERT INTO agent_actions (agent, query, project, result, dry_run)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('daemon', 'DB 282.0 MB > 250 MB — archived 18085 obs', 'auto-archive', JSON.stringify(result), 0);
+
+    const row = db.prepare("SELECT * FROM agent_actions WHERE project = 'auto-archive' AND dry_run = 0 ORDER BY id DESC LIMIT 1").get();
+    assert.ok(row, 'row inserted');
+    assert.equal(row.dry_run, 0);
+    const parsed = JSON.parse(row.result);
+    assert.equal(parsed.archived, 18085);
+    assert.ok(parsed.freed_mb > 0, 'freed_mb populated');
+    assert.ok(parsed.archive_path, 'archive_path present');
   });
 });
 
