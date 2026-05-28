@@ -13,17 +13,17 @@
  * Config:
  *   mode: 'auto' | 'confirm' | 'off'  (default: 'confirm')
  *   intervalHours: number              (default: 1)
- *   actions: string[]                  (default: ['session-analysis', 'db-growth-alert'])
+ *   actions: string[]                  (default: ['session-analysis', 'db-growth-alert', 'auto-archive'])
  *
  * Safety: in 'confirm' mode, actions are logged as dry_run=1 (suggestions only).
  *         in 'auto' mode, actions execute and log as dry_run=0.
  *         in 'off' mode, runDaemonCycle() returns immediately.
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { getDb } from './db.js';
+import { getDb, archiveObservations, DB_PATH } from './db.js';
 
 const HOME         = homedir();
 const CLAUDEYE_DIR = join(HOME, '.claudeye');
@@ -37,7 +37,7 @@ const CONFIG_FILE  = join(CLAUDEYE_DIR, 'agent-daemon.json');
 const DEFAULT_CONFIG = {
   mode: 'confirm',
   intervalHours: 1,
-  actions: ['session-analysis', 'db-growth-alert'],
+  actions: ['session-analysis', 'db-growth-alert', 'auto-archive'],
   maxActionsPerHour: 20,
 };
 
@@ -290,11 +290,99 @@ function runDbGrowthAlert({ dryRun = false }) {
   }
 }
 
+/**
+ * Action: auto-archive (#30)
+ * Archives old low/medium-importance observations to archive.db when hot DB
+ * exceeds the critical size threshold (default 250 MB).
+ *
+ * In 'confirm' mode (dryRun=true): logs intent, does NOT move data.
+ * In 'auto' mode (dryRun=false): calls archiveObservations() and logs result.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun         — true in 'confirm' mode
+ * @param {number}  opts.thresholdMb    — archive trigger size in MB (default 250)
+ * @param {number}  opts.olderThanDays  — cutoff age for archivable obs (default 14)
+ * @param {number}  opts.keepImportance — min importance to keep in hot (default 0.7)
+ */
+function runAutoArchive({
+  dryRun         = false,
+  thresholdMb    = 250,
+  olderThanDays  = 14,
+  keepImportance = 0.7,
+} = {}) {
+  try {
+    let sizeMb = 0;
+    try {
+      sizeMb = +(statSync(DB_PATH).size / 1024 / 1024).toFixed(2);
+    } catch {
+      // DB not accessible — skip
+      return { skipped: true, reason: 'db_not_found' };
+    }
+
+    if (sizeMb < thresholdMb) {
+      return { skipped: true, reason: 'below_threshold', size_mb: sizeMb, threshold_mb: thresholdMb };
+    }
+
+    if (dryRun) {
+      // Count candidates without touching data
+      const db = getDb();
+      const cutoff = new Date(Date.now() - olderThanDays * 86_400_000)
+        .toISOString().replace('T', ' ').slice(0, 19);
+      const { candidate_count } = db.prepare(`
+        SELECT COUNT(*) AS candidate_count FROM observations
+        WHERE created_at < ? AND importance < ?
+      `).get(cutoff, keepImportance);
+
+      const result = {
+        size_mb:          sizeMb,
+        threshold_mb:     thresholdMb,
+        would_archive:    candidate_count,
+        older_than_days:  olderThanDays,
+        keep_importance:  keepImportance,
+        dry_run:          true,
+      };
+
+      logDaemonAction({
+        action: 'auto-archive',
+        query:  `DB ${sizeMb} MB > ${thresholdMb} MB — would archive ${candidate_count} obs`,
+        result,
+        dryRun: true,
+      });
+
+      return result;
+    }
+
+    // auto mode: actually archive
+    const archiveResult = archiveObservations({ olderThanDays, keepImportance, vacuum: true });
+
+    const result = {
+      size_mb_before:  sizeMb,
+      archived:        archiveResult.archived,
+      freed_mb:        archiveResult.freedMB ?? null,
+      older_than_days: olderThanDays,
+      keep_importance: keepImportance,
+      archive_path:    archiveResult.archivePath,
+    };
+
+    logDaemonAction({
+      action: 'auto-archive',
+      query:  `DB ${sizeMb} MB > ${thresholdMb} MB — archived ${archiveResult.archived} obs`,
+      result,
+      dryRun: false,
+    });
+
+    return result;
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 // ─── Action Registry ─────────────────────────────────────────────────────────
 
 const ACTION_REGISTRY = {
   'session-analysis': runSessionAnalysis,
   'db-growth-alert':  runDbGrowthAlert,
+  'auto-archive':     runAutoArchive,
 };
 
 /**
