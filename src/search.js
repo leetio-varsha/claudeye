@@ -34,8 +34,21 @@ const ARCHIVE_FALLBACK_MIN = 3;
 // The gate drops lowest-priority sections first (cross-project, then low-
 // scoring searched hits), never dropping decisions or recent below a floor.
 
-const DEFAULT_INJECT_BUDGET_TOKENS = 1000;   // ≈ 4KB total
 const TOKEN_TO_BYTES = 4;                    // rough; keeps the math boring
+
+// Model-aware default budgets (tokens).
+// Override via settings.json `inject_budget_tokens` or CLAUDEYE_INJECT_BUDGET_TOKENS env.
+//   claude-opus-4-*   → 1M context window  → 4000 tokens (~16KB)
+//   claude-sonnet-4-* → 200K context window → 2500 tokens (~10KB)
+//   claude-haiku-*    → 200K context window → 1500 tokens ( ~6KB)
+//   default           → 2000 tokens ( ~8KB)  [was 1000 before 2026-05-29]
+const MODEL_BUDGET_MAP = [
+  { prefix: 'claude-opus-4',    tokens: 4000 },
+  { prefix: 'claude-sonnet-4',  tokens: 2500 },
+  { prefix: 'claude-haiku',     tokens: 1500 },
+];
+const DEFAULT_INJECT_BUDGET_TOKENS = 2000;
+
 // Section floors — we will never trim below these even under budget pressure.
 const SECTION_FLOOR = {
   decisions: 2,
@@ -44,16 +57,32 @@ const SECTION_FLOOR = {
   cross:     0,  // cross-project is purely optional
 };
 
+// Max chars per decision line in the injected context.
+// Full text is preserved in DB — this only caps what Claude sees per prompt.
+const DECISION_INJECT_MAX_CHARS = 300;
+
 function readInjectBudgetTokens() {
+  // 1. Explicit override wins (env var or settings.json)
   const env = parseInt(process.env.CLAUDEYE_INJECT_BUDGET_TOKENS, 10);
   if (Number.isFinite(env) && env > 0) return env;
   try {
     const p = join(homedir(), '.claudeye', 'settings.json');
-    if (!existsSync(p)) return DEFAULT_INJECT_BUDGET_TOKENS;
-    const cfg = JSON.parse(readFileSync(p, 'utf8'));
-    const v = parseInt(cfg.inject_budget_tokens ?? cfg.injectBudgetTokens, 10);
-    return Number.isFinite(v) && v > 0 ? v : DEFAULT_INJECT_BUDGET_TOKENS;
-  } catch { return DEFAULT_INJECT_BUDGET_TOKENS; }
+    if (existsSync(p)) {
+      const cfg = JSON.parse(readFileSync(p, 'utf8'));
+      const v = parseInt(cfg.inject_budget_tokens ?? cfg.injectBudgetTokens, 10);
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+  } catch { /* fall through to model-based default */ }
+
+  // 2. Model-aware default from CLAUDE_MODEL env (set by Claude Code hooks)
+  const model = (process.env.CLAUDE_MODEL || '').toLowerCase();
+  if (model) {
+    for (const { prefix, tokens } of MODEL_BUDGET_MAP) {
+      if (model.startsWith(prefix)) return tokens;
+    }
+  }
+
+  return DEFAULT_INJECT_BUDGET_TOKENS;
 }
 
 /**
@@ -219,7 +248,15 @@ export async function buildContextWithMetrics(userPrompt, project, opts = {}) {
     {
       name:   'decisions',
       header: '## Key decisions (project context)',
-      lines:  decisions.map(d => `- ${d.decision_rationale}`),
+      // Truncate each decision to DECISION_INJECT_MAX_CHARS — keeps the section
+      // compact while preserving all entries. Full text remains in DB.
+      lines:  decisions.map(d => {
+        const text = d.decision_rationale;
+        const truncated = text.length > DECISION_INJECT_MAX_CHARS
+          ? text.slice(0, DECISION_INJECT_MAX_CHARS).trimEnd() + '…'
+          : text;
+        return `- ${truncated}`;
+      }),
     },
     {
       name:   'recent',
