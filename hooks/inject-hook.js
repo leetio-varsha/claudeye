@@ -245,6 +245,17 @@ async function main() {
       try {
         saveInjectionStat({ sessionId, project, bytes, tokensEst, sections, budgetHit });
       } catch { /* never break inject-hook on stats failure */ }
+
+      // Stderr visibility: brief one-liner so user sees Claudeye is active.
+      // stderr goes to terminal (not into the Claude prompt), so this is safe.
+      try {
+        const kb = (bytes / 1024).toFixed(1);
+        const parts = (sections || [])
+          .filter(s => s.count > 0)
+          .map(s => `${s.name}:${s.count}`);
+        const label = parts.length ? ` (${parts.join(', ')})` : '';
+        process.stderr.write(`📌 Claudeye: ${kb}KB injected${label}\n`);
+      } catch { /* non-critical */ }
     }
 
     // Effort classification (#63) — rule-based, zero-latency
@@ -305,6 +316,8 @@ async function main() {
         lines.push(`_\`claudeye advises accept ${adv.id}\` · \`claudeye advises dismiss ${adv.id} --reason "..."\`_`);
         process.stdout.write(lines.join('\n') + '\n\n');
         getDb().prepare(`UPDATE advises SET status='shown', shown_at=datetime('now') WHERE id=?`).run(adv.id);
+        // Also notify via stderr so user sees it in terminal
+        process.stderr.write(`💡 Claudeye совет: ${adv.category} (${adv.confidence}) — см. начало промпта\n`);
       }
     } catch (e) {
       try { logHookError('inject-hook', 'advise-inject', e.message, project); } catch {}
