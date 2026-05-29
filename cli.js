@@ -203,38 +203,126 @@ program.command('viewer')
 // ─── injection-stats (#90) ──────────────────────────────────────────────
 
 program.command('injection-stats')
-  .description('Show RAG injection size stats (inject-hook — how much context per prompt)')
+  .description('Activity report: sessions, output (edits/writes/bash), memory (RAG injections)')
   .option('-d, --days <n>', 'Days to look back', '7')
   .option('-p, --project <path>', 'Filter by project')
   .action(async (opts) => {
-    const { getInjectionStats } = await import('./src/db.js');
-    const stats = getInjectionStats({ days: parseInt(opts.days, 10), project: opts.project });
+    const days = parseInt(opts.days, 10);
+    const { getInjectionStats, getDb } = await import('./src/db.js');
+    const db = getDb();
+    const HOME = process.env.HOME || '';
+    const shortPath = p => p.replace(HOME, '~').replace(/.*\/([^/]+\/[^/]+)$/, '$1');
 
-    console.log(chalk.bold('\n📊 Injection Stats (' + opts.days + 'd)' + (opts.project ? ` — ${opts.project}` : '') + '\n'));
-    if (!stats.totalPrompts) {
-      console.log(chalk.gray('  No injection data yet. Send a prompt in Claude Code with hooks installed.\n'));
-      return;
+    // ── Activity: sessions + token consumption ───────────────────────────
+    const projectFilter = opts.project ? `AND project = '${opts.project.replace(/'/g, "''")}'` : '';
+    // Count sessions from sessions table directly (avoid obs join duplication)
+    const actRow = db.prepare(`
+      SELECT
+        COUNT(*)                          AS sessions,
+        COALESCE(SUM(token_input),  0)    AS token_in,
+        COALESCE(SUM(token_output), 0)    AS token_out,
+        COALESCE(AVG(CASE WHEN duration_ms > 0 THEN duration_ms END), 0) AS avg_dur_ms
+      FROM sessions
+      WHERE started_at >= datetime('now', ?)
+        AND ended_at IS NOT NULL
+      ${projectFilter}
+    `).get(`-${days} days`);
+
+    // ── Output: file operations ──────────────────────────────────────────
+    const toolRow = db.prepare(`
+      SELECT
+        SUM(CASE WHEN tool = 'Edit'  THEN 1 ELSE 0 END) AS edits,
+        SUM(CASE WHEN tool = 'Write' THEN 1 ELSE 0 END) AS writes,
+        SUM(CASE WHEN tool = 'Read'  THEN 1 ELSE 0 END) AS reads,
+        SUM(CASE WHEN tool = 'Bash'  THEN 1 ELSE 0 END) AS bashes
+      FROM observations
+      WHERE created_at >= datetime('now', ?)
+      ${projectFilter}
+    `).get(`-${days} days`);
+
+    // ── Per-project breakdown ────────────────────────────────────────────
+    const perProject = db.prepare(`
+      SELECT
+        project,
+        COUNT(DISTINCT session_id)                       AS sessions,
+        SUM(CASE WHEN tool = 'Edit'  THEN 1 ELSE 0 END) AS edits,
+        SUM(CASE WHEN tool = 'Write' THEN 1 ELSE 0 END) AS writes,
+        SUM(CASE WHEN tool = 'Bash'  THEN 1 ELSE 0 END) AS bashes,
+        COUNT(*)                                         AS total_obs
+      FROM observations
+      WHERE created_at >= datetime('now', ?)
+      ${projectFilter}
+      GROUP BY project
+      ORDER BY (edits + writes + bashes) DESC
+      LIMIT 8
+    `).all(`-${days} days`);
+
+    // ── Injection stats (RAG) ────────────────────────────────────────────
+    const inj = getInjectionStats({ days, project: opts.project });
+
+    // ── Render ───────────────────────────────────────────────────────────
+    const fmtNum  = n => String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '_');
+    const fmtM    = n => n >= 1e9 ? (n/1e9).toFixed(1)+'B' : n >= 1e6 ? (n/1e6).toFixed(0)+'M' : fmtNum(n);
+    const fmtHrs  = ms => ms < 3600000 ? (ms/60000).toFixed(0)+'m' : (ms/3600000).toFixed(1)+'h';
+    const fmtKB   = b => b >= 1024 ? (b/1024).toFixed(1)+' KB' : b+' B';
+
+    const dayLabel = opts.project ? `${days}d · ${shortPath(opts.project)}` : `${days}d`;
+
+    console.log(chalk.bold(`\n📊  Claudeye — Activity Report  (${dayLabel})\n`));
+
+    // ACTIVITY
+    console.log(chalk.bold('  АКТИВНОСТЬ'));
+    console.log(`    ${chalk.cyan(fmtNum(actRow.sessions))} сессий`
+      + (actRow.avg_dur_ms ? `  ·  в среднем ${chalk.cyan(fmtHrs(actRow.avg_dur_ms))} на сессию` : '')
+    );
+    if (actRow.token_in || actRow.token_out) {
+      console.log(`    Токены: ${chalk.yellow(fmtM(actRow.token_in))} входящих  /  ${chalk.yellow(fmtM(actRow.token_out))} исходящих`);
     }
-    console.log(`  Prompts injected:  ${chalk.cyan(stats.totalPrompts)}`);
-    console.log(`  Avg bytes:         ${chalk.cyan(stats.avgBytes)}`);
-    console.log(`  Max bytes:         ${chalk.cyan(stats.maxBytes)}`);
-    console.log(`  Tokens p50 / p95:  ${chalk.cyan(stats.p50)} / ${chalk.yellow(stats.p95)}`);
-    console.log(`  Tokens p99:        ${chalk.yellow(stats.p99)}`);
-    console.log(`  Budget gate hits:  ${stats.budgetHits ? chalk.yellow(stats.budgetHits) : chalk.green(0)}`);
 
-    if (stats.perSection.length) {
-      console.log(chalk.bold('\n  By section (avg bytes):'));
-      for (const s of stats.perSection) {
-        console.log(`    ${chalk.green(s.name.padEnd(12))} ${String(s.avgBytes).padStart(5)} B  ×${s.count}`);
+    // OUTPUT
+    console.log(chalk.bold('\n  РАБОТА С КОДОМ'));
+    const edits  = toolRow.edits  || 0;
+    const writes = toolRow.writes || 0;
+    const reads  = toolRow.reads  || 0;
+    const bashes = toolRow.bashes || 0;
+    console.log(`    ${chalk.green(String(edits).padStart(5))}  Edit     — файлов изменено`);
+    console.log(`    ${chalk.green(String(writes).padStart(5))}  Write    — файлов создано`);
+    console.log(`    ${chalk.cyan(String(reads).padStart(5))}  Read     — файлов прочитано`);
+    console.log(`    ${chalk.gray(String(bashes).padStart(5))}  Bash     — команд в терминале`);
+
+    // MEMORY
+    if (inj.totalPrompts) {
+      console.log(chalk.bold('\n  ПАМЯТЬ (RAG-инъекции)'));
+      const budgetPct = inj.totalPrompts ? Math.round(inj.budgetHits / inj.totalPrompts * 100) : 0;
+      console.log(`    ${chalk.cyan(fmtNum(inj.totalPrompts))} промптов с контекстом  ·  avg ${fmtKB(inj.avgBytes)} на промпт`);
+      if (inj.perSection.length) {
+        const sectionMap = { decisions: 'решения', recent: 'сессия', searched: 'поиск', cross: 'cross-repo' };
+        const parts = inj.perSection
+          .filter(s => s.avgBytes > 50)
+          .map(s => `${sectionMap[s.name] || s.name} ${fmtKB(s.avgBytes)}`);
+        if (parts.length) console.log(`    Секции: ${chalk.gray(parts.join('  ·  '))}`);
+      }
+      if (budgetPct > 50) {
+        console.log(`    ${chalk.yellow('⚠')}  Budget-gate срабатывает в ${budgetPct}% промптов — контекст обрезается`);
       }
     }
-    if (stats.perProject.length) {
-      console.log(chalk.bold('\n  Top projects (avg bytes):'));
-      for (const p of stats.perProject) {
-        const short = p.project.replace(process.env.HOME, '~');
-        console.log(`    ${chalk.green(short.padEnd(50))} ${String(p.avgBytes).padStart(5)} B  ×${p.count}`);
+
+    // PER-PROJECT
+    if (perProject.length > 1 || (perProject.length === 1 && !opts.project)) {
+      console.log(chalk.bold('\n  ПРОЕКТЫ'));
+      const maxName = Math.min(30, Math.max(...perProject.map(p => shortPath(p.project).length)));
+      for (const p of perProject) {
+        const name = shortPath(p.project).padEnd(maxName);
+        const parts = [
+          `${chalk.cyan(String(p.sessions).padStart(3))} сес`,
+          `Edit ${chalk.green(String(p.edits).padStart(4))}`,
+          `Write ${chalk.green(String(p.writes).padStart(3))}`,
+          `Bash ${chalk.gray(String(p.bashes).padStart(4))}`,
+        ];
+        console.log(`    ${chalk.bold(name)}  ${parts.join('  ')}`);
       }
     }
+
     console.log('');
   });
 
