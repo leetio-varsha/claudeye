@@ -2154,6 +2154,59 @@ agentCmd
     console.log('');
   });
 
+agentCmd
+  .command('digest')
+  .description('Weekly agent digest: what the agent did, what was useful, what was not (#21)')
+  .option('--days <n>', 'Window in days', '7')
+  .action(async (opts) => {
+    const { getAgentDigest } = await import('./src/agent.js');
+    const days = parseInt(opts.days, 10) || 7;
+    const d = getAgentDigest({ days });
+
+    console.log(chalk.bold(`\n🤖 Agent Digest — last ${d.days}d\n`));
+    if (d.total === 0) {
+      console.log(chalk.gray('  No agent actions in this window.\n'));
+      return;
+    }
+
+    console.log(`  Actions:        ${chalk.bold(d.total)}  (${chalk.green(d.accepted + ' accepted')}, ${chalk.yellow(d.rejected + ' rejected')}, ${chalk.gray(d.pending + ' pending')})`);
+    if (d.rejectionRate != null) {
+      const pct = (d.rejectionRate * 100).toFixed(0);
+      const tag = d.rejectionRate > 0.5 ? chalk.red(`${pct}% ⚠`) : chalk.green(`${pct}%`);
+      console.log(`  Rejection rate: ${tag}`);
+    } else {
+      console.log(`  Rejection rate: ${chalk.gray('n/a (no feedback yet)')}`);
+    }
+
+    if (d.byAgent.length) {
+      console.log(chalk.bold('\n  By agent:'));
+      for (const a of d.byAgent) {
+        console.log(`    ${chalk.cyan(a.agent.padEnd(20))} ${a.total} total, ${chalk.green(a.accepted + '✓')} ${chalk.yellow(a.rejected + '✗')} ${chalk.gray(a.pending + ' pending')}`);
+      }
+    }
+
+    if (d.byDay.length) {
+      console.log(chalk.bold('\n  Daily volume:'));
+      for (const day of d.byDay) {
+        console.log(`    ${chalk.gray(day.day)}  ${chalk.cyan('▇'.repeat(Math.min(day.count, 40)))} ${day.count}`);
+      }
+    }
+
+    if (d.rejectedNotes.length) {
+      console.log(chalk.bold("\n  Recently rejected (what wasn't useful):"));
+      for (const r of d.rejectedNotes) {
+        const note = r.feedback_note ? `— ${r.feedback_note}` : '';
+        console.log(`    ${chalk.yellow('#' + r.id)} ${chalk.cyan(r.agent)} ${chalk.gray(note)}`);
+      }
+    }
+
+    if (d.recommendations.length) {
+      console.log(chalk.bold('\n  Recommendations:'));
+      for (const rec of d.recommendations) console.log(`    ${chalk.magenta('→')} ${rec}`);
+    }
+    console.log('');
+  });
+
 // ─── agent daemon: start / stop / status / config (#18) ──────────────────────
 
 agentCmd

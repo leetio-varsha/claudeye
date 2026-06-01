@@ -179,6 +179,82 @@ export function getAgentEffectiveness({ sinceDays = null } = {}) {
   };
 }
 
+/**
+ * Weekly agent digest (#21): что агент сделал, что было полезно, что нет.
+ *
+ * Summarizes the last `days` of agent activity for a human-readable digest:
+ * per-agent accept/reject counts, daily volume, the notes on rejected actions
+ * (the "what wasn't useful" signal), and actionable recommendations derived
+ * from the feedback loop (high rejection rate → reduce aggressiveness; large
+ * review backlog → prompt the user to give feedback).
+ *
+ * AUP-safe: exposes only agent name, counts, timestamps and user-written
+ * feedback notes — never raw_input/raw_output or stored query/result payloads.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.days]  — window in days (default 7)
+ * @returns {{ days: number, since: string, total: number, accepted: number,
+ *             rejected: number, pending: number, reviewed: number,
+ *             rejectionRate: number|null, byAgent: object[], byDay: object[],
+ *             rejectedNotes: object[], recommendations: string[] }}
+ */
+export function getAgentDigest({ days = 7 } = {}) {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  const eff = getAgentEffectiveness({ sinceDays: days });
+
+  // Daily volume of agent actions in the window.
+  const byDay = db.prepare(`
+    SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count
+    FROM agent_actions
+    WHERE created_at >= ?
+    GROUP BY day
+    ORDER BY day ASC
+  `).all(cutoff);
+
+  // Rejected actions with their notes — the "what wasn't useful" signal.
+  // Only metadata + user-written note is read (no query/result payloads).
+  const rejectedNotes = db.prepare(`
+    SELECT id, agent, feedback_note, created_at
+    FROM agent_actions
+    WHERE feedback = 'rejected' AND created_at >= ?
+    ORDER BY created_at DESC
+    LIMIT 10
+  `).all(cutoff);
+
+  // Actionable recommendations from the feedback loop.
+  const recommendations = [];
+  if (eff.rejectionRate != null && eff.rejectionRate > 0.5) {
+    recommendations.push(
+      `Rejection rate ${(eff.rejectionRate * 100).toFixed(0)}% > 50% — reduce agent aggressiveness.`,
+    );
+  }
+  if (eff.reviewed === 0 && eff.total > 0) {
+    recommendations.push(
+      `No feedback given yet on ${eff.total} actions — the loop can't learn until you accept/reject some (claudeye agent pending).`,
+    );
+  } else if (eff.pending >= 20) {
+    recommendations.push(
+      `${eff.pending} actions awaiting review — run 'claudeye agent pending' to keep the loop fed.`,
+    );
+  }
+
+  return {
+    days,
+    since:         cutoff,
+    total:         eff.total,
+    accepted:      eff.accepted,
+    rejected:      eff.rejected,
+    pending:       eff.pending,
+    reviewed:      eff.reviewed,
+    rejectionRate: eff.rejectionRate,
+    byAgent:       eff.byAgent,
+    byDay,
+    rejectedNotes,
+    recommendations,
+  };
+}
+
 // ─── Agent: cross-repo-context ────────────────────────────────────────────────
 
 /**
