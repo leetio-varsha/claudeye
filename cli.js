@@ -2073,6 +2073,87 @@ agentCmd
     }
   });
 
+// ─── agent feedback loop (#21): pending / accept / reject / effectiveness ─────
+
+agentCmd
+  .command('pending')
+  .description('Show agent actions awaiting accept/reject feedback (#21)')
+  .option('--agent <name>', 'Filter by agent name')
+  .option('-n, --limit <n>', 'Max rows', '20')
+  .action(async (opts) => {
+    const { getPendingActions } = await import('./src/agent.js');
+    const rows = getPendingActions({ agent: opts.agent, limit: parseInt(opts.limit, 10) });
+
+    if (!rows.length) {
+      console.log(chalk.green('\n  ✅ No pending agent actions — feedback queue is empty.\n'));
+      return;
+    }
+
+    console.log(chalk.bold(`\n📋 Pending Agent Actions (${rows.length}) — review & give feedback\n`));
+    for (const row of rows) {
+      const action  = row.project || row.agent;
+      const result  = row.result ? JSON.parse(row.result) : {};
+      const summary = Object.entries(result).map(([k, v]) =>
+        typeof v === 'object' ? null : `${k}=${v}`
+      ).filter(Boolean).join(', ');
+      console.log(`  ${chalk.yellow('#' + row.id)}  ${chalk.cyan(row.created_at.slice(0, 16))}  ${chalk.bold(action)}`);
+      if (row.query) console.log(`       ${chalk.gray(row.query.slice(0, 90))}`);
+      if (summary)   console.log(`       ${chalk.gray(summary)}`);
+    }
+    console.log(chalk.gray('\n  Accept: claudeye agent accept <id>   Reject: claudeye agent reject <id> [reason]\n'));
+  });
+
+agentCmd
+  .command('accept <id> [note...]')
+  .description('Mark an agent action as accepted/useful (#21 feedback loop)')
+  .action(async (id, note) => {
+    const { setActionFeedback } = await import('./src/agent.js');
+    const res = setActionFeedback(parseInt(id, 10), 'accepted', note?.length ? note.join(' ') : null);
+    if (res.ok) console.log(chalk.green(`\n  ✅ Action #${res.id} marked accepted.\n`));
+    else { console.log(chalk.red(`\n  ✗ ${res.error}\n`)); process.exit(1); }
+  });
+
+agentCmd
+  .command('reject <id> [note...]')
+  .description('Mark an agent action as rejected/noise (#21 feedback loop)')
+  .action(async (id, note) => {
+    const { setActionFeedback } = await import('./src/agent.js');
+    const res = setActionFeedback(parseInt(id, 10), 'rejected', note?.length ? note.join(' ') : null);
+    if (res.ok) console.log(chalk.yellow(`\n  ⊘ Action #${res.id} marked rejected.\n`));
+    else { console.log(chalk.red(`\n  ✗ ${res.error}\n`)); process.exit(1); }
+  });
+
+agentCmd
+  .command('effectiveness')
+  .description('Agent effectiveness: accepted vs rejected, rejection rate (#21)')
+  .option('--since <days>', 'Window in days (default: all-time)')
+  .action(async (opts) => {
+    const { getAgentEffectiveness } = await import('./src/agent.js');
+    const since = opts.since ? parseInt(opts.since, 10) : null;
+    const s = getAgentEffectiveness({ sinceDays: since });
+
+    const windowLabel = since ? `last ${since}d` : 'all-time';
+    console.log(chalk.bold(`\n📊 Agent Effectiveness (${windowLabel})\n`));
+    console.log(`  Total actions:  ${chalk.bold(s.total)}`);
+    console.log(`  Reviewed:       ${chalk.bold(s.reviewed)}  (${chalk.green(s.accepted + ' accepted')}, ${chalk.yellow(s.rejected + ' rejected')})`);
+    console.log(`  Pending:        ${chalk.gray(s.pending)}`);
+    if (s.rejectionRate != null) {
+      const pct = (s.rejectionRate * 100).toFixed(0);
+      const tag = s.rejectionRate > 0.5 ? chalk.red(`${pct}% ⚠ reduce aggressiveness`) : chalk.green(`${pct}%`);
+      console.log(`  Rejection rate: ${tag}`);
+    } else {
+      console.log(`  Rejection rate: ${chalk.gray('n/a (no feedback yet)')}`);
+    }
+    if (s.byAgent.length) {
+      console.log(chalk.bold('\n  By agent:'));
+      for (const a of s.byAgent) {
+        const rr = a.rejectionRate != null ? `${(a.rejectionRate * 100).toFixed(0)}% rej` : 'no fb';
+        console.log(`    ${chalk.cyan(a.agent.padEnd(20))} ${a.total} total, ${chalk.green(a.accepted + '✓')} ${chalk.yellow(a.rejected + '✗')} ${chalk.gray(a.pending + ' pending')} — ${rr}`);
+      }
+    }
+    console.log('');
+  });
+
 // ─── agent daemon: start / stop / status / config (#18) ──────────────────────
 
 agentCmd

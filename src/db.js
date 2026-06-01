@@ -175,17 +175,23 @@ function _migrateAnalytics(db) {
 
       -- Agent actions (#20) — log of all Agent v1 runs for feedback loop
       CREATE TABLE IF NOT EXISTS agent_actions (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        agent        TEXT    NOT NULL,              -- 'cross-repo-context' | 'pr-review'
-        query        TEXT,                          -- user query or diff summary
-        project      TEXT,                          -- project where agent ran
-        result       TEXT,                          -- JSON: { results_count, top_projects, ... }
-        dry_run      INTEGER NOT NULL DEFAULT 0,    -- 1 if dry-run mode
-        created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent         TEXT    NOT NULL,              -- 'cross-repo-context' | 'pr-review'
+        query         TEXT,                          -- user query or diff summary
+        project       TEXT,                          -- project where agent ran
+        result        TEXT,                          -- JSON: { results_count, top_projects, ... }
+        dry_run       INTEGER NOT NULL DEFAULT 0,    -- 1 if dry-run mode
+        feedback      TEXT,                          -- #21 feedback loop: 'accepted' | 'rejected' | NULL (pending)
+        feedback_at   TEXT,                          -- when feedback was given (ISO)
+        feedback_note TEXT,                          -- optional reason / note
+        created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
       );
-      CREATE INDEX IF NOT EXISTS idx_agent_actions_agent   ON agent_actions(agent);
-      CREATE INDEX IF NOT EXISTS idx_agent_actions_created ON agent_actions(created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_agent_actions_project ON agent_actions(project);
+      CREATE INDEX IF NOT EXISTS idx_agent_actions_agent    ON agent_actions(agent);
+      CREATE INDEX IF NOT EXISTS idx_agent_actions_created  ON agent_actions(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_actions_project  ON agent_actions(project);
+      -- NB: idx_agent_actions_feedback is created AFTER the addColumnIfMissing
+      -- migration below, since on pre-existing DBs the feedback column does not
+      -- exist yet at this point (CREATE TABLE IF NOT EXISTS is a no-op for them).
 
       -- Invariant check runs (#99) — daily stability tracking
       CREATE TABLE IF NOT EXISTS invariant_checks (
@@ -201,6 +207,15 @@ function _migrateAnalytics(db) {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_invariant_checks_date ON invariant_checks(run_date);
       CREATE INDEX IF NOT EXISTS idx_invariant_checks_green ON invariant_checks(all_green, run_date DESC);
     `);
+
+    // #21 Feedback loop: accept/reject columns on existing agent_actions tables.
+    // Placed after the CREATE TABLE above so the table is guaranteed to exist.
+    addColumnIfMissing('agent_actions', 'feedback',      'TEXT');
+    addColumnIfMissing('agent_actions', 'feedback_at',   'TEXT');
+    addColumnIfMissing('agent_actions', 'feedback_note', 'TEXT');
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_actions_feedback ON agent_actions(feedback)`);
+    } catch { /* non-critical */ }
 
     // Knowledge Graph (#26) — entities + relations
     db.exec(`

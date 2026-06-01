@@ -53,12 +53,130 @@ export function getAgentHistory({ agent, limit = 20 } = {}) {
   const where = agent ? 'WHERE agent = ?' : '';
   const args  = agent ? [agent] : [];
   return db.prepare(`
-    SELECT id, agent, query, project, result, dry_run, created_at
+    SELECT id, agent, query, project, result, dry_run,
+           feedback, feedback_at, feedback_note, created_at
     FROM agent_actions
     ${where}
     ORDER BY created_at DESC
     LIMIT ?
   `).all(...args, limit);
+}
+
+// ─── Feedback loop (#21) ──────────────────────────────────────────────────────
+
+const FEEDBACK_VALUES = new Set(['accepted', 'rejected']);
+
+/**
+ * Record accept/reject feedback on an agent action (#21).
+ * This is the signal the feedback loop learns from: which agent actions the
+ * user found useful (accepted) vs. noise (rejected).
+ *
+ * @param {number} id                 — agent_actions.id
+ * @param {'accepted'|'rejected'} feedback
+ * @param {string} [note]             — optional reason
+ * @returns {{ ok: boolean, id: number, feedback?: string, error?: string }}
+ */
+export function setActionFeedback(id, feedback, note = null) {
+  if (!FEEDBACK_VALUES.has(feedback)) {
+    return { ok: false, id, error: `feedback must be 'accepted' or 'rejected' (got '${feedback}')` };
+  }
+  const db = getDb();
+  const row = db.prepare('SELECT id FROM agent_actions WHERE id = ?').get(id);
+  if (!row) return { ok: false, id, error: `agent_action #${id} not found` };
+
+  db.prepare(`
+    UPDATE agent_actions
+    SET feedback = ?, feedback_at = ?, feedback_note = ?
+    WHERE id = ?
+  `).run(feedback, new Date().toISOString(), note ?? null, id);
+
+  return { ok: true, id, feedback };
+}
+
+/**
+ * Get agent actions still awaiting feedback (feedback IS NULL).
+ * Pending = the queue the user reviews to accept/reject.
+ *
+ * @param {object} [opts]
+ * @param {string}  [opts.agent]  — filter by agent name
+ * @param {number}  [opts.limit]  — default 20
+ * @returns {object[]}
+ */
+export function getPendingActions({ agent, limit = 20 } = {}) {
+  const db = getDb();
+  const where = ['feedback IS NULL'];
+  const args  = [];
+  if (agent) { where.push('agent = ?'); args.push(agent); }
+  return db.prepare(`
+    SELECT id, agent, query, project, result, dry_run, created_at
+    FROM agent_actions
+    WHERE ${where.join(' AND ')}
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(...args, limit);
+}
+
+/**
+ * Agent effectiveness summary for the feedback loop / dashboard (#21).
+ * Computes accept/reject counts, rejection rate, and a per-agent breakdown.
+ * Rejection rate > 0.5 is the signal #21 uses to reduce agent aggressiveness.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.sinceDays]  — window in days (default: all-time)
+ * @returns {{ total: number, reviewed: number, accepted: number, rejected: number,
+ *             pending: number, rejectionRate: number|null, byAgent: object[] }}
+ */
+export function getAgentEffectiveness({ sinceDays = null } = {}) {
+  const db = getDb();
+  const where = [];
+  const args  = [];
+  if (sinceDays != null) {
+    const cutoff = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
+    where.push('created_at >= ?');
+    args.push(cutoff);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const totals = db.prepare(`
+    SELECT
+      COUNT(*)                                              AS total,
+      SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+      SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+      SUM(CASE WHEN feedback IS NULL      THEN 1 ELSE 0 END) AS pending
+    FROM agent_actions
+    ${whereSql}
+  `).get(...args);
+
+  const accepted = totals.accepted ?? 0;
+  const rejected = totals.rejected ?? 0;
+  const reviewed = accepted + rejected;
+  const rejectionRate = reviewed > 0 ? rejected / reviewed : null;
+
+  const byAgent = db.prepare(`
+    SELECT
+      agent,
+      COUNT(*)                                              AS total,
+      SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+      SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+      SUM(CASE WHEN feedback IS NULL      THEN 1 ELSE 0 END) AS pending
+    FROM agent_actions
+    ${whereSql}
+    GROUP BY agent
+    ORDER BY total DESC
+  `).all(...args).map(r => {
+    const rev = (r.accepted ?? 0) + (r.rejected ?? 0);
+    return { ...r, rejectionRate: rev > 0 ? (r.rejected ?? 0) / rev : null };
+  });
+
+  return {
+    total:    totals.total ?? 0,
+    reviewed,
+    accepted,
+    rejected,
+    pending:  totals.pending ?? 0,
+    rejectionRate,
+    byAgent,
+  };
 }
 
 // ─── Agent: cross-repo-context ────────────────────────────────────────────────
