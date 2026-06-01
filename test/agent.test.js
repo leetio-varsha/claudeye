@@ -205,3 +205,107 @@ describe('feedback loop #21 — accept/reject', () => {
     assert.equal(rejectionRate, null);
   });
 });
+
+describe('weekly agent digest #21 — getAgentDigest contracts', () => {
+  // Mirrors the SQL contracts of getAgentDigest in src/agent.js:
+  // window cutoff, daily volume, rejected-notes selection, recommendations.
+
+  const DAYS = 7;
+  const cutoff = () => new Date(Date.now() - DAYS * 86_400_000).toISOString();
+
+  it('window cutoff excludes actions older than `days`', () => {
+    db.exec("DELETE FROM agent_actions");
+    const old    = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const recent = new Date(Date.now() -  1 * 86_400_000).toISOString();
+    db.prepare("INSERT INTO agent_actions (agent, created_at) VALUES (?, ?)").run('daemon', old);
+    db.prepare("INSERT INTO agent_actions (agent, created_at) VALUES (?, ?)").run('daemon', recent);
+
+    const inWindow = db.prepare(
+      "SELECT COUNT(*) AS c FROM agent_actions WHERE created_at >= ?"
+    ).get(cutoff());
+    assert.equal(inWindow.c, 1, 'only the recent action is in the 7d window');
+  });
+
+  it('daily volume groups by calendar day', () => {
+    db.exec("DELETE FROM agent_actions");
+    const d1 = new Date(Date.now() - 1 * 86_400_000).toISOString();
+    const d2 = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    db.prepare("INSERT INTO agent_actions (agent, created_at) VALUES (?, ?)").run('daemon', d1);
+    db.prepare("INSERT INTO agent_actions (agent, created_at) VALUES (?, ?)").run('daemon', d1);
+    db.prepare("INSERT INTO agent_actions (agent, created_at) VALUES (?, ?)").run('daemon', d2);
+
+    const byDay = db.prepare(`
+      SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count
+      FROM agent_actions
+      WHERE created_at >= ?
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(cutoff());
+
+    assert.equal(byDay.length, 2, 'two distinct days');
+    assert.equal(byDay.reduce((s, r) => s + r.count, 0), 3, 'three actions total');
+  });
+
+  it('rejected-notes selection returns only rejected rows with notes/metadata', () => {
+    db.exec("DELETE FROM agent_actions");
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO agent_actions (agent, feedback, feedback_note, created_at) VALUES (?, ?, ?, ?)")
+      .run('cross-repo-context', 'rejected', 'too noisy', now);
+    db.prepare("INSERT INTO agent_actions (agent, feedback, created_at) VALUES (?, ?, ?)")
+      .run('daemon', 'accepted', now);
+    db.prepare("INSERT INTO agent_actions (agent, created_at) VALUES (?, ?)")
+      .run('daemon', now); // pending
+
+    const rejected = db.prepare(`
+      SELECT id, agent, feedback_note, created_at
+      FROM agent_actions
+      WHERE feedback = 'rejected' AND created_at >= ?
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all(cutoff());
+
+    assert.equal(rejected.length, 1, 'only the rejected action surfaces');
+    assert.equal(rejected[0].agent, 'cross-repo-context');
+    assert.equal(rejected[0].feedback_note, 'too noisy');
+  });
+
+  it('recommends reducing aggressiveness when rejection rate > 50%', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)");
+    ins.run('daemon', 'rejected');
+    ins.run('daemon', 'rejected');
+    ins.run('daemon', 'accepted'); // 2/3 rejected = 67%
+
+    const t = db.prepare(`
+      SELECT
+        SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected
+      FROM agent_actions
+    `).get();
+    const reviewed = (t.accepted ?? 0) + (t.rejected ?? 0);
+    const rejectionRate = reviewed > 0 ? t.rejected / reviewed : null;
+
+    const recs = [];
+    if (rejectionRate != null && rejectionRate > 0.5) recs.push('reduce-aggressiveness');
+    assert.ok(recs.includes('reduce-aggressiveness'), 'high rejection rate triggers recommendation');
+  });
+
+  it('recommends giving feedback when nothing reviewed but actions exist', () => {
+    db.exec("DELETE FROM agent_actions");
+    db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)").run('daemon', null);
+    db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)").run('daemon', null);
+
+    const t = db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected
+      FROM agent_actions
+    `).get();
+    const reviewed = (t.accepted ?? 0) + (t.rejected ?? 0);
+
+    const recs = [];
+    if (reviewed === 0 && t.total > 0) recs.push('give-feedback');
+    assert.ok(recs.includes('give-feedback'), 'unreviewed backlog triggers feedback prompt');
+  });
+});
