@@ -21,20 +21,24 @@ before(() => {
   mkdirSync(TEST_DIR, { recursive: true });
   db = new Database(TEST_DB);
 
-  // Apply minimal schema needed for agent tests
+  // Apply minimal schema needed for agent tests (mirrors src/db.js agent_actions, incl. #21 feedback cols)
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_actions (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      agent        TEXT    NOT NULL,
-      query        TEXT,
-      project      TEXT,
-      result       TEXT,
-      dry_run      INTEGER NOT NULL DEFAULT 0,
-      created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent         TEXT    NOT NULL,
+      query         TEXT,
+      project       TEXT,
+      result        TEXT,
+      dry_run       INTEGER NOT NULL DEFAULT 0,
+      feedback      TEXT,
+      feedback_at   TEXT,
+      feedback_note TEXT,
+      created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE INDEX IF NOT EXISTS idx_agent_actions_agent   ON agent_actions(agent);
-    CREATE INDEX IF NOT EXISTS idx_agent_actions_created ON agent_actions(created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_agent_actions_project ON agent_actions(project);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_agent    ON agent_actions(agent);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_created  ON agent_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_project  ON agent_actions(project);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_feedback ON agent_actions(feedback);
   `);
 });
 
@@ -113,5 +117,91 @@ describe('agent_actions schema', () => {
     const contextOnly = db.prepare("SELECT * FROM agent_actions WHERE agent = 'cross-repo-context'").all();
     assert.equal(contextOnly.length, 2, 'filters by agent correctly');
     assert.ok(contextOnly.every(r => r.agent === 'cross-repo-context'));
+  });
+});
+
+describe('feedback loop #21 — accept/reject', () => {
+  // Mirrors the SQL contracts of setActionFeedback / getPendingActions /
+  // getAgentEffectiveness in src/agent.js.
+
+  it('schema has feedback columns + index', () => {
+    const cols = db.prepare('PRAGMA table_info(agent_actions)').all().map(c => c.name);
+    assert.ok(cols.includes('feedback'),      'has feedback');
+    assert.ok(cols.includes('feedback_at'),   'has feedback_at');
+    assert.ok(cols.includes('feedback_note'), 'has feedback_note');
+    const idx = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='agent_actions'").all().map(i => i.name);
+    assert.ok(idx.includes('idx_agent_actions_feedback'), 'feedback index exists');
+  });
+
+  it('new actions default to pending (feedback IS NULL)', () => {
+    db.exec("DELETE FROM agent_actions");
+    db.prepare("INSERT INTO agent_actions (agent, query) VALUES (?, ?)").run('daemon', 'session-analysis');
+    const row = db.prepare("SELECT feedback FROM agent_actions").get();
+    assert.equal(row.feedback, null, 'feedback null by default');
+  });
+
+  it('setActionFeedback UPDATE sets accepted with timestamp + note', () => {
+    db.exec("DELETE FROM agent_actions");
+    const { lastInsertRowid: id } = db.prepare("INSERT INTO agent_actions (agent, query) VALUES (?, ?)").run('daemon', 'q');
+    const now = new Date().toISOString();
+    const info = db.prepare("UPDATE agent_actions SET feedback = ?, feedback_at = ?, feedback_note = ? WHERE id = ?")
+      .run('accepted', now, 'useful', id);
+    assert.equal(info.changes, 1, 'one row updated');
+    const row = db.prepare("SELECT * FROM agent_actions WHERE id = ?").get(id);
+    assert.equal(row.feedback, 'accepted');
+    assert.equal(row.feedback_note, 'useful');
+    assert.equal(row.feedback_at, now);
+  });
+
+  it('pending filter excludes actions that already have feedback', () => {
+    db.exec("DELETE FROM agent_actions");
+    db.prepare("INSERT INTO agent_actions (agent, query, feedback) VALUES (?, ?, ?)").run('daemon', 'a', 'accepted');
+    db.prepare("INSERT INTO agent_actions (agent, query, feedback) VALUES (?, ?, ?)").run('daemon', 'b', null);
+    db.prepare("INSERT INTO agent_actions (agent, query, feedback) VALUES (?, ?, ?)").run('daemon', 'c', 'rejected');
+    const pending = db.prepare("SELECT * FROM agent_actions WHERE feedback IS NULL").all();
+    assert.equal(pending.length, 1, 'only the un-reviewed action is pending');
+    assert.equal(pending[0].query, 'b');
+  });
+
+  it('effectiveness aggregation computes counts + rejection rate', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)");
+    ins.run('cross-repo-context', 'accepted');
+    ins.run('cross-repo-context', 'accepted');
+    ins.run('cross-repo-context', 'rejected');
+    ins.run('cross-repo-context', null); // pending
+
+    const totals = db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN feedback IS NULL      THEN 1 ELSE 0 END) AS pending
+      FROM agent_actions
+    `).get();
+
+    assert.equal(totals.total, 4);
+    assert.equal(totals.accepted, 2);
+    assert.equal(totals.rejected, 1);
+    assert.equal(totals.pending, 1);
+
+    const reviewed = totals.accepted + totals.rejected;
+    const rejectionRate = reviewed > 0 ? totals.rejected / reviewed : null;
+    assert.equal(reviewed, 3);
+    assert.ok(Math.abs(rejectionRate - 1 / 3) < 1e-9, 'rejection rate = 1/3');
+  });
+
+  it('rejection rate is null when nothing reviewed yet', () => {
+    db.exec("DELETE FROM agent_actions");
+    db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)").run('daemon', null);
+    const totals = db.prepare(`
+      SELECT
+        SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected
+      FROM agent_actions
+    `).get();
+    const reviewed = (totals.accepted ?? 0) + (totals.rejected ?? 0);
+    const rejectionRate = reviewed > 0 ? totals.rejected / reviewed : null;
+    assert.equal(rejectionRate, null);
   });
 });

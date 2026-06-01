@@ -64,6 +64,18 @@ function run() {
     db_page_size:       safeVal(db, 'PRAGMA page_size'),
     last_digest_at:     safeVal(db, 'SELECT MAX(created_at) AS at FROM digests'),
     last_insight_at:    safeVal(db, 'SELECT MAX(created_at) AS at FROM insights'),
+    // #21 agent feedback loop — surface live counts so the analyzer never falls
+    // back to stale numbers quoted in issue bodies (fixes 05-29 "agent_actions=0"
+    // false claim: report said empty while the table actually held 42 rows).
+    agent_actions:      safeVal(db, 'SELECT COUNT(*) AS n FROM agent_actions'),
+    agent_actions_feedback: safeVal(db, `
+      SELECT
+        SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN feedback IS NULL      THEN 1 ELSE 0 END) AS pending
+      FROM agent_actions
+    `),
+    last_agent_action_at: safeVal(db, 'SELECT MAX(created_at) AS at FROM agent_actions'),
   };
 
   return result;
