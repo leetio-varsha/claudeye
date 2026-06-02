@@ -233,6 +233,18 @@ claudeye advises dismiss <id> --reason "..."  # dismiss — advisor won't repeat
 claudeye advises generate --days 14           # run manually (scheduler does it Mondays)
 claudeye advises generate --dry-run           # preview output without writing to DB
 
+# Agent (#20) + Feedback loop (#21)
+claudeye agent context <query>                # cross-repo context: search all projects
+claudeye agent pr-review [--dry-run]          # PR review context from git diff
+claudeye agent history                        # recent agent action log
+claudeye agent pending                        # actions awaiting accept/reject
+claudeye agent accept <id> [note]             # mark action useful (feedback loop)
+claudeye agent reject <id> [reason]           # mark action noise (feedback loop)
+claudeye agent effectiveness [--since <days>] # accepted vs rejected, rejection rate
+claudeye agent digest [--days <n>]            # what the agent did + what was useful
+claudeye agent savings [--since <days>]       # time saved vs time spent reviewing
+claudeye agent learn [--days <n>] [--json]    # advisor analyzes actions → tuning tips
+
 # Pattern Detection & Automation
 claudeye patterns                             # repeat-fixes, hotspots, time sinks
 claudeye patterns --json                      # structured output
@@ -416,7 +428,7 @@ Goal: 14 consecutive days of all-green invariants → Beta MVP unblocked.
 
 - [ ] Local agent mode: background analysis and proactive actions (#18) ← #15, #16
 - [x] One agent, one use-case, full cycle through Claudeye (#20) ← #15, #16
-- [ ] Feedback loop: system learns from its own actions (#21) ← #20
+- [x] Feedback loop: system learns from its own actions (#21) — accept/reject capture, effectiveness + rejection-rate tuning, weekly digest, time-saved-vs-review metric, advisor learning
 - [ ] Routing + Control: anti-chaos (1 agent, strict context, kill switch) (#22) ← #20
 
 ### Phase 4: Import Layer & Integrations (May 2026)

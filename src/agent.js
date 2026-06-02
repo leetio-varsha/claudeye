@@ -179,6 +179,103 @@ export function getAgentEffectiveness({ sinceDays = null } = {}) {
   };
 }
 
+// ─── Time saved vs review time (#21) ──────────────────────────────────────────
+
+/**
+ * Heuristic estimate of minutes the agent saves per *accepted* action — i.e.
+ * the manual context-gathering work the developer would otherwise have done by
+ * hand. Deliberately conservative: the metric tracks the *trend* (is the agent
+ * net-positive on time?), not wall-clock truth. Per-agent because a cross-repo
+ * search and a PR-review context pull cost very different amounts to do manually.
+ */
+const EST_MINUTES_SAVED = {
+  'cross-repo-context': 8,   // manual search across every project's history
+  'pr-review':          12,  // digging up past decisions / hotspots for a diff
+};
+const DEFAULT_MINUTES_SAVED = 5;
+// Cost of the human reviewing one action (glance + accept/reject).
+const EST_REVIEW_MINUTES = 1;
+
+/**
+ * Time saved by the agent vs. time spent reviewing its output (#21).
+ *
+ * Only ACCEPTED actions count as time saved (rejected = noise that saved
+ * nothing). Reviewing any action — accepted or rejected — costs a fixed amount
+ * of attention. Pending (un-reviewed) actions count toward neither: their value
+ * is unconfirmed and they haven't cost review time yet.
+ *
+ *   net = Σ(accepted × minutesSavedPerAgent) − (reviewed × reviewMinutes)
+ *
+ * A positive `netMinutesSaved` means the agent is earning back more than it
+ * costs to supervise; negative means supervision outweighs its usefulness.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.sinceDays]  — window in days (default: all-time)
+ * @returns {{ accepted: number, reviewed: number, estMinutesSaved: number,
+ *             estReviewMinutes: number, netMinutesSaved: number,
+ *             reviewMinutesPerAction: number, byAgent: object[] }}
+ */
+export function getAgentTimeSavings({ sinceDays = null } = {}) {
+  const db = getDb();
+  const where = [];
+  const args  = [];
+  if (sinceDays != null) {
+    const cutoff = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
+    where.push('created_at >= ?');
+    args.push(cutoff);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const rows = db.prepare(`
+    SELECT
+      agent,
+      SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+      SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected
+    FROM agent_actions
+    ${whereSql}
+    GROUP BY agent
+  `).all(...args);
+
+  let estMinutesSaved  = 0;
+  let estReviewMinutes = 0;
+  let accepted = 0;
+  let reviewed = 0;
+
+  const byAgent = rows.map(r => {
+    const acc = r.accepted ?? 0;
+    const rej = r.rejected ?? 0;
+    const rev = acc + rej;
+    const perAction = EST_MINUTES_SAVED[r.agent] ?? DEFAULT_MINUTES_SAVED;
+    const saved  = acc * perAction;
+    const review = rev * EST_REVIEW_MINUTES;
+
+    estMinutesSaved  += saved;
+    estReviewMinutes += review;
+    accepted += acc;
+    reviewed += rev;
+
+    return {
+      agent: r.agent,
+      accepted: acc,
+      reviewed: rev,
+      minutesSavedPerAction: perAction,
+      estMinutesSaved: saved,
+      estReviewMinutes: review,
+      netMinutesSaved: saved - review,
+    };
+  }).sort((a, b) => b.netMinutesSaved - a.netMinutesSaved);
+
+  return {
+    accepted,
+    reviewed,
+    estMinutesSaved,
+    estReviewMinutes,
+    netMinutesSaved: estMinutesSaved - estReviewMinutes,
+    reviewMinutesPerAction: EST_REVIEW_MINUTES,
+    byAgent,
+  };
+}
+
 /**
  * Weekly agent digest (#21): что агент сделал, что было полезно, что нет.
  *
@@ -202,6 +299,7 @@ export function getAgentDigest({ days = 7 } = {}) {
   const db = getDb();
   const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
   const eff = getAgentEffectiveness({ sinceDays: days });
+  const timeSavings = getAgentTimeSavings({ sinceDays: days });
 
   // Daily volume of agent actions in the window.
   const byDay = db.prepare(`
@@ -238,6 +336,18 @@ export function getAgentDigest({ days = 7 } = {}) {
       `${eff.pending} actions awaiting review — run 'claudeye agent pending' to keep the loop fed.`,
     );
   }
+  // Time-saved vs review-time signal (#21): is the agent net-positive?
+  if (eff.reviewed > 0) {
+    if (timeSavings.netMinutesSaved < 0) {
+      recommendations.push(
+        `Agent is net-negative on time: ~${Math.abs(timeSavings.netMinutesSaved)} min spent reviewing vs ${timeSavings.estMinutesSaved} min saved — tighten what it generates.`,
+      );
+    } else {
+      recommendations.push(
+        `Agent saved ~${timeSavings.netMinutesSaved} min net (${timeSavings.estMinutesSaved} saved − ${timeSavings.estReviewMinutes} reviewing) over the last ${days}d.`,
+      );
+    }
+  }
 
   return {
     days,
@@ -251,6 +361,7 @@ export function getAgentDigest({ days = 7 } = {}) {
     byAgent:       eff.byAgent,
     byDay,
     rejectedNotes,
+    timeSavings,
     recommendations,
   };
 }
