@@ -2200,10 +2200,69 @@ agentCmd
       }
     }
 
+    if (d.timeSavings && d.timeSavings.reviewed > 0) {
+      const t = d.timeSavings;
+      const netTag = t.netMinutesSaved >= 0
+        ? chalk.green(`+${t.netMinutesSaved} min net`)
+        : chalk.red(`${t.netMinutesSaved} min net`);
+      console.log(chalk.bold('\n  Time saved vs review:'));
+      console.log(`    ${chalk.green(t.estMinutesSaved + ' min saved')} − ${chalk.yellow(t.estReviewMinutes + ' min reviewing')} = ${netTag}`);
+    }
+
     if (d.recommendations.length) {
       console.log(chalk.bold('\n  Recommendations:'));
       for (const rec of d.recommendations) console.log(`    ${chalk.magenta('→')} ${rec}`);
     }
+    console.log('');
+  });
+
+agentCmd
+  .command('savings')
+  .description('Time saved by the agent vs time spent reviewing its output (#21)')
+  .option('--since <days>', 'Window in days (default: all-time)')
+  .action(async (opts) => {
+    const { getAgentTimeSavings } = await import('./src/agent.js');
+    const since = opts.since ? parseInt(opts.since, 10) : null;
+    const s = getAgentTimeSavings({ sinceDays: since });
+
+    const windowLabel = since ? `last ${since}d` : 'all-time';
+    console.log(chalk.bold(`\n⏱  Agent Time Savings (${windowLabel})\n`));
+    if (s.reviewed === 0) {
+      console.log(chalk.gray('  No reviewed actions yet — accept/reject some first (claudeye agent pending).\n'));
+      return;
+    }
+    const netTag = s.netMinutesSaved >= 0
+      ? chalk.green(`+${s.netMinutesSaved} min`)
+      : chalk.red(`${s.netMinutesSaved} min`);
+    console.log(`  Accepted actions: ${chalk.bold(s.accepted)}  (saved ~${chalk.green(s.estMinutesSaved + ' min')})`);
+    console.log(`  Reviewed actions: ${chalk.bold(s.reviewed)}  (cost ~${chalk.yellow(s.estReviewMinutes + ' min')} @ ${s.reviewMinutesPerAction} min/action)`);
+    console.log(`  Net time saved:   ${netTag}`);
+    if (s.byAgent.length) {
+      console.log(chalk.bold('\n  By agent:'));
+      for (const a of s.byAgent) {
+        const net = a.netMinutesSaved >= 0 ? chalk.green(`+${a.netMinutesSaved}m`) : chalk.red(`${a.netMinutesSaved}m`);
+        console.log(`    ${chalk.cyan(a.agent.padEnd(20))} ${a.accepted}✓ × ${a.minutesSavedPerAction}m − ${a.reviewed} reviewed = ${net}`);
+      }
+    }
+    console.log('');
+  });
+
+agentCmd
+  .command('learn')
+  .description('Advisor analyzes agent actions and recommends improvements (#21)')
+  .option('--days <n>', 'Lookback window in days', '30')
+  .option('--json', 'Output structured JSON instead of markdown')
+  .action(async (opts) => {
+    const { analyzeAgentActions } = await import('./src/advisor.js');
+    const days = parseInt(opts.days, 10) || 30;
+    if (opts.json) {
+      const out = await analyzeAgentActions({ days, stream: false, format: 'json' });
+      console.log(JSON.stringify(out, null, 2));
+      return;
+    }
+    console.log(chalk.bold(`\n🧠 Agent Learning — analyzing last ${days}d of actions…\n`));
+    const md = await analyzeAgentActions({ days, stream: true, format: 'markdown' });
+    if (md) console.log(md);
     console.log('');
   });
 

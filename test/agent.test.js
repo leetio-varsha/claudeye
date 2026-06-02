@@ -309,3 +309,96 @@ describe('weekly agent digest #21 — getAgentDigest contracts', () => {
     assert.ok(recs.includes('give-feedback'), 'unreviewed backlog triggers feedback prompt');
   });
 });
+
+describe('time saved vs review time #21 — getAgentTimeSavings contracts', () => {
+  // Mirrors the per-agent accepted/rejected aggregation + cost model of
+  // getAgentTimeSavings in src/agent.js. Heuristics there:
+  //   cross-repo-context = 8 min saved/accepted, pr-review = 12, default = 5;
+  //   review cost = 1 min per reviewed (accepted+rejected) action;
+  //   net = Σ(accepted × perAgent) − (reviewed × 1).
+
+  const SAVED = { 'cross-repo-context': 8, 'pr-review': 12 };
+  const DEFAULT_SAVED = 5;
+  const REVIEW_MIN = 1;
+
+  const aggregate = (sinceDays = null) => {
+    const where = [];
+    const args  = [];
+    if (sinceDays != null) {
+      where.push('created_at >= ?');
+      args.push(new Date(Date.now() - sinceDays * 86_400_000).toISOString());
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const rows = db.prepare(`
+      SELECT agent,
+        SUM(CASE WHEN feedback = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN feedback = 'rejected' THEN 1 ELSE 0 END) AS rejected
+      FROM agent_actions ${whereSql} GROUP BY agent
+    `).all(...args);
+    let saved = 0, review = 0, accepted = 0, reviewed = 0;
+    for (const r of rows) {
+      const acc = r.accepted ?? 0, rej = r.rejected ?? 0, rev = acc + rej;
+      saved   += acc * (SAVED[r.agent] ?? DEFAULT_SAVED);
+      review  += rev * REVIEW_MIN;
+      accepted += acc; reviewed += rev;
+    }
+    return { accepted, reviewed, estMinutesSaved: saved, estReviewMinutes: review, netMinutesSaved: saved - review };
+  };
+
+  it('only accepted actions count as time saved (rejected save nothing)', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)");
+    ins.run('cross-repo-context', 'accepted'); // 8 saved
+    ins.run('cross-repo-context', 'rejected'); // 0 saved
+    ins.run('cross-repo-context', null);        // pending — neither
+    const s = aggregate();
+    assert.equal(s.estMinutesSaved, 8, '1 accepted × 8 = 8 saved');
+    assert.equal(s.reviewed, 2, 'accepted + rejected reviewed');
+    assert.equal(s.estReviewMinutes, 2, '2 reviewed × 1 min');
+    assert.equal(s.netMinutesSaved, 6, '8 saved − 2 review = 6 net');
+  });
+
+  it('uses per-agent saved-minute heuristics', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)");
+    ins.run('pr-review', 'accepted');          // 12
+    ins.run('cross-repo-context', 'accepted'); // 8
+    ins.run('mystery-agent', 'accepted');      // default 5
+    const s = aggregate();
+    assert.equal(s.estMinutesSaved, 12 + 8 + 5, 'per-agent heuristics summed');
+    assert.equal(s.netMinutesSaved, 25 - 3, '25 saved − 3 reviewed');
+  });
+
+  it('net goes negative when reviewing outweighs accepted value', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)");
+    // 1 accepted default-agent (5 saved) but 8 rejected (8 review) → net negative
+    ins.run('mystery-agent', 'accepted');
+    for (let i = 0; i < 8; i++) ins.run('mystery-agent', 'rejected');
+    const s = aggregate();
+    assert.equal(s.estMinutesSaved, 5);
+    assert.equal(s.estReviewMinutes, 9, '9 reviewed × 1 min');
+    assert.ok(s.netMinutesSaved < 0, 'net is negative');
+    assert.equal(s.netMinutesSaved, -4);
+  });
+
+  it('zero reviewed actions → zero saved and zero net', () => {
+    db.exec("DELETE FROM agent_actions");
+    db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)").run('cross-repo-context', null);
+    const s = aggregate();
+    assert.equal(s.reviewed, 0);
+    assert.equal(s.estMinutesSaved, 0);
+    assert.equal(s.netMinutesSaved, 0);
+  });
+
+  it('window cutoff excludes actions older than `sinceDays`', () => {
+    db.exec("DELETE FROM agent_actions");
+    const old    = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const recent = new Date(Date.now() -  1 * 86_400_000).toISOString();
+    db.prepare("INSERT INTO agent_actions (agent, feedback, created_at) VALUES (?, ?, ?)").run('pr-review', 'accepted', old);
+    db.prepare("INSERT INTO agent_actions (agent, feedback, created_at) VALUES (?, ?, ?)").run('pr-review', 'accepted', recent);
+    const s = aggregate(7);
+    assert.equal(s.accepted, 1, 'only the recent accepted action is in the 7d window');
+    assert.equal(s.estMinutesSaved, 12, 'one pr-review accepted = 12');
+  });
+});

@@ -261,6 +261,147 @@ export function listDigests() {
   `).all();
 }
 
+// ─── Agent learning: analyze agent actions → recommend improvements (#21) ──
+
+const SYSTEM_PROMPT_AGENT_LEARN = `You are tuning an autonomous coding agent by analyzing its own track record.
+
+You are given the agent's accept/reject feedback, per-agent rejection rates, an
+estimate of time saved vs. time spent reviewing its output, and notes on the
+actions a developer rejected. Your job: recommend concrete changes to the AGENT
+ITSELF so future actions are more useful.
+
+Rules:
+- Reference the actual numbers. Never give generic advice.
+- Say which agents to make MORE or LESS aggressive based on their rejection rate
+  (>50% rejected → reduce aggressiveness for that agent).
+- If net time saved is negative, say so plainly and propose what to stop generating.
+- Use the rejected-action notes as evidence for what kinds of output are noise.
+- If there is no feedback yet (all pending), say the loop can't learn until the
+  developer accepts/rejects some actions — don't invent conclusions.
+
+Structure your response:
+## 📈 Verdict (is the agent net-positive on time? one line with the number)
+## 🎚️ Per-Agent Tuning (more/less aggressive, with rejection rates)
+## 🔇 What to stop generating (from rejected-action notes)
+## 🎯 One change to make next
+
+Keep it under 400 words. Dense, specific, no fluff.`;
+
+const SYSTEM_PROMPT_AGENT_LEARN_JSON = `You are tuning an autonomous coding agent by analyzing its own accept/reject track record.
+
+Respond ONLY with a valid JSON object. No markdown, no code fences.
+
+JSON schema:
+{
+  "findings": [
+    {
+      "category": "tuning" | "noise" | "time" | "coverage",
+      "title": "short title (under 80 chars)",
+      "description": "2-3 sentences with specific numbers",
+      "priority": "high" | "medium" | "low",
+      "tasks": ["concrete change to the agent"],
+      "actionable": true | false,
+      "metric": "the key number behind this finding"
+    }
+  ],
+  "summary": "one-sentence verdict on whether the agent is net-useful",
+  "health_score": 0.0-1.0
+}
+
+Rules:
+- Base every finding on the supplied counts/rates. Never invent data.
+- rejection rate >50% for an agent → a high-priority "tuning" finding to reduce its aggressiveness.
+- If net time saved is negative → a high-priority "time" finding.
+- If all actions are pending (no feedback), return a single finding telling the
+  developer the loop can't learn yet, summary saying so, health_score null.`;
+
+/**
+ * Analyze the agent's own action history and recommend improvements to the
+ * agent (#21 — "advisor analyzes agent actions and recommends improvements").
+ *
+ * AUP-safe: the payload sent to Claude contains only aggregate counts, agent
+ * names, rejection rates, time-saved estimates and user-written feedback notes.
+ * It never includes stored query/result payloads or raw_input/raw_output.
+ *
+ * @param {object} opts
+ * @param {number}  [opts.days]    — lookback window in days (default 30)
+ * @param {boolean} [opts.stream]  — stream markdown to stdout (default true)
+ * @param {'markdown'|'json'} [opts.format]
+ */
+export async function analyzeAgentActions({ days = 30, stream = true, format = 'markdown' } = {}) {
+  const { getAgentEffectiveness, getAgentDigest, getAgentTimeSavings } = await import('./agent.js');
+
+  const eff = getAgentEffectiveness({ sinceDays: days });
+
+  if (eff.total === 0) {
+    if (format === 'json') {
+      return { findings: [], summary: 'No agent actions in this window yet.', health_score: null };
+    }
+    return `> No agent actions in the last ${days} days. Run the agent (or daemon) first, then \`claudeye agent learn\`.`;
+  }
+
+  const digest  = getAgentDigest({ days });
+  const savings = getAgentTimeSavings({ sinceDays: days });
+
+  // AUP-safe payload — counts, names, rates, notes only.
+  const payload = {
+    window_days: days,
+    totals: {
+      total:         eff.total,
+      accepted:      eff.accepted,
+      rejected:      eff.rejected,
+      pending:       eff.pending,
+      reviewed:      eff.reviewed,
+      rejection_rate: eff.rejectionRate,
+    },
+    by_agent: eff.byAgent.map(a => ({
+      agent: a.agent,
+      total: a.total,
+      accepted: a.accepted,
+      rejected: a.rejected,
+      pending: a.pending,
+      rejection_rate: a.rejectionRate,
+    })),
+    time_savings: {
+      est_minutes_saved:  savings.estMinutesSaved,
+      est_review_minutes: savings.estReviewMinutes,
+      net_minutes_saved:  savings.netMinutesSaved,
+      by_agent: savings.byAgent,
+    },
+    rejected_action_notes: digest.rejectedNotes.map(r => ({ agent: r.agent, note: r.feedback_note })),
+    auto_tuning_signal: (eff.rejectionRate != null && eff.rejectionRate > 0.5)
+      ? `rejection rate ${(eff.rejectionRate * 100).toFixed(0)}% > 50% → reduce aggressiveness`
+      : null,
+  };
+
+  const systemPrompt = format === 'json' ? SYSTEM_PROMPT_AGENT_LEARN_JSON : SYSTEM_PROMPT_AGENT_LEARN;
+  const userPrompt = `Analyze this agent's action history over the last ${days} days and recommend improvements.
+
+DATA:
+${JSON.stringify(payload, null, 2)}`;
+  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+
+  if (stream && format !== 'json') {
+    const result = spawnSync(CLAUDE_BIN, ['--print', '-'], {
+      input: fullPrompt,
+      stdio: ['pipe', 'inherit', 'pipe'],
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    if (result.status !== 0) throw new Error(`Claude CLI failed: ${result.stderr}`);
+    return null; // streamed
+  }
+
+  const result = spawnSync(CLAUDE_BIN, ['--print', '-'], {
+    input: fullPrompt,
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  if (result.status !== 0) throw new Error(`Claude CLI failed: ${result.stderr}`);
+
+  return format === 'json' ? parseAdvisorJSON(result.stdout) : result.stdout;
+}
+
 // ─── Issue auto-detection ─────────────────────────────────────────────────
 
 /**
