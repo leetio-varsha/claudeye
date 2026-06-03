@@ -94,6 +94,7 @@ claudeye/
 │   ├── automation-advisor.js   # workflow automation recommendations with ROI scoring (#16)
 │   ├── import.js               # Git import (claudeye import git)
 │   ├── import-notion.js        # Notion import — pages + database rows (#9)
+│   ├── import-github.js        # GitHub import — issues + PRs + comments, read-first (#23)
 │   ├── import-jira.js          # Jira Cloud import — issues + comments (#10)
 │   ├── import-linear.js        # Linear import — issues + comments via GraphQL (#10)
 │   ├── import-cowork.js        # Cowork transcript import (#88) — парсит .jsonl сессий из desktop app
