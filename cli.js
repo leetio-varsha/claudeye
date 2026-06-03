@@ -961,13 +961,15 @@ program.command('clear')
 // ─── import ───────────────────────────────────────────────────────────────
 program.command('import')
   .description('Import history from external sources')
-  .argument('<source>', 'Source type: git | notion | jira | linear | cowork')
+  .argument('<source>', 'Source type: git | github | notion | jira | linear | cowork')
   .option('-p, --path <path>', 'Repository path (git)', process.cwd())
   .option('--since <date>', 'Only import commits since date (git)')
   .option('-n, --limit <n>', 'Max items to import (git | jira | linear)')
   .option('--skip-ai', 'Skip AI compression (faster, less rich)')
   .option('--force', 'Re-import sessions already in import_sources (cowork)')
-  .option('--token <token>', 'API token (notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY)')
+  .option('--token <token>', 'API token (github: GITHUB_TOKEN | notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY)')
+  .option('--repo <owner/name>', 'GitHub repository (github)')
+  .option('--state <state>', 'Issue/PR state filter: open | closed | all (github, default: all)')
   .option('--database-only', 'Import only database rows (notion)')
   .option('--pages-only', 'Import only standalone pages (notion)')
   .option('--project <label>', 'Project label for imported observations')
@@ -997,6 +999,45 @@ program.command('import')
         }
       } catch (err) {
         spinner.fail(err.message);
+      }
+      return;
+    }
+
+    // ── github (#23, read-first) ─────────────────────────────────────
+    if (source === 'github') {
+      const token = opts.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+      const repo  = opts.repo;
+      if (!repo || !token) {
+        console.log(chalk.red(`
+  GitHub requires: --repo <owner/name> --token <personal-access-token>
+  (or set GITHUB_TOKEN / GH_TOKEN env var; gh users: --token "$(gh auth token)")
+
+  Create a token: https://github.com/settings/tokens (repo read scope)
+`));
+        return;
+      }
+
+      const { importGitHub } = await import('./src/import-github.js');
+      const spinner = ora(`Connecting to GitHub API (${repo})...`).start();
+      let lastMsg = '';
+      try {
+        const result = await importGitHub({ repo, token }, {
+          skipAi: opts.skipAi || false,
+          state:  opts.state  || 'all',
+          since:  opts.since  || null,
+          limit:  opts.limit ? parseInt(opts.limit) : null,
+          label:  opts.project || repo.split('/')[1],
+          onProgress: ({ done, total }) => {
+            const msg = `Importing GitHub issues/PRs... ${done}/${total}`;
+            if (msg !== lastMsg) { spinner.text = msg; lastMsg = msg; }
+          },
+        });
+        spinner.succeed(
+          `GitHub import complete: ${result.imported} imported, ` +
+          `${result.skipped} skipped, ${result.errors} errors (${result.total} seen)`
+        );
+      } catch (err) {
+        spinner.fail(`GitHub import failed: ${err.message}`);
       }
       return;
     }

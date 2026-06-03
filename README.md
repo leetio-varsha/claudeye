@@ -41,6 +41,7 @@ cd ~/my-project
 claudeye import git                    # import from current repo
 claudeye import git --since 2024-01-01 # only recent commits
 claudeye import notion --token <token> # import Notion pages + databases
+claudeye import github --repo owner/name --token "$(gh auth token)" # GitHub issues + PRs (#23)
 claudeye import jira   --url <https://org.atlassian.net> --email <you@x> --token <api-token>
 claudeye import linear --token <api-key>
 claudeye import cowork                 # import Claude desktop Cowork sessions (#88)
@@ -182,6 +183,11 @@ claudeye import notion --token <token>        # import Notion pages + database r
 claudeye import notion --database-only        # only database rows
 claudeye import notion --pages-only           # only standalone pages
 # NOTION_API_KEY env var also accepted
+
+# GitHub (#23, read-first) — issues + PRs + comments
+claudeye import github --repo owner/name --token "$(gh auth token)"
+claudeye import github --repo owner/name --state open --limit 200
+# GITHUB_TOKEN / GH_TOKEN env vars also accepted
 
 # Jira Cloud — issues + inline comments
 claudeye import jira --url https://acme.atlassian.net --email you@acme --token <api-token>
