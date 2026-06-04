@@ -307,6 +307,30 @@ describe('agent_actions schema (daemon)', () => {
   });
 });
 
+describe('cutoff format vs SQLite datetime (#111)', () => {
+  let db;
+  before(() => {
+    db = new Database(':memory:');
+    db.exec(`CREATE TABLE obs (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    db.prepare('INSERT INTO obs (created_at) VALUES (?)').run(
+      new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ') // 10 минут назад, SQLite-формат
+    );
+  });
+  after(() => db?.close());
+
+  it('ISO cutoff с T НЕ матчит same-day SQLite datetime (документация бага)', () => {
+    const cutoffT = new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 19);
+    const { n } = db.prepare('SELECT COUNT(*) n FROM obs WHERE created_at >= ?').get(cutoffT);
+    assert.equal(n, 0, 'cutoff с T должен промахиваться — иначе guard потерял смысл');
+  });
+
+  it('cutoff с пробелом матчит (фикс)', () => {
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    const { n } = db.prepare('SELECT COUNT(*) n FROM obs WHERE created_at >= ?').get(cutoff);
+    assert.equal(n, 1);
+  });
+});
+
 describe('listAvailableActions (inline check)', () => {
   it('action registry contains expected actions', () => {
     const KNOWN = ['session-analysis', 'db-growth-alert', 'auto-archive'];

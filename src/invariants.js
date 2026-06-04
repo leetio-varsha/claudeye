@@ -37,11 +37,13 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** Returns ISO string for `now - days` */
+/** Returns SQLite-формат datetime string for `now - days` ('YYYY-MM-DD HH:MM:SS', UTC) */
 function daysAgo(days) {
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 19);
+  // replace('T', ' ') — иначе строковое сравнение с created_at ('YYYY-MM-DD HH:MM:SS')
+  // отбрасывает все строки граничного дня (' ' < 'T')
+  return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
 function green(id, value, threshold, detail) {

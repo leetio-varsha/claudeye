@@ -199,7 +199,9 @@ function logDaemonAction({ action, query = null, result = null, dryRun = false }
 function runSessionAnalysis({ intervalHours = 1, dryRun = false }) {
   try {
     const db = getDb();
-    const cutoff = new Date(Date.now() - intervalHours * 60 * 60 * 1000).toISOString().slice(0, 19);
+    // NB: replace('T', ' ') — created_at в SQLite хранится как 'YYYY-MM-DD HH:MM:SS',
+    // ISO-формат с 'T' лексикографически больше (' ' < 'T') → same-day строки не проходят фильтр
+    const cutoff = new Date(Date.now() - intervalHours * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
 
     const rows = db.prepare(`
       SELECT
@@ -416,7 +418,7 @@ export async function runDaemonCycle({ dryRunOverride = false } = {}) {
   if (config.mode === 'auto' && !dryRunOverride) {
     try {
       const db   = getDb();
-      const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 19);
+      const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
       const { cnt } = db.prepare(`
         SELECT COUNT(*) AS cnt
         FROM agent_actions
