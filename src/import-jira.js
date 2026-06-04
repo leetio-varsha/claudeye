@@ -15,6 +15,8 @@
  *   --jql "<JQL>"        custom query (defaults to "ORDER BY updated DESC")
  *   --project <key>      restrict to Jira project key (e.g. "ENG")
  *   --limit <n>          cap number of issues
+ *   --sprints            import sprint data (Agile API) instead of issues (#23)
+ *   --board <id>         restrict sprint import to a board id
  */
 
 import { getDb, saveObservation, upsertSession, closeSession, saveEmbedding } from './db.js';
@@ -112,6 +114,43 @@ export function issueTags(issue) {
   return tags;
 }
 
+// ─── Sprint helpers (pure, exported for tests) ────────────────────────────
+
+/** Importance for a sprint observation: active > closed > future. */
+export function estimateSprintImportance(sprint) {
+  const state = (sprint?.state || '').toLowerCase();
+  if (state === 'active') return 0.7;
+  if (state === 'closed') return 0.55;
+  return 0.5; // future / unknown
+}
+
+/** Tag array for a sprint observation. */
+export function sprintTags(sprint, board) {
+  const tags = ['jira', 'import', 'sprint'];
+  if (sprint?.state) tags.push(`state:${String(sprint.state).toLowerCase()}`);
+  const boardName = board?.name || sprint?.originBoardName;
+  if (boardName) tags.push(`board:${String(boardName).toLowerCase().replace(/\s+/g, '-')}`);
+  return tags;
+}
+
+/**
+ * Human-readable sprint summary line.
+ * @param {object} sprint   Agile API sprint object
+ * @param {object} [board]  board the sprint belongs to
+ * @param {{done:number,total:number}|null} [counts] issue completion counts
+ */
+export function sprintSummary(sprint, board = null, counts = null) {
+  const parts = [`[Sprint] ${sprint?.name || '(unnamed)'}`];
+  if (board?.name) parts.push(`(${board.name})`);
+  parts.push(`— ${sprint?.state || 'unknown'}`);
+  const fmt = (d) => (d ? String(d).slice(0, 10) : null);
+  const start = fmt(sprint?.startDate), end = fmt(sprint?.endDate || sprint?.completeDate);
+  if (start || end) parts.push(`${start || '?'} → ${end || '?'}`);
+  if (counts && counts.total > 0) parts.push(`issues: ${counts.done}/${counts.total} done`);
+  if (sprint?.goal) parts.push(`goal: ${String(sprint.goal).slice(0, 200)}`);
+  return parts.join(' ');
+}
+
 // ─── Import tracking ──────────────────────────────────────────────────────
 
 function ensureImportSources(db) {
@@ -130,6 +169,156 @@ function loadImportedKeys(db) {
   ensureImportSources(db);
   const rows = db.prepare("SELECT path FROM import_sources WHERE source = 'jira'").all();
   return new Set(rows.map(r => r.path));
+}
+
+// ─── Sprint import (#23: Jira sprint data) ────────────────────────────────
+
+/**
+ * Import Jira sprint data (Agile REST API) as observations.
+ *
+ * One observation per sprint, tool='jira-sprint'. Idempotency key includes the
+ * sprint state ('sprint-<id>:<state>'), so a sprint is re-imported when it
+ * transitions future → active → closed — each state is a meaningful event.
+ *
+ * Kanban boards have no sprints — the Agile API returns 400 for them; such
+ * boards are skipped silently.
+ *
+ * @param {object} cfg  { baseUrl, email, token }
+ * @param {object} [opts]
+ * @param {string}  [opts.project]  Jira project key filter for boards
+ * @param {number}  [opts.board]    restrict to a single board id
+ * @param {number}  [opts.limit]    cap number of sprints imported this run
+ * @param {string}  [opts.label]    project label for observations (default 'jira')
+ * @param {function}[opts.onProgress]
+ * @returns {Promise<{imported:number, skipped:number, errors:number, boards:number}>}
+ */
+export async function importJiraSprints(cfg, opts = {}) {
+  if (!cfg?.baseUrl || !cfg?.email || !cfg?.token) {
+    throw new Error('importJiraSprints: baseUrl, email, token are required');
+  }
+  const { baseUrl, email, token } = cfg;
+  const { project: projectKey = null, board: boardId = null, limit = null, label = 'jira', onProgress } = opts;
+
+  const db = getDb();
+  const done = loadImportedKeys(db);
+
+  const sessionId = `import-jira-${Date.now()}`;
+  upsertSession(sessionId, label);
+
+  let imported = 0, skipped = 0, errors = 0, boardsSeen = 0;
+
+  try {
+    // 1. Collect boards (or use the one passed explicitly)
+    let boards = [];
+    if (boardId) {
+      const b = await jiraFetch(baseUrl, email, token, `/rest/agile/1.0/board/${boardId}`);
+      boards = [b];
+    } else {
+      let startAt = 0;
+      while (true) {
+        const page = await jiraFetch(baseUrl, email, token, '/rest/agile/1.0/board', {
+          query: { startAt, maxResults: 50, ...(projectKey ? { projectKeyOrId: projectKey } : {}) },
+        });
+        boards.push(...(page.values || []));
+        if (page.isLast || !(page.values || []).length) break;
+        startAt += page.values.length;
+      }
+    }
+
+    // 2. For each board, paginate sprints
+    outer:
+    for (const board of boards) {
+      boardsSeen++;
+      let startAt = 0;
+      while (true) {
+        let page;
+        try {
+          page = await jiraFetch(baseUrl, email, token, `/rest/agile/1.0/board/${board.id}/sprint`, {
+            query: { startAt, maxResults: 50, state: 'active,closed,future' },
+          });
+        } catch (err) {
+          // Kanban boards don't support sprints → API returns 400
+          if (/400/.test(err.message)) break;
+          throw err;
+        }
+
+        const sprints = page.values || [];
+        if (!sprints.length) break;
+
+        for (const sprint of sprints) {
+          const key = `sprint-${sprint.id}:${(sprint.state || 'unknown').toLowerCase()}`;
+          if (done.has(key)) {
+            skipped++;
+            onProgress?.({ done: imported + skipped + errors, current: 'skip:' + (sprint.name || sprint.id) });
+            continue;
+          }
+
+          try {
+            // Issue completion counts (1 extra call per new sprint)
+            let counts = null;
+            try {
+              const issuesPage = await jiraFetch(baseUrl, email, token, `/rest/agile/1.0/sprint/${sprint.id}/issue`, {
+                query: { maxResults: 100, fields: 'status' },
+              });
+              const issues = issuesPage.issues || [];
+              const doneCount = issues.filter(i =>
+                (i.fields?.status?.statusCategory?.key || '') === 'done').length;
+              counts = { done: doneCount, total: issuesPage.total ?? issues.length };
+            } catch { /* counts are optional */ }
+
+            const summary = sprintSummary(sprint, board, counts);
+            const tags = sprintTags(sprint, board);
+            const importance = estimateSprintImportance(sprint);
+
+            const obsId = saveObservation({
+              sessionId,
+              project: label,
+              tool: 'jira-sprint',
+              summary: summary.slice(0, 500),
+              rawInput: `sprint ${sprint.id}: ${sprint.name || ''}`,
+              rawOutput: JSON.stringify({
+                id: sprint.id, name: sprint.name, state: sprint.state,
+                board: board.name, goal: sprint.goal || null,
+                startDate: sprint.startDate || null,
+                endDate: sprint.endDate || null,
+                completeDate: sprint.completeDate || null,
+                counts,
+              }).slice(0, 2000),
+              tags,
+              importance,
+            });
+
+            try {
+              const meta = await embedWithMeta(summary);
+              if (meta?.vector) saveEmbedding(obsId, meta.vector, meta.model);
+            } catch { /* non-critical */ }
+            try { addObservationToGraph({ id: obsId, project: label, tool: 'jira-sprint', summary, tags: JSON.stringify(tags), importance, decision_rationale: null, raw_input: null }); } catch { /* non-critical */ }
+
+            markImported(db, key);
+            done.add(key);
+            imported++;
+          } catch (err) {
+            console.error(`[jira:sprints] sprint ${sprint.id} failed: ${err.message}`);
+            errors++;
+          }
+
+          onProgress?.({ done: imported + skipped + errors, current: sprint.name || String(sprint.id) });
+          if (limit && imported >= limit) break outer;
+        }
+
+        if (page.isLast) break;
+        startAt += sprints.length;
+      }
+    }
+  } catch (err) {
+    closeSession(sessionId, `Jira sprint import failed: ${err.message}`, { computeFriction: computeFrictionScore });
+    throw err;
+  }
+
+  const summary = `Jira sprint import: ${imported} sprints imported, ${skipped} skipped, ${errors} errors (${boardsSeen} boards).`;
+  closeSession(sessionId, summary, { computeFriction: computeFrictionScore });
+
+  return { imported, skipped, errors, boards: boardsSeen };
 }
 
 function markImported(db, key) {
