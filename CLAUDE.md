@@ -95,7 +95,7 @@ claudeye/
 │   ├── import.js               # Git import (claudeye import git)
 │   ├── import-notion.js        # Notion import — pages + database rows (#9)
 │   ├── import-github.js        # GitHub import — issues + PRs + comments, read-first (#23)
-│   ├── import-jira.js          # Jira Cloud import — issues + comments (#10)
+│   ├── import-jira.js          # Jira Cloud import — issues + comments (#10), sprint data (#23)
 │   ├── import-linear.js        # Linear import — issues + comments via GraphQL (#10)
 │   ├── import-cowork.js        # Cowork transcript import (#88) — парсит .jsonl сессий из desktop app
 │   ├── export.js               # memory export → Markdown (#11)
@@ -228,7 +228,9 @@ claudeye clear              # clear data
 # Import
 claudeye import git                                                    # git history
 claudeye import notion --token <token>                                 # Notion pages + database rows (#9)
+claudeye import github --repo owner/name --token <token>               # GitHub issues + PRs + comments (#23)
 claudeye import jira   --url <url> --email <e> --token <api-token>     # Jira Cloud issues + comments (#10)
+claudeye import jira   --sprints [--board <id>] [--project-key <key>]  # Jira sprint data (#23)
 claudeye import linear --token <api-key>                               # Linear issues + comments (#10)
 
 # Analytics
