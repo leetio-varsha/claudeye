@@ -12,6 +12,9 @@ import {
   adfToText,
   estimateIssueImportance,
   issueTags,
+  estimateSprintImportance,
+  sprintTags,
+  sprintSummary,
 } from '../src/import-jira.js';
 
 import {
@@ -148,4 +151,41 @@ test('linearIssueTags — collects status, team, priority, labels', () => {
   assert.ok(tags.includes('priority:2'));
   assert.ok(tags.includes('label:bug'));
   assert.ok(tags.includes('label:backend'));
+});
+
+// ─── Jira sprints (#23) ───────────────────────────────────────────────────
+
+test('estimateSprintImportance — active > closed > future', () => {
+  assert.ok(estimateSprintImportance({ state: 'active' }) > estimateSprintImportance({ state: 'closed' }));
+  assert.ok(estimateSprintImportance({ state: 'closed' }) > estimateSprintImportance({ state: 'future' }));
+  assert.equal(estimateSprintImportance({}), 0.5);
+});
+
+test('sprintTags — state + board, нормализация пробелов', () => {
+  const tags = sprintTags({ state: 'ACTIVE' }, { name: 'ENG Board' });
+  assert.ok(tags.includes('jira'));
+  assert.ok(tags.includes('import'));
+  assert.ok(tags.includes('sprint'));
+  assert.ok(tags.includes('state:active'));
+  assert.ok(tags.includes('board:eng-board'));
+});
+
+test('sprintSummary — name, state, dates, counts, goal', () => {
+  const s = sprintSummary(
+    { name: 'Sprint 42', state: 'active', startDate: '2026-06-01T00:00:00.000Z', endDate: '2026-06-14T00:00:00.000Z', goal: 'Ship sprint import' },
+    { name: 'ENG Board' },
+    { done: 5, total: 12 },
+  );
+  assert.match(s, /\[Sprint\] Sprint 42/);
+  assert.match(s, /ENG Board/);
+  assert.match(s, /active/);
+  assert.match(s, /2026-06-01 → 2026-06-14/);
+  assert.match(s, /issues: 5\/12 done/);
+  assert.match(s, /goal: Ship sprint import/);
+});
+
+test('sprintSummary — выживает на пустом sprint', () => {
+  const s = sprintSummary({});
+  assert.match(s, /\[Sprint\]/);
+  assert.match(s, /unknown/);
 });

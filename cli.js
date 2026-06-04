@@ -977,6 +977,8 @@ program.command('import')
   .option('--email <email>', 'Jira account email for API token auth — or set JIRA_EMAIL')
   .option('--jql <jql>', 'Custom JQL (jira)')
   .option('--project-key <key>', 'Restrict to Jira project key (jira)')
+  .option('--sprints', 'Import sprint data instead of issues (jira)')
+  .option('--board <id>', 'Restrict sprint import to a board id (jira)')
   .option('--team <key>', 'Restrict to Linear team key (linear)')
   .action(async (source, opts) => {
     const ora = (await import('ora')).default;
@@ -1095,9 +1097,33 @@ program.command('import')
         return;
       }
 
-      const { importJira } = await import('./src/import-jira.js');
+      const { importJira, importJiraSprints } = await import('./src/import-jira.js');
       const spinner = ora('Connecting to Jira API...').start();
       let lastMsg = '';
+
+      // ── sprint data (#23) ──
+      if (opts.sprints) {
+        try {
+          const result = await importJiraSprints({ baseUrl, email, token }, {
+            project: opts.projectKey || null,
+            board:   opts.board ? parseInt(opts.board) : null,
+            limit:   opts.limit ? parseInt(opts.limit) : null,
+            label:   opts.project || 'jira',
+            onProgress: ({ done, current }) => {
+              const msg = `Importing Jira sprints... ${done} (${current})`;
+              if (msg !== lastMsg) { spinner.text = msg; lastMsg = msg; }
+            },
+          });
+          spinner.succeed(
+            `Jira sprint import complete: ${result.imported} imported, ` +
+            `${result.skipped} skipped, ${result.errors} errors (${result.boards} boards)`
+          );
+        } catch (err) {
+          spinner.fail(`Jira sprint import failed: ${err.message}`);
+        }
+        return;
+      }
+
       try {
         const result = await importJira({ baseUrl, email, token }, {
           skipAi:  opts.skipAi  || false,
