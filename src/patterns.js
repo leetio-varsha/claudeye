@@ -123,18 +123,20 @@ export function getFileHotspots({ days = 14, minOccurrences = 3 } = {}) {
 export function getTimeSinks({ days = 14 } = {}) {
   const db = getDb();
 
-  // Per-project time analysis
+  // Per-project time analysis.
+  // NOTE: no JOIN with observations here — a LEFT JOIN multiplies session rows
+  // by observation count, inflating SUM/AVG(duration_ms) by orders of magnitude (#110).
+  // Observations are counted via a correlated subquery instead.
   const projectSinks = db.prepare(`
     SELECT
       s.project,
-      COUNT(DISTINCT s.id)     AS sessions,
+      COUNT(*)                 AS sessions,
       AVG(s.duration_ms)       AS avg_duration_ms,
       SUM(s.duration_ms)       AS total_duration_ms,
       AVG(s.friction_score)    AS avg_friction,
       AVG(s.prompt_count)      AS avg_prompts,
-      COUNT(o.id)              AS total_obs
+      SUM((SELECT COUNT(*) FROM observations o WHERE o.session_id = s.id)) AS total_obs
     FROM sessions s
-    LEFT JOIN observations o ON o.session_id = s.id
     WHERE s.started_at >= datetime('now', '-' || ? || ' days')
       AND s.duration_ms IS NOT NULL
       AND s.duration_ms > 0
