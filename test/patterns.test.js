@@ -167,6 +167,43 @@ describe('Time Sink Detection', () => {
     assert.ok(rows[0].total_ms > rows[1].total_ms);
   });
 
+  it('duration aggregates are not inflated by observation count (#110)', () => {
+    // Fixed getTimeSinks query shape: no JOIN with observations,
+    // obs counted via correlated subquery.
+    const rows = db.prepare(`
+      SELECT s.project,
+             COUNT(*)           AS sessions,
+             AVG(s.duration_ms) AS avg_duration_ms,
+             SUM(s.duration_ms) AS total_duration_ms,
+             SUM((SELECT COUNT(*) FROM observations o WHERE o.session_id = s.id)) AS total_obs
+      FROM sessions s
+      WHERE s.duration_ms > 0
+      GROUP BY s.project
+      ORDER BY total_duration_ms DESC
+    `).all();
+
+    const a = rows.find(r => r.project === '/test/projectA');
+    assert.ok(a);
+    assert.equal(a.sessions, 3);
+    // projectA: 3600000 + 7200000 + 1800000 — observations (15 шт) НЕ множат сумму
+    assert.equal(a.total_duration_ms, 12600000);
+    assert.equal(a.avg_duration_ms, 4200000);
+    assert.equal(a.total_obs, 15);
+  });
+
+  it('LEFT JOIN observations inflates duration aggregates — regression guard (#110)', () => {
+    // Документирует баг: старый запрос с LEFT JOIN размножает строки сессий
+    const buggy = db.prepare(`
+      SELECT SUM(s.duration_ms) AS total_duration_ms
+      FROM sessions s
+      LEFT JOIN observations o ON o.session_id = s.id
+      WHERE s.project = '/test/projectA' AND s.duration_ms > 0
+    `).get();
+
+    assert.ok(buggy.total_duration_ms > 12600000,
+      'buggy LEFT JOIN query should inflate totals — иначе guard потерял смысл');
+  });
+
   it('detects high friction-to-time ratio', () => {
     const rows = db.prepare(`
       SELECT project, AVG(friction_score) AS avg_friction, AVG(duration_ms) AS avg_ms
