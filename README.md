@@ -194,6 +194,10 @@ claudeye import jira --url https://acme.atlassian.net --email you@acme --token <
 claudeye import jira --project-key ENG --limit 200
 # JIRA_URL / JIRA_EMAIL / JIRA_API_TOKEN env vars also accepted
 
+# Jira sprint data (#23) — sprints (active/closed/future) с goal и done/total counts
+claudeye import jira --sprints
+claudeye import jira --sprints --board 12 --project-key ENG
+
 # Linear — issues + comments (GraphQL)
 claudeye import linear --token <api-key>
 claudeye import linear --team ENG --limit 200
