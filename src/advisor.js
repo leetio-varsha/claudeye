@@ -12,6 +12,7 @@ import { homedir } from 'os';
 import { buildAdvisorPayload } from './analytics.js';
 import { getDb } from './db.js';
 import { resolveClaude } from './compress.js';
+import { lastMondayLocal } from './dates.js';
 
 // Same #85 root cause: hardcoded 'claude' fails when hooks run with a
 // minimal PATH or the user installs via ~/.claude/local. Reuse the hardened
@@ -210,12 +211,8 @@ function validateAdvisorResponse(obj) {
 export async function generateWeeklyDigest({ force = false } = {}) {
   const db = getDb();
 
-  // Get Monday of current week
-  const now       = new Date();
-  const day       = now.getDay();
-  const monday    = new Date(now);
-  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
-  const weekStart = monday.toISOString().slice(0, 10);
+  // Get Monday of current week (local date — toISOString сдвигал на день, #112)
+  const weekStart = lastMondayLocal();
 
   // Check if already exists
   if (!force) {

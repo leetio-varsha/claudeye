@@ -164,12 +164,14 @@ Keep under 400 words. Dense, useful.`;
 async function generateDigest() {
   const db = getDb();
 
-  // Check Monday of current week
+  // Check Monday of current week — ЛОКАЛЬНАЯ дата, без toISOString:
+  // UTC-конверсия до 03:00 Kyiv давала воскресный week_start и дубликат
+  // строки недели (#112). Standalone-файл — хелпер инлайном (no src imports).
   const now = new Date();
   const day = now.getDay();
   const monday = new Date(now);
   monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
-  const weekStart = monday.toISOString().slice(0, 10);
+  const weekStart = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
 
   // Skip only if already generated TODAY — allow regeneration if digest was created
   // earlier in the week (so the Sunday scheduler can update a mid-week manual digest
