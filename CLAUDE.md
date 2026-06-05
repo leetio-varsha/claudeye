@@ -232,6 +232,7 @@ claudeye import github --repo owner/name --token <token>               # GitHub 
 claudeye import jira   --url <url> --email <e> --token <api-token>     # Jira Cloud issues + comments (#10)
 claudeye import jira   --sprints [--board <id>] [--project-key <key>]  # Jira sprint data (#23)
 claudeye import linear --token <api-key>                               # Linear issues + comments (#10)
+claudeye import slack  --token <xoxb> [--channel a,b] [--days 30]      # Slack messages + threads (#23)
 
 # Analytics
 claudeye analytics                    # global overview

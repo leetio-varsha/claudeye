@@ -44,6 +44,7 @@ claudeye import notion --token <token> # import Notion pages + databases
 claudeye import github --repo owner/name --token "$(gh auth token)" # GitHub issues + PRs (#23)
 claudeye import jira   --url <https://org.atlassian.net> --email <you@x> --token <api-token>
 claudeye import linear --token <api-key>
+claudeye import slack  --token <xoxb-token> # Slack channel messages + threads (#23)
 claudeye import cowork                 # import Claude desktop Cowork sessions (#88)
 ```
 
@@ -202,6 +203,13 @@ claudeye import jira --sprints --board 12 --project-key ENG
 claudeye import linear --token <api-key>
 claudeye import linear --team ENG --limit 200
 # LINEAR_API_KEY env var also accepted
+
+# Slack (#23, read-first) — channel messages + threads («поиск решений в обсуждениях»)
+claudeye import slack --token xoxb-...                  # all member channels, last 30 days
+claudeye import slack --channel dev,general --days 90   # specific channels, deeper lookback
+# SLACK_TOKEN / SLACK_BOT_TOKEN env vars also accepted.
+# Scopes: channels:read + channels:history. Threads are imported as one
+# observation (parent + replies); joins/short noise filtered out.
 
 # Cowork (#88) — desktop-app sessions don't fire Claude Code hooks, so import
 # their transcripts from disk. Deduped via cowork_imports (UNIQUE cli_session_id).
