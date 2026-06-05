@@ -961,13 +961,13 @@ program.command('clear')
 // ─── import ───────────────────────────────────────────────────────────────
 program.command('import')
   .description('Import history from external sources')
-  .argument('<source>', 'Source type: git | github | notion | jira | linear | cowork')
+  .argument('<source>', 'Source type: git | github | notion | jira | linear | slack | cowork')
   .option('-p, --path <path>', 'Repository path (git)', process.cwd())
   .option('--since <date>', 'Only import commits since date (git)')
   .option('-n, --limit <n>', 'Max items to import (git | jira | linear)')
   .option('--skip-ai', 'Skip AI compression (faster, less rich)')
   .option('--force', 'Re-import sessions already in import_sources (cowork)')
-  .option('--token <token>', 'API token (github: GITHUB_TOKEN | notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY)')
+  .option('--token <token>', 'API token (github: GITHUB_TOKEN | notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY | slack: SLACK_TOKEN)')
   .option('--repo <owner/name>', 'GitHub repository (github)')
   .option('--state <state>', 'Issue/PR state filter: open | closed | all (github, default: all)')
   .option('--database-only', 'Import only database rows (notion)')
@@ -980,6 +980,8 @@ program.command('import')
   .option('--sprints', 'Import sprint data instead of issues (jira)')
   .option('--board <id>', 'Restrict sprint import to a board id (jira)')
   .option('--team <key>', 'Restrict to Linear team key (linear)')
+  .option('--channel <names>', 'Comma-separated channel names or C-ids (slack, default: all member channels)')
+  .option('--days <n>', 'Lookback window in days (slack, default: 30)')
   .action(async (source, opts) => {
     const ora = (await import('ora')).default;
 
@@ -1179,6 +1181,45 @@ program.command('import')
         );
       } catch (err) {
         spinner.fail(`Linear import failed: ${err.message}`);
+      }
+      return;
+    }
+
+    // ── slack (#23, read-first) ──────────────────────────────────────
+    if (source === 'slack') {
+      const token = opts.token || process.env.SLACK_TOKEN || process.env.SLACK_BOT_TOKEN;
+      if (!token) {
+        console.log(chalk.red(`
+  Slack token required (xoxb-/xoxp- with channels:read + channels:history).
+  Pass --token <token> or set SLACK_TOKEN / SLACK_BOT_TOKEN env var.
+
+  Create an app token: https://api.slack.com/apps → OAuth & Permissions
+`));
+        return;
+      }
+
+      const { importSlack } = await import('./src/import-slack.js');
+      const spinner = ora('Connecting to Slack API...').start();
+      let lastMsg = '';
+      try {
+        const result = await importSlack({ token }, {
+          skipAi:  opts.skipAi || false,
+          channel: opts.channel || null,
+          days:    opts.days ? parseInt(opts.days) : 30,
+          limit:   opts.limit ? parseInt(opts.limit) : null,
+          label:   opts.project || 'slack',
+          onProgress: ({ done, total }) => {
+            const msg = `Importing Slack messages/threads... ${done}/${total}`;
+            if (msg !== lastMsg) { spinner.text = msg; lastMsg = msg; }
+          },
+        });
+        spinner.succeed(
+          `Slack import complete: ${result.imported} imported, ` +
+          `${result.skipped} skipped, ${result.errors} errors ` +
+          `(${result.total} seen in ${result.channels} channels)`
+        );
+      } catch (err) {
+        spinner.fail(`Slack import failed: ${err.message}`);
       }
       return;
     }
