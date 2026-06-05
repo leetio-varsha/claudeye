@@ -14,6 +14,7 @@ import { existsSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
+import { lastMondayLocal } from './dates.js';
 
 const DATA_DIR    = join(homedir(), '.claudeye');
 const HEARTBEAT   = join(DATA_DIR, 'logs', 'insights-heartbeat.log');
@@ -21,15 +22,9 @@ const SETTINGS    = join(DATA_DIR, 'settings.json');
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/** Return ISO date string for last Monday (or today if today is Monday) */
+/** Local date string for last Monday (toISOString сдвигал на день, #112) */
 function getLastMonday() {
-  const now = new Date();
-  const day = now.getDay(); // 0=Sun, 1=Mon … 6=Sat
-  const diff = day === 0 ? 6 : day - 1;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - diff);
-  monday.setHours(0, 0, 0, 0);
-  return monday.toISOString().slice(0, 10);
+  return lastMondayLocal();
 }
 
 /** Returns today's UTC date string YYYY-MM-DD */
