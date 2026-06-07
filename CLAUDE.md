@@ -97,6 +97,8 @@ claudeye/
 │   ├── import-github.js        # GitHub import — issues + PRs + comments, read-first (#23)
 │   ├── import-jira.js          # Jira Cloud import — issues + comments (#10), sprint data (#23)
 │   ├── import-linear.js        # Linear import — issues + comments via GraphQL (#10)
+│   ├── import-slack.js         # Slack import — channel messages + threads, read-first (#23)
+│   ├── import-sentry.js        # Sentry import — issues + stacktraces + auto-triage, read-first (#23)
 │   ├── import-cowork.js        # Cowork transcript import (#88) — парсит .jsonl сессий из desktop app
 │   ├── export.js               # memory export → Markdown (#11)
 │   ├── agent.js                # Agent v1 (#20) — crossRepoContext(), prReview(), logAgentAction(), getAgentHistory()
@@ -233,6 +235,7 @@ claudeye import jira   --url <url> --email <e> --token <api-token>     # Jira Cl
 claudeye import jira   --sprints [--board <id>] [--project-key <key>]  # Jira sprint data (#23)
 claudeye import linear --token <api-key>                               # Linear issues + comments (#10)
 claudeye import slack  --token <xoxb> [--channel a,b] [--days 30]      # Slack messages + threads (#23)
+claudeye import sentry --token <t> --org <slug> [--days 14]            # Sentry issues + stacktraces + auto-triage (#23)
 
 # Analytics
 claudeye analytics                    # global overview
@@ -354,7 +357,7 @@ npm test                              # run all tests (node:test) — 170 tests
 - [x] Notion import (#9)
 - [x] Jira/Linear import (#10)
 - [x] Memory export as markdown (#11)
-- [ ] Read-first integrations: GitLab, Jira, Slack, Gmail, Sentry (#23)
+- [ ] Read-first integrations (#23): GitHub ✓, Jira ✓, Slack ✓, Sentry ✓ — осталось GitLab, Gmail; write-фаза не начата
 
 ### Phase 5: Team Foundation (May-June 2026)
 - [ ] Postgres + pgvector — team backend (#12)
