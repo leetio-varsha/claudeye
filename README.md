@@ -45,6 +45,7 @@ claudeye import github --repo owner/name --token "$(gh auth token)" # GitHub iss
 claudeye import jira   --url <https://org.atlassian.net> --email <you@x> --token <api-token>
 claudeye import linear --token <api-key>
 claudeye import slack  --token <xoxb-token> # Slack channel messages + threads (#23)
+claudeye import sentry --token <token> --org <slug> # Sentry issues + stacktraces + auto-triage (#23)
 claudeye import cowork                 # import Claude desktop Cowork sessions (#88)
 ```
 
@@ -210,6 +211,15 @@ claudeye import slack --channel dev,general --days 90   # specific channels, dee
 # SLACK_TOKEN / SLACK_BOT_TOKEN env vars also accepted.
 # Scopes: channels:read + channels:history. Threads are imported as one
 # observation (parent + replies); joins/short noise filtered out.
+
+# Sentry (#23, read-first) — issues + stacktraces + auto-triage
+claudeye import sentry --token <token> --org <slug>          # unresolved issues, last 14 days
+claudeye import sentry --sentry-project my-api --days 30     # one project, deeper lookback
+claudeye import sentry --query "is:unresolved level:error" --no-stacks
+# SENTRY_TOKEN / SENTRY_ORG env vars also accepted; --url <base> for self-hosted.
+# Scopes: org:read + project:read + event:read. Each issue lands as one
+# observation with latest-event in-app stack frames; auto-triage tag
+# (triage:high/medium/low from level × events × users) drives importance.
 
 # Cowork (#88) — desktop-app sessions don't fire Claude Code hooks, so import
 # their transcripts from disk. Deduped via cowork_imports (UNIQUE cli_session_id).
@@ -454,7 +464,7 @@ Goal: 14 consecutive days of all-green invariants → Beta MVP unblocked.
 - [x] Notion import (#9)
 - [x] Jira/Linear import (#10)
 - [ ] Memory export as markdown (#11)
-- [ ] Read-first integrations: GitLab, Jira, Slack, Gmail, Sentry (#23)
+- [ ] Read-first integrations (#23): GitHub ✓, Jira ✓, Slack ✓, Sentry ✓ — left: GitLab, Gmail; write-phase not started
 
 ### Phase 5: Team Foundation (May-June 2026)
 
