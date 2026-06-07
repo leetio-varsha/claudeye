@@ -182,28 +182,34 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
     }
   }
 
-  // Repeat-fix hotspots
+  // Repeat-fix hotspots (#113)
+  // Group by the extracted file_path, not by raw_input prefix — the same file
+  // edited with different args (replace_all, key order) is ONE hotspot.
+  // json_valid guard: raw_input is truncated to 2000 chars and may be malformed JSON.
   const hotspots = db.prepare(`
     SELECT
-      SUBSTR(raw_input, 1, 200) as file_hint,
+      COALESCE(
+        CASE WHEN json_valid(raw_input) THEN json_extract(raw_input, '$.file_path') END,
+        SUBSTR(raw_input, 1, 200)
+      ) as file_hint,
       COUNT(*) as times,
-      project,
-      GROUP_CONCAT(SUBSTR(summary, 1, 80), ' | ') as summaries
+      project
     FROM observations
     WHERE tool IN ('Edit', 'Write')
       AND importance >= 0.6
       AND raw_input IS NOT NULL
       AND created_at > datetime('now', '-7 days')
-    GROUP BY SUBSTR(raw_input, 1, 200), project
+    GROUP BY file_hint, project
     HAVING times >= ?
     ORDER BY times DESC
     LIMIT 5
   `).all(THRESHOLDS.REPEAT_FIX_THRESHOLD);
 
   for (const h of hotspots) {
-    // Extract just the file path from the JSON-ish raw_input
-    const fileMatch = h.file_hint.match(/[\/\w.-]+\.\w+/);
-    const fileName = fileMatch ? fileMatch[0].split('/').slice(-2).join('/') : h.file_hint.slice(0, 60);
+    const filePath = extractFilePath(h.file_hint);
+    const fileName = filePath
+      ? filePath.split('/').filter(Boolean).slice(-2).join('/')
+      : String(h.file_hint || '').slice(0, 60);
     alerts.push({
       severity: 'warning',
       category: 'friction',
@@ -547,17 +553,57 @@ function shortProject(project) {
   return (project || '').replace(homedir(), '~').split('/').slice(-2).join('/');
 }
 
+/**
+ * Extract a file path from a hotspot hint (#113).
+ * The hint is either an already-extracted file_path (via json_extract),
+ * or a raw_input JSON prefix when raw_input is truncated/malformed.
+ * Handles paths with spaces ("Application Support").
+ */
+export function extractFilePath(hint) {
+  if (!hint) return null;
+  const s = String(hint);
+  // Already a plain path (json_extract succeeded)
+  if (s.startsWith('/') || s.startsWith('~')) return s;
+  // JSON-ish prefix: pull the "file_path" string value, allowing escapes
+  const m = s.match(/"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (m) return m[1].replace(/\\(.)/g, '$1');
+  // Last resort: a path with an extension; segments may contain spaces
+  const p = s.match(/(?:\/[^/"\\,}{:]*)+\.\w+/);
+  return p ? p[0] : null;
+}
+
 // ─── Standalone execution ────────────────────────────────────────────────
 
 const isMain = process.argv[1]?.endsWith('daily-insights.js');
 if (isMain) {
+  const asJson = process.argv.slice(2).includes('--json');
   const result = await runInsights({ days: 1, notify: true });
-  const chalk = (await import('chalk')).default;
-
-  console.log(chalk.bold('\n  Claudeye Daily Insights\n'));
-  console.log(formatReport(result));
-
   const { critAlerts, warnAlerts, insightAlerts } = result;
   const total = critAlerts.length + warnAlerts.length + insightAlerts.length;
-  console.log(chalk.gray(`  ${total} alerts: ${critAlerts.length} critical, ${warnAlerts.length} warnings, ${insightAlerts.length} insights\n`));
+
+  if (asJson) {
+    // Machine-readable output for scheduled tasks (#114).
+    // stdout = JSON only; diagnostics ([mem:db] etc.) already go to stderr.
+    const metrics = getDbMetrics();
+    console.log(JSON.stringify({
+      alerts: result.alerts.map(({ severity, category, title, detail, action }) => ({
+        severity, category, title, detail, action: action ?? null,
+      })),
+      meta: {
+        generated_at: new Date().toISOString(),
+        counts: {
+          critical: critAlerts.length,
+          warning: warnAlerts.length,
+          insight: insightAlerts.length,
+          total,
+        },
+        db_size_mb: metrics.fileSizeMB,
+      },
+    }, null, 2));
+  } else {
+    const chalk = (await import('chalk')).default;
+    console.log(chalk.bold('\n  Claudeye Daily Insights\n'));
+    console.log(formatReport(result));
+    console.log(chalk.gray(`  ${total} alerts: ${critAlerts.length} critical, ${warnAlerts.length} warnings, ${insightAlerts.length} insights\n`));
+  }
 }
