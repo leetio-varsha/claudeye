@@ -961,13 +961,13 @@ program.command('clear')
 // ─── import ───────────────────────────────────────────────────────────────
 program.command('import')
   .description('Import history from external sources')
-  .argument('<source>', 'Source type: git | github | notion | jira | linear | slack | cowork')
+  .argument('<source>', 'Source type: git | github | notion | jira | linear | slack | sentry | cowork')
   .option('-p, --path <path>', 'Repository path (git)', process.cwd())
   .option('--since <date>', 'Only import commits since date (git)')
   .option('-n, --limit <n>', 'Max items to import (git | jira | linear)')
   .option('--skip-ai', 'Skip AI compression (faster, less rich)')
   .option('--force', 'Re-import sessions already in import_sources (cowork)')
-  .option('--token <token>', 'API token (github: GITHUB_TOKEN | notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY | slack: SLACK_TOKEN)')
+  .option('--token <token>', 'API token (github: GITHUB_TOKEN | notion: NOTION_API_KEY | jira: JIRA_API_TOKEN | linear: LINEAR_API_KEY | slack: SLACK_TOKEN | sentry: SENTRY_TOKEN)')
   .option('--repo <owner/name>', 'GitHub repository (github)')
   .option('--state <state>', 'Issue/PR state filter: open | closed | all (github, default: all)')
   .option('--database-only', 'Import only database rows (notion)')
@@ -981,7 +981,11 @@ program.command('import')
   .option('--board <id>', 'Restrict sprint import to a board id (jira)')
   .option('--team <key>', 'Restrict to Linear team key (linear)')
   .option('--channel <names>', 'Comma-separated channel names or C-ids (slack, default: all member channels)')
-  .option('--days <n>', 'Lookback window in days (slack, default: 30)')
+  .option('--days <n>', 'Lookback window in days (slack: 30 | sentry: 14)')
+  .option('--org <slug>', 'Sentry organization slug — or set SENTRY_ORG (sentry)')
+  .option('--sentry-project <slug>', 'Restrict to a Sentry project slug (sentry)')
+  .option('--query <q>', 'Sentry issues search query (sentry, default: is:unresolved)')
+  .option('--no-stacks', 'Skip fetching latest-event stacktraces (sentry, faster)')
   .action(async (source, opts) => {
     const ora = (await import('ora')).default;
 
@@ -1220,6 +1224,49 @@ program.command('import')
         );
       } catch (err) {
         spinner.fail(`Slack import failed: ${err.message}`);
+      }
+      return;
+    }
+
+    // ── sentry (#23) ─────────────────────────────────────────────────
+    if (source === 'sentry') {
+      const token = opts.token || process.env.SENTRY_TOKEN || process.env.SENTRY_AUTH_TOKEN;
+      const org = opts.org || process.env.SENTRY_ORG;
+      if (!token || !org) {
+        console.log(chalk.red(`
+  Sentry token + org slug required.
+  Pass --token <token> --org <slug> or set SENTRY_TOKEN / SENTRY_ORG env vars.
+
+  Create a token: https://sentry.io/settings/account/api/auth-tokens/
+  Scopes: org:read, project:read, event:read. Self-hosted: add --url <base>.
+`));
+        return;
+      }
+
+      const { importSentry } = await import('./src/import-sentry.js');
+      const spinner = ora('Connecting to Sentry API...').start();
+      let lastMsg = '';
+      try {
+        const result = await importSentry({ token, org, url: opts.url || null }, {
+          skipAi:  opts.skipAi || false,
+          project: opts.sentryProject || null,
+          days:    opts.days ? parseInt(opts.days) : 14,
+          limit:   opts.limit ? parseInt(opts.limit) : null,
+          stacks:  opts.stacks !== false,
+          query:   opts.query || 'is:unresolved',
+          label:   opts.project || 'sentry',
+          onProgress: ({ done, total }) => {
+            const msg = `Importing Sentry issues... ${done}/${total}`;
+            if (msg !== lastMsg) { spinner.text = msg; lastMsg = msg; }
+          },
+        });
+        spinner.succeed(
+          `Sentry import complete: ${result.imported} imported, ` +
+          `${result.skipped} skipped, ${result.errors} errors ` +
+          `(${result.total} issues seen)`
+        );
+      } catch (err) {
+        spinner.fail(`Sentry import failed: ${err.message}`);
       }
       return;
     }
