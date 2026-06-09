@@ -266,6 +266,7 @@ claudeye agent context <query>                # cross-repo context: search all p
 claudeye agent pr-review [--dry-run]          # PR review context from git diff
 claudeye agent history                        # recent agent action log
 claudeye agent pending                        # actions awaiting accept/reject
+claudeye agent review                         # interactive batch review: y/n/s per action (#115)
 claudeye agent accept <id> [note]             # mark action useful (feedback loop)
 claudeye agent reject <id> [reason]           # mark action noise (feedback loop)
 claudeye agent effectiveness [--since <days>] # accepted vs rejected, rejection rate

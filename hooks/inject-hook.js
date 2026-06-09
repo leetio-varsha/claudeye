@@ -11,10 +11,32 @@
  *   exit 0:  success
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 const __dir = new URL('.', import.meta.url).pathname;
 const srcDir = __dir + '../src/';
+
+// ─── Once-per-day stderr nudges (#115) ─────────────────────────────────────
+// File-based throttle so terminal nudges (e.g. "N actions await review") fire at
+// most once per local day per kind, no matter how many prompts the user sends.
+const _NUDGE_DIR = join(homedir(), '.claudeye', 'state');
+function _nudgePath(kind) { return join(_NUDGE_DIR, `nudge-${kind}`); }
+function _today() { return new Date().toLocaleDateString('en-CA'); } // local YYYY-MM-DD
+
+function nudgedToday(kind) {
+  try {
+    const p = _nudgePath(kind);
+    return existsSync(p) && readFileSync(p, 'utf8').trim() === _today();
+  } catch { return false; }
+}
+function markNudged(kind) {
+  try {
+    if (!existsSync(_NUDGE_DIR)) mkdirSync(_NUDGE_DIR, { recursive: true });
+    writeFileSync(_nudgePath(kind), _today());
+  } catch { /* non-critical */ }
+}
 
 /**
  * Smart truncation — cut on a word boundary close to the limit and append "…"
@@ -322,6 +344,31 @@ async function main() {
     } catch (e) {
       try { logHookError('inject-hook', 'advise-inject', e.message, project); } catch {}
     }
+
+    // Agent feedback-loop review nudge (#115) — stderr only, once per day.
+    // Mirrors the inject-visibility fix (65f278b): a backlog the user never sees
+    // doesn't exist. We do a tiny direct query here (no agent.js import) to keep
+    // the hook lean, and throttle via a date marker so we nudge at most daily.
+    try {
+      const REVIEW_PENDING_WARN = 50;
+      const db = getDb();
+      const pending = db.prepare(
+        `SELECT COUNT(*) AS n FROM agent_actions WHERE feedback IS NULL`
+      ).get().n ?? 0;
+
+      if (pending >= REVIEW_PENDING_WARN) {
+        const cutoff = new Date(Date.now() - 7 * 86_400_000).toISOString();
+        const reviewedRecent = db.prepare(
+          `SELECT COUNT(*) AS n FROM agent_actions
+           WHERE feedback IN ('accepted','rejected') AND feedback_at >= ?`
+        ).get(cutoff).n ?? 0;
+
+        if (reviewedRecent === 0 && !nudgedToday('review')) {
+          process.stderr.write(`🤖 Claudeye: ${pending} agent-действий ждут review — \`claudeye agent review\`\n`);
+          markNudged('review');
+        }
+      }
+    } catch { /* non-critical — never break the hook on the nudge */ }
   } catch (err) {
     try { logHookError('inject-hook', 'general', err.message, project); } catch {}
     // Exit cleanly — don't block Claude Code on memory failure

@@ -179,6 +179,34 @@ export function getAgentEffectiveness({ sinceDays = null } = {}) {
   };
 }
 
+/**
+ * Review-queue status for the feedback loop nudge (#115).
+ *
+ * The feedback loop (#21) is dead when actions pile up un-reviewed: the analyzer
+ * kept seeing 0 accepted / 0 rejected while pending grew, because nobody ran
+ * `claudeye agent pending` by hand. This helper powers the two surfaces that
+ * make the backlog visible: the daily-insights warning and the inject-hook
+ * stderr nudge.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.reviewedWindowDays]  — window for "recently reviewed" (default 7)
+ * @returns {{ pending: number, reviewedRecent: number, windowDays: number }}
+ */
+export function getReviewQueueStatus({ reviewedWindowDays = 7 } = {}) {
+  const db = getDb();
+  const pending = db.prepare(
+    `SELECT COUNT(*) AS n FROM agent_actions WHERE feedback IS NULL`
+  ).get().n ?? 0;
+
+  const cutoff = new Date(Date.now() - reviewedWindowDays * 86_400_000).toISOString();
+  const reviewedRecent = db.prepare(
+    `SELECT COUNT(*) AS n FROM agent_actions
+     WHERE feedback IN ('accepted', 'rejected') AND feedback_at >= ?`
+  ).get(cutoff).n ?? 0;
+
+  return { pending, reviewedRecent, windowDays: reviewedWindowDays };
+}
+
 // ─── Time saved vs review time (#21) ──────────────────────────────────────────
 
 /**
