@@ -57,6 +57,9 @@ const THRESHOLDS = {
 
   // Activity
   EMPTY_SESSION_RATIO: 0.5,        // 🟡 >50% sessions with 0 high-importance obs
+
+  // Agent feedback loop (#115)
+  AGENT_REVIEW_PENDING_WARN: 50,   // 🟡 50+ agent actions pending and none reviewed in 7d
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────
@@ -393,6 +396,25 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
       });
     }
   }
+
+  // Agent feedback-loop review backlog (#115)
+  // The loop only learns if actions get accepted/rejected. When pending piles up
+  // and nothing has been reviewed in a week, surface a warning with the command
+  // that actually clears the backlog — the analyzer kept seeing 0/0 because this
+  // signal was invisible until now.
+  try {
+    const { getReviewQueueStatus } = await import('../src/agent.js');
+    const q = getReviewQueueStatus({ reviewedWindowDays: 7 });
+    if (q.pending >= THRESHOLDS.AGENT_REVIEW_PENDING_WARN && q.reviewedRecent === 0) {
+      alerts.push({
+        severity: 'warning',
+        category: 'agent',
+        title: `${q.pending} agent-действий ждут review, 0 размечено за 7 дней`,
+        detail: `Feedback loop (#21) не учится без вердиктов: pending растёт, accept/reject = 0. effectiveness, time-savings и agent-learning остаются мёртвыми.`,
+        action: 'Запусти `claudeye agent review` — batch-разметка 10–20 действий за заход (y/n/s).',
+      });
+    }
+  } catch { /* agent module non-critical */ }
 
   // ── 4. Positive Insights ──────────────────────────────────────────────
 

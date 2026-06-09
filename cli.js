@@ -2279,6 +2279,89 @@ agentCmd
   });
 
 agentCmd
+  .command('review')
+  .description('Interactive batch review of pending agent actions: y/n/s per action (#115)')
+  .option('--agent <name>', 'Filter by agent name')
+  .option('-n, --limit <n>', 'How many to review this round', '15')
+  .action(async (opts) => {
+    const { getPendingActions, setActionFeedback } = await import('./src/agent.js');
+    const limit = parseInt(opts.limit, 10) || 15;
+    const rows = getPendingActions({ agent: opts.agent, limit });
+
+    if (!rows.length) {
+      console.log(chalk.green('\n  ✅ No pending agent actions — feedback queue is empty.\n'));
+      return;
+    }
+
+    // Non-interactive (piped/scheduled): can't prompt, so just surface the queue
+    // and the command to run, then exit cleanly instead of hanging on stdin.
+    if (!process.stdin.isTTY) {
+      console.log(chalk.yellow(`\n  ${rows.length} agent actions pending review (non-interactive shell).`));
+      console.log(chalk.gray('  Run `claudeye agent review` in a terminal to review interactively,'));
+      console.log(chalk.gray('  or use `claudeye agent accept <id>` / `claudeye agent reject <id>`.\n'));
+      return;
+    }
+
+    const readline = await import('node:readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+
+    console.log(chalk.bold(`\n📋 Review ${rows.length} pending agent actions`));
+    console.log(chalk.gray('  [y] accept   [n] reject   [s] skip   [q] quit\n'));
+
+    let accepted = 0, rejected = 0, skipped = 0, quit = false;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row     = rows[i];
+      const action  = row.project || row.agent;
+      const result  = row.result ? JSON.parse(row.result) : {};
+      const summary = Object.entries(result)
+        .map(([k, v]) => (typeof v === 'object' ? null : `${k}=${v}`))
+        .filter(Boolean).join(', ');
+
+      console.log(`  ${chalk.gray(`(${i + 1}/${rows.length})`)} ${chalk.yellow('#' + row.id)}  ${chalk.cyan(row.created_at.slice(0, 16))}  ${chalk.bold(action)}`);
+      if (row.query) console.log(`       ${chalk.gray(row.query.slice(0, 100))}`);
+      if (summary)   console.log(`       ${chalk.gray(summary)}`);
+
+      let verdict = null;
+      while (verdict === null) {
+        const ans = (await ask(chalk.bold('       [y/n/s/q]? '))).trim().toLowerCase();
+        if (ans === 'y' || ans === 'a') verdict = 'accepted';
+        else if (ans === 'n' || ans === 'r') verdict = 'rejected';
+        else if (ans === 's' || ans === '')  verdict = 'skip';
+        else if (ans === 'q')                 { quit = true; break; }
+        else console.log(chalk.red('       Введи y / n / s / q'));
+      }
+      if (quit) break;
+
+      if (verdict === 'skip') {
+        skipped++;
+        console.log(chalk.gray('       ↷ skipped\n'));
+        continue;
+      }
+
+      let note = null;
+      if (verdict === 'rejected') {
+        const r = (await ask(chalk.gray('       reason (optional): '))).trim();
+        note = r.length ? r : null;
+      }
+      const res = setActionFeedback(row.id, verdict, note);
+      if (res.ok) {
+        if (verdict === 'accepted') { accepted++; console.log(chalk.green('       ✅ accepted\n')); }
+        else                        { rejected++; console.log(chalk.yellow('       ⊘ rejected\n')); }
+      } else {
+        console.log(chalk.red(`       ✗ ${res.error}\n`));
+      }
+    }
+
+    rl.close();
+    console.log(chalk.bold('  ── Review summary ──'));
+    console.log(`  ${chalk.green(accepted + ' accepted')}, ${chalk.yellow(rejected + ' rejected')}, ${chalk.gray(skipped + ' skipped')}`);
+    const left = getPendingActions({ agent: opts.agent, limit: 9999 }).length;
+    console.log(chalk.gray(`  ${left} still pending.\n`));
+  });
+
+agentCmd
   .command('effectiveness')
   .description('Agent effectiveness: accepted vs rejected, rejection rate (#21)')
   .option('--since <days>', 'Window in days (default: all-time)')

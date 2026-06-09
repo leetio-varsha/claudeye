@@ -402,3 +402,63 @@ describe('time saved vs review time #21 — getAgentTimeSavings contracts', () =
     assert.equal(s.estMinutesSaved, 12, 'one pr-review accepted = 12');
   });
 });
+
+describe('review-queue status #115 — getReviewQueueStatus contracts', () => {
+  // Mirrors the SQL contract of getReviewQueueStatus in src/agent.js:
+  //   pending        = COUNT WHERE feedback IS NULL (all-time)
+  //   reviewedRecent = COUNT WHERE feedback IN (accepted,rejected) AND feedback_at >= cutoff
+
+  const status = (reviewedWindowDays = 7) => {
+    const pending = db.prepare(
+      "SELECT COUNT(*) AS n FROM agent_actions WHERE feedback IS NULL"
+    ).get().n ?? 0;
+    const cutoff = new Date(Date.now() - reviewedWindowDays * 86_400_000).toISOString();
+    const reviewedRecent = db.prepare(
+      "SELECT COUNT(*) AS n FROM agent_actions WHERE feedback IN ('accepted','rejected') AND feedback_at >= ?"
+    ).get(cutoff).n ?? 0;
+    return { pending, reviewedRecent, windowDays: reviewedWindowDays };
+  };
+
+  it('counts all un-reviewed actions as pending', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)");
+    ins.run('daemon', null);
+    ins.run('daemon', null);
+    ins.run('daemon', 'accepted');
+    const s = status();
+    assert.equal(s.pending, 2, 'two pending, accepted one excluded');
+  });
+
+  it('reviewedRecent counts only verdicts inside the window', () => {
+    db.exec("DELETE FROM agent_actions");
+    const now    = new Date().toISOString();
+    const old    = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback, feedback_at) VALUES (?, ?, ?)");
+    ins.run('daemon', 'accepted', now);   // in window
+    ins.run('daemon', 'rejected', now);   // in window
+    ins.run('daemon', 'accepted', old);   // out of window
+    const s = status(7);
+    assert.equal(s.reviewedRecent, 2, 'only the two recent verdicts count');
+  });
+
+  it('the trigger condition: backlog with zero recent review fires', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback) VALUES (?, ?)");
+    for (let i = 0; i < 60; i++) ins.run('daemon', null);
+    const s = status();
+    const PENDING_WARN = 50;
+    const shouldWarn = s.pending >= PENDING_WARN && s.reviewedRecent === 0;
+    assert.ok(shouldWarn, '60 pending / 0 reviewed → warning fires');
+  });
+
+  it('a single recent verdict clears the warning condition', () => {
+    db.exec("DELETE FROM agent_actions");
+    const ins = db.prepare("INSERT INTO agent_actions (agent, feedback, feedback_at) VALUES (?, ?, ?)");
+    for (let i = 0; i < 60; i++) ins.run('daemon', null, null);
+    ins.run('daemon', 'accepted', new Date().toISOString());
+    const s = status();
+    const PENDING_WARN = 50;
+    const shouldWarn = s.pending >= PENDING_WARN && s.reviewedRecent === 0;
+    assert.equal(shouldWarn, false, 'one recent verdict suppresses the nudge');
+  });
+});
