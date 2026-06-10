@@ -2700,4 +2700,44 @@ agentCmd
     }
   });
 
+// ─── workflow: Self-Improving Workflow Engine (#28) ──────────────────────────
+
+const workflowCmd = program.command('workflow')
+  .description('Workflow optimization: time allocation, bottlenecks (#28)');
+
+workflowCmd
+  .command('time')
+  .description('Time allocation by category: code/debug/review/docs/research/ops (#28)')
+  .option('-d, --days <n>', 'Window in days', '30')
+  .option('-p, --project <path>', 'Filter by project path')
+  .option('--json', 'Machine-readable output')
+  .action(async (opts) => {
+    const { getTimeAllocation } = await import('./src/workflow.js');
+    const res = getTimeAllocation({ days: parseInt(opts.days, 10) || 30, project: opts.project || null });
+
+    if (opts.json) { console.log(JSON.stringify(res, null, 2)); return; }
+
+    if (!res.observations) {
+      console.log(chalk.yellow(`\n  No observations in the last ${res.days} days${res.project ? ` for ${res.project}` : ''}.\n`));
+      return;
+    }
+
+    const scope = res.project ? res.project.replace(process.env.HOME || '', '~') : 'all projects';
+    console.log(chalk.bold(`\n⏱  Time Allocation — last ${res.days} days, ${scope}`));
+    console.log(chalk.gray(`   ${res.total_hours}h estimated across ${res.sessions} sessions, ${res.observations} observations\n`));
+
+    const icons = { code: '⌨️ ', debug: '🐛', review: '👀', docs: '📝', research: '🔎', ops: '⚙️ ', other: '・' };
+    const maxPct = Math.max(...res.categories.map(c => c.pct), 1);
+    for (const c of res.categories) {
+      const bar = '█'.repeat(Math.max(1, Math.round((c.pct / maxPct) * 28)));
+      console.log(`   ${icons[c.category] || '  '} ${c.category.padEnd(9)} ${chalk.blue(bar)} ${String(c.pct).padStart(5)}%  ${chalk.gray(`${c.hours}h, ${c.observations} obs`)}`);
+    }
+
+    const top = res.categories[0];
+    if (top && top.pct >= 30 && (top.category === 'debug' || top.category === 'ops')) {
+      console.log(chalk.yellow(`\n   ⚠️  ${top.pct}% времени уходит на ${top.category} — кандидат на оптимизацию (см. claudeye insights).`));
+    }
+    console.log('');
+  });
+
 program.parse();
