@@ -274,6 +274,9 @@ claudeye agent digest [--days <n>]            # what the agent did + what was us
 claudeye agent savings [--since <days>]       # time saved vs time spent reviewing
 claudeye agent learn [--days <n>] [--json]    # advisor analyzes actions → tuning tips
 
+# Workflow Engine (#28)
+claudeye workflow time [-d 30] [-p <path>]    # time allocation: code/debug/review/docs/research/ops
+
 # Pattern Detection & Automation
 claudeye patterns                             # repeat-fixes, hotspots, time sinks
 claudeye patterns --json                      # structured output
