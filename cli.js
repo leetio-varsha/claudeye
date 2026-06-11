@@ -2740,4 +2740,66 @@ workflowCmd
     console.log('');
   });
 
+workflowCmd
+  .command('bottlenecks')
+  .description('Detect workflow bottlenecks: slow steps, costly transitions, churn files, high-friction sessions (#28)')
+  .option('-d, --days <n>', 'Window in days', '30')
+  .option('-p, --project <path>', 'Filter by project path')
+  .option('-t, --top <n>', 'Items per list', '5')
+  .option('--json', 'Machine-readable output')
+  .action(async (opts) => {
+    const { getBottlenecks } = await import('./src/workflow.js');
+    const res = getBottlenecks({
+      days:    parseInt(opts.days, 10) || 30,
+      project: opts.project || null,
+      top:     parseInt(opts.top, 10) || 5,
+    });
+
+    if (opts.json) { console.log(JSON.stringify(res, null, 2)); return; }
+
+    if (!res.observations) {
+      console.log(chalk.yellow(`\n  No observations in the last ${res.days} days${res.project ? ` for ${res.project}` : ''}.\n`));
+      return;
+    }
+
+    const scope = res.project ? res.project.replace(process.env.HOME || '', '~') : 'all projects';
+    console.log(chalk.bold(`\n🚧 Workflow Bottlenecks — last ${res.days} days, ${scope}`));
+    console.log(chalk.gray(`   ${res.observations} observations, ${res.sessions} sessions, средний шаг ${res.overall_avg_sec}s\n`));
+
+    if (res.slow_steps.length) {
+      console.log(chalk.bold('   Медленные шаги (avg сек/шаг):'));
+      for (const s of res.slow_steps) {
+        const mark = s.slowdown >= 1.5 ? chalk.red(`${s.slowdown}×`) : chalk.gray(`${s.slowdown}×`);
+        console.log(`     ${s.category.padEnd(9)} ${String(s.avg_sec).padStart(7)}s  ${mark}  ${chalk.gray(`${s.observations} obs, ${s.hours}h`)}`);
+      }
+    }
+
+    if (res.transitions.length) {
+      console.log(chalk.bold('\n   Дорогие переходы между категориями:'));
+      for (const t of res.transitions) {
+        console.log(`     ${`${t.from}→${t.to}`.padEnd(20)} ${String(t.avg_sec).padStart(7)}s  ${chalk.gray(`×${t.count}`)}`);
+      }
+    }
+
+    if (res.churn_files.length) {
+      console.log(chalk.bold('\n   Churn-файлы (≥3 правок за сессию):'));
+      for (const f of res.churn_files) {
+        console.log(`     ${f.file}  ${chalk.gray(`${f.edits} правок, ${f.sessions} сессии(й)`)}`);
+      }
+    }
+
+    if (res.friction_sessions.length) {
+      console.log(chalk.bold('\n   High-friction сессии:'));
+      for (const s of res.friction_sessions) {
+        console.log(`     ${s.id.slice(0, 12)}…  friction ${chalk.yellow(s.friction_score)}  ${chalk.gray(`${s.started_at}${s.dominant ? `, доминирует ${s.dominant}` : ''}`)}`);
+      }
+    }
+
+    if (res.hints.length) {
+      console.log(chalk.bold('\n   💡 Выводы:'));
+      for (const h of res.hints) console.log(chalk.yellow(`     • ${h}`));
+    }
+    console.log('');
+  });
+
 program.parse();
