@@ -102,13 +102,40 @@ function getDb() {
   return _db;
 }
 
+// Mirror of isNoopResult() in src/agent-daemon.js (#115) — keep in sync.
+// No-op heartbeats are auto-resolved (feedback='auto') so they never hit the
+// human review queue; errors and real findings stay pending.
+function isNoopResult(action, result) {
+  if (!result || result.error) return false; // errors deserve eyes
+  switch (action) {
+    case 'session-analysis':
+      return (result.new_sessions ?? 0) === 0 && (result.new_observations ?? 0) === 0;
+    case 'db-growth-alert':
+      return result.anomaly !== true;
+    case 'auto-archive':
+      return result.skipped === true;
+    default:
+      return false;
+  }
+}
+
 function logDaemonAction({ action, query, result, dryRun }) {
   try {
     const db = getDb();
+    const noop = isNoopResult(action, result);
     db.prepare(`
-      INSERT INTO agent_actions (agent, query, project, result, dry_run)
-      VALUES (?, ?, ?, ?, ?)
-    `).run('daemon', query ?? null, action, result != null ? JSON.stringify(result) : null, dryRun ? 1 : 0);
+      INSERT INTO agent_actions (agent, query, project, result, dry_run, feedback, feedback_at, feedback_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'daemon',
+      query ?? null,
+      action,
+      result != null ? JSON.stringify(result) : null,
+      dryRun ? 1 : 0,
+      noop ? 'auto' : null,
+      noop ? new Date().toISOString() : null,
+      noop ? 'no-op cycle, auto-resolved' : null,
+    );
   } catch {}
 }
 
