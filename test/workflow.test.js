@@ -12,7 +12,7 @@ import { unlinkSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { classifyObservation, getTimeAllocation, GAP_CAP_MS, CATEGORIES } from '../src/workflow.js';
+import { classifyObservation, getTimeAllocation, getBottlenecks, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS } from '../src/workflow.js';
 
 const TEST_DIR = join(tmpdir(), 'claudeye-workflow-test-' + Date.now());
 const TEST_DB  = join(TEST_DIR, 'test.db');
@@ -132,5 +132,113 @@ describe('getTimeAllocation', () => {
     assert.equal(res.observations, 0);
     assert.equal(res.total_hours, 0);
     assert.deepEqual(res.categories, []);
+  });
+});
+
+describe('getBottlenecks (#28 slice 2)', () => {
+  let bdb;
+  const BDB_PATH = join(TEST_DIR, 'bottlenecks.db');
+
+  before(() => {
+    bdb = new Database(BDB_PATH);
+    bdb.exec(`
+      CREATE TABLE observations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL,
+        project     TEXT NOT NULL,
+        tool        TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        tags        TEXT NOT NULL DEFAULT '[]',
+        created_at  TEXT NOT NULL,
+        duration_ms INTEGER
+      );
+      CREATE TABLE sessions (
+        id             TEXT PRIMARY KEY,
+        project        TEXT NOT NULL,
+        started_at     TEXT NOT NULL,
+        friction_score REAL DEFAULT 0
+      );
+    `);
+    const ins = bdb.prepare(`
+      INSERT INTO observations (session_id, project, tool, summary, tags, created_at, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    // Session S1: churn — src/api.js правится 3 раза (edit-test-edit цикл),
+    // переходы code→debug (gap 300s — дорогой) и debug→code (gap 30s)
+    ins.run('S1', '/p', 'Edit', 'fix handler in src/api.js',   '[]', at(0),    null);
+    ins.run('S1', '/p', 'Bash', 'npm test — 2 failures',       '[]', at(300),  null); // code→debug, 300s
+    ins.run('S1', '/p', 'Edit', 'retry fix src/api.js guard',  '[]', at(330),  null); // debug→code, 30s
+    ins.run('S1', '/p', 'Bash', 'npm test — 1 failure',        '[]', at(630),  null); // code→debug, 300s
+    ins.run('S1', '/p', 'Edit', 'final fix src/api.js',        '[]', at(660),  null); // debug→code, 30s
+    // Session S2: один раз правится другой файл — НЕ churn
+    ins.run('S2', '/p', 'Edit', 'tweak src/other.js once',     '[]', at(0),    null);
+
+    const sess = bdb.prepare(`INSERT INTO sessions (id, project, started_at, friction_score) VALUES (?, ?, ?, ?)`);
+    sess.run('S1', '/p', at(0), 0.8);
+    sess.run('S2', '/p', at(0), 0.1);
+  });
+
+  after(() => {
+    bdb?.close();
+    try { unlinkSync(BDB_PATH); } catch {}
+  });
+
+  it('detects churn file with >= CHURN_MIN_EDITS edits in one session', () => {
+    const res = getBottlenecks({ days: 30, db: bdb, minObs: 1 });
+    assert.equal(res.churn_files.length, 1, 'only src/api.js is churn');
+    assert.equal(res.churn_files[0].file, 'src/api.js');
+    assert.equal(res.churn_files[0].edits, CHURN_MIN_EDITS);
+    assert.equal(res.churn_files[0].sessions, 1);
+  });
+
+  it('ranks transitions by avg cost: code→debug (300s) above debug→code (30s)', () => {
+    const res = getBottlenecks({ days: 30, db: bdb, minObs: 1 });
+    const t = Object.fromEntries(res.transitions.map(x => [`${x.from}→${x.to}`, x]));
+    assert.equal(t['code→debug'].avg_sec, 300);
+    assert.equal(t['code→debug'].count, 2);
+    assert.equal(t['debug→code'].avg_sec, 30);
+    assert.equal(res.transitions[0].from, 'code');
+    assert.equal(res.transitions[0].to, 'debug');
+  });
+
+  it('slow_steps: code steps slower than debug, slowdown relative to overall avg', () => {
+    const res = getBottlenecks({ days: 30, db: bdb, minObs: 1 });
+    const s = Object.fromEntries(res.slow_steps.map(x => [x.category, x]));
+    // code: (300+30+300)/3 = 210s... wait: S1 code obs gaps 300,300 + tail 60; S2 tail 60
+    assert.ok(s.code.avg_sec > s.debug.avg_sec, `code ${s.code.avg_sec}s > debug ${s.debug.avg_sec}s`);
+    assert.ok(res.overall_avg_sec > 0);
+    assert.ok(Math.abs(s.code.slowdown - s.code.avg_sec / res.overall_avg_sec) < 0.05);
+  });
+
+  it('friction_sessions sorted by score, dominant category attached', () => {
+    const res = getBottlenecks({ days: 30, db: bdb, minObs: 1 });
+    assert.equal(res.friction_sessions[0].id, 'S1');
+    assert.equal(res.friction_sessions[0].friction_score, 0.8);
+    assert.ok(CATEGORIES.includes(res.friction_sessions[0].dominant));
+  });
+
+  it('minObs filters thin categories from slow_steps', () => {
+    const res = getBottlenecks({ days: 30, db: bdb, minObs: 10 });
+    assert.deepEqual(res.slow_steps, []);
+  });
+
+  it('works without sessions table (graceful degradation)', () => {
+    const res = getBottlenecks({ days: 30, db, minObs: 1 }); // основная тестовая БД без sessions
+    assert.deepEqual(res.friction_sessions, []);
+    assert.ok(res.observations > 0);
+  });
+
+  it('produces churn hint', () => {
+    const res = getBottlenecks({ days: 30, db: bdb, minObs: 1 });
+    assert.ok(res.hints.some(h => h.includes('src/api.js')), `hints: ${JSON.stringify(res.hints)}`);
+  });
+
+  it('empty window: no crash, empty lists', () => {
+    const res = getBottlenecks({ days: 30, project: '/nope', db: bdb });
+    assert.equal(res.observations, 0);
+    assert.deepEqual(res.slow_steps, []);
+    assert.deepEqual(res.transitions, []);
+    assert.deepEqual(res.churn_files, []);
+    assert.deepEqual(res.hints, []);
   });
 });
