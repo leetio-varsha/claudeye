@@ -165,7 +165,32 @@ export function getDaemonStatus() {
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
 /**
+ * Is this daemon cycle result a no-op (nothing found, nothing done)?
+ * No-op heartbeats are auto-resolved (feedback='auto') so they never hit the
+ * human review queue — there is no verdict a human could meaningfully give
+ * to "0 new sessions" or "no anomaly". Real findings stay pending (#115).
+ *
+ * @param {string} action — daemon action identifier
+ * @param {object|null} result
+ * @returns {boolean}
+ */
+export function isNoopResult(action, result) {
+  if (!result || result.error) return false; // errors deserve eyes
+  switch (action) {
+    case 'session-analysis':
+      return (result.new_sessions ?? 0) === 0 && (result.new_observations ?? 0) === 0;
+    case 'db-growth-alert':
+      return result.anomaly !== true;
+    case 'auto-archive':
+      return result.skipped === true;
+    default:
+      return false;
+  }
+}
+
+/**
  * Log a daemon action to agent_actions.
+ * No-op results are auto-resolved (feedback='auto') — see isNoopResult().
  * @param {object} opts
  * @param {string}  opts.action     — action name (e.g., 'session-analysis')
  * @param {string}  [opts.query]    — description of what was checked
@@ -175,15 +200,19 @@ export function getDaemonStatus() {
 function logDaemonAction({ action, query = null, result = null, dryRun = false }) {
   try {
     const db = getDb();
+    const noop = isNoopResult(action, result);
     db.prepare(`
-      INSERT INTO agent_actions (agent, query, project, result, dry_run)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO agent_actions (agent, query, project, result, dry_run, feedback, feedback_at, feedback_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       'daemon',
       query,
       action,  // reuse project column as action identifier
       result != null ? JSON.stringify(result) : null,
       dryRun ? 1 : 0,
+      noop ? 'auto' : null,
+      noop ? new Date().toISOString() : null,
+      noop ? 'no-op cycle, auto-resolved' : null,
     );
   } catch {
     // Non-critical
