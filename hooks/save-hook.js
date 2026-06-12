@@ -81,6 +81,18 @@ async function main() {
     const SKIP_TOOLS = new Set(['TodoRead', 'mcp__mem__search']);
     if (SKIP_TOOLS.has(tool)) process.exit(0);
 
+    // (#116) Ingest dedup: skip consecutive duplicate Bash/Read events.
+    // Heavy quota-sessions repeat identical commands/paths back-to-back —
+    // they add no information and bloat the DB (+20–36 MB/день). Checked
+    // BEFORE AI compression, so duplicates also save an API call.
+    const DEDUP_TOOLS = new Set(['Bash', 'Read']);
+    if (DEDUP_TOOLS.has(tool)) {
+      try {
+        const { isConsecutiveDuplicate } = await import(srcDir + 'db.js');
+        if (isConsecutiveDuplicate({ sessionId, tool, rawInput: input })) process.exit(0);
+      } catch { /* non-critical — fall through to normal save */ }
+    }
+
     // AI compress (input/output already sanitized via stripPrivate above)
     const { summary, tags, importance, decisionRationale, aiCompressed, fallbackReason } = await compressObservation({
       tool, input, output, project,
@@ -94,12 +106,27 @@ async function main() {
     // Skip noise
     if (importance < 0.1) process.exit(0);
 
+    // (#116) Decisions dedup: the ×16 spike was the same rationale re-extracted
+    // on every turn of a heavy session. Keep the observation, but drop the
+    // duplicate rationale (and its 'decision' tag) so decisions count stays honest.
+    let finalRationale = decisionRationale;
+    let finalTags = tags;
+    if (finalRationale) {
+      try {
+        const { hasDuplicateDecision } = await import(srcDir + 'db.js');
+        if (hasDuplicateDecision(sessionId, finalRationale)) {
+          finalRationale = null;
+          finalTags = tags.filter(t => t !== 'decision');
+        }
+      } catch { /* non-critical — keep rationale */ }
+    }
+
     // Store observation (raw fields are already stripped of private content)
     const obsId = saveObservation({
       sessionId, project, tool, summary,
       rawInput:  input,
       rawOutput: output,
-      tags, importance, decisionRationale,
+      tags: finalTags, importance, decisionRationale: finalRationale,
       durationMs: eventDuration ?? null,  // (#81) from hook event if available
     });
 
@@ -133,8 +160,8 @@ async function main() {
       const { addObservationToGraph } = await import(srcDir + 'graph.js');
       addObservationToGraph({
         id: obsId, project, tool, summary,
-        tags: JSON.stringify(tags),
-        importance, decision_rationale: decisionRationale,
+        tags: JSON.stringify(finalTags),
+        importance, decision_rationale: finalRationale,
         raw_input: input,
       });
     } catch { /* non-critical */ }

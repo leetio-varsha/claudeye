@@ -13,7 +13,7 @@
  * Exits 0 on success, 1 on fatal error — but ALWAYS prints valid JSON.
  */
 
-import { getDb } from '../src/db.js';
+import { getDb, recordDbSize } from '../src/db.js';
 
 function safeVal(db, sql) {
   try { return db.prepare(sql).get(); }
@@ -76,6 +76,12 @@ function run() {
       FROM agent_actions
     `),
     last_agent_action_at: safeVal(db, 'SELECT MAX(created_at) AS at FROM agent_actions'),
+    // #116 — db growth tracked in db_size_log so the analyzer doesn't compute
+    // page_count × page_size deltas by hand. growthMbPerDay is null on first run.
+    db_growth: (() => {
+      try { return recordDbSize(); }
+      catch (e) { return { error: e.message }; }
+    })(),
   };
 
   return result;

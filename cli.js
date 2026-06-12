@@ -870,6 +870,50 @@ program.command('compact')
     console.log('');
   });
 
+// ─── retention (#116) ──────────────────────────────────────────────────────
+
+program.command('retention')
+  .description('Prune old low-importance observations from heavy sessions (quota-сессии 450+ turns)')
+  .option('--days <n>', 'Prune observations older than N days (default 7, settings: heavy_session_retention_days)')
+  .option('--threshold <n>', 'Session is "heavy" above N observations (default 300, settings: heavy_session_obs_threshold)')
+  .option('--dry-run', 'Show what would be pruned without changes')
+  .option('--no-vacuum', 'Skip VACUUM after pruning')
+  .action(async (opts) => {
+    const { pruneHeavySessions, getDbMetrics } = await import('./src/db.js');
+    const ora = (await import('ora')).default;
+
+    const olderThanDays = opts.days ? parseInt(opts.days, 10) : undefined;
+    const obsThreshold  = opts.threshold ? parseInt(opts.threshold, 10) : undefined;
+    if (opts.days && (isNaN(olderThanDays) || olderThanDays < 1)) {
+      console.error(chalk.red('  --days must be a positive integer')); process.exit(1);
+    }
+    if (opts.threshold && (isNaN(obsThreshold) || obsThreshold < 1)) {
+      console.error(chalk.red('  --threshold must be a positive integer')); process.exit(1);
+    }
+
+    const before = getDbMetrics();
+    console.log(chalk.bold('\n  Claudeye Retention (#116 heavy sessions)\n'));
+    console.log(`  DB size: ${chalk.cyan(before.fileSizeMB + 'MB')} | Observations: ${chalk.cyan(before.obsCount)}\n`);
+
+    const spinner = ora(opts.dryRun ? 'Calculating...' : 'Pruning heavy sessions...').start();
+    const result = pruneHeavySessions({ olderThanDays, obsThreshold, dryRun: opts.dryRun, vacuum: opts.vacuum });
+
+    const { obsThreshold: t, olderThanDays: d } = result.config;
+    if (result.pruned === 0) {
+      spinner.succeed(`Nothing to prune (heavy sessions: ${result.sessions}, threshold > ${t} obs, older than ${d}d).`);
+    } else if (opts.dryRun) {
+      spinner.info(`Would prune ${chalk.yellow(result.pruned)} observations from ${chalk.yellow(result.sessions)} heavy sessions (> ${t} obs, importance < 0.5, older than ${d}d).`);
+    } else {
+      spinner.succeed(`Pruned ${chalk.green(result.pruned)} observations from ${chalk.green(result.sessions)} heavy sessions.`);
+      if (result.freedMB !== undefined) {
+        const after = getDbMetrics();
+        console.log(`    VACUUM freed ${chalk.green(result.freedMB + 'MB')} — DB now ${chalk.cyan(after.fileSizeMB + 'MB')}`);
+      }
+      console.log(`    ${chalk.gray('Kept: importance >= 0.5, decisions, git-commit, последние ' + d + ' дней.')}`);
+    }
+    console.log('');
+  });
+
 // ─── archive (#30) ────────────────────────────────────────────────────────
 
 program.command('archive')

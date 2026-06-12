@@ -263,6 +263,15 @@ function _migrateAnalytics(db) {
       );
       CREATE INDEX IF NOT EXISTS idx_share_tokens_expires ON share_tokens(expires_at);
     `);
+
+    // Daily DB size log for growth tracking (#116)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS db_size_log (
+        day        TEXT PRIMARY KEY,                -- YYYY-MM-DD
+        size_mb    REAL NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
   } catch (err) {
     console.error('[mem:db] analytics migration failed:', err.message);
   }
@@ -1636,6 +1645,171 @@ export function archiveObservations({
   }
 
   return { archived: candidateCount, archivePath: ARCHIVE_PATH, dryRun: false, freedMB };
+}
+
+// ─── Heavy-session retention & ingest dedup (#116) ──────────────────────────
+
+/**
+ * Read retention settings from ~/.claudeye/settings.json (#116).
+ * All fields optional — defaults used if missing.
+ *
+ * @returns {{ obsThreshold?: number, olderThanDays?: number }}
+ *   heavy_session_obs_threshold  — session counts as "heavy" above N observations (default 300)
+ *   heavy_session_retention_days — prune low-importance obs older than N days (default 7)
+ */
+function readRetentionSettings() {
+  try {
+    const p = join(DATA_DIR, 'settings.json');
+    if (!existsSync(p)) return {};
+    const cfg = JSON.parse(readFileSync(p, 'utf8'));
+    const out = {};
+    const threshold = parseInt(cfg.heavy_session_obs_threshold ?? cfg.heavySessionObsThreshold, 10);
+    if (Number.isFinite(threshold) && threshold > 0) out.obsThreshold = threshold;
+    const days = parseInt(cfg.heavy_session_retention_days ?? cfg.heavySessionRetentionDays, 10);
+    if (Number.isFinite(days) && days > 0) out.olderThanDays = days;
+    return out;
+  } catch { return {}; }
+}
+
+/**
+ * Prune old low-importance observations from heavy sessions (#116).
+ *
+ * Heavy host-sessions (quota-сессии, 450+ turns) generate obs spikes that grow
+ * the DB by 20–36 MB/day. Auto-archive (#30) only fires above 250MB and keeps
+ * everything < 14d old, so a fresh spike sits in hot DB for two weeks.
+ *
+ * Policy (safe for search quality):
+ *  - Only sessions with > obsThreshold observations are touched.
+ *  - Only obs older than olderThanDays with importance < 0.5 are deleted —
+ *    these are NOT in the embeddable set (#106), so embedding coverage
+ *    cannot drop.
+ *  - Decisions (decision_rationale IS NOT NULL) and git-commit obs are kept.
+ *  - Embeddings are removed via FK cascade; FTS via triggers.
+ *
+ * @param {object} opts
+ * @param {number}  opts.olderThanDays — age cutoff in days (default 7, settings: heavy_session_retention_days)
+ * @param {number}  opts.obsThreshold  — heavy session threshold (default 300, settings: heavy_session_obs_threshold)
+ * @param {boolean} opts.dryRun        — count without deleting (default false)
+ * @param {boolean} opts.vacuum        — VACUUM after deletion (default true)
+ * @returns {{ sessions: number, pruned: number, dryRun: boolean, freedMB?: number, config: object }}
+ */
+export function pruneHeavySessions({ olderThanDays, obsThreshold, dryRun = false, vacuum = true } = {}) {
+  const db = getDb();
+  const cfg = readRetentionSettings();
+  const THRESHOLD = obsThreshold  ?? cfg.obsThreshold  ?? 300;
+  const DAYS      = olderThanDays ?? cfg.olderThanDays ?? 7;
+
+  const cutoff = new Date(Date.now() - DAYS * 86_400_000)
+    .toISOString().replace('T', ' ').slice(0, 19);
+
+  const config = { obsThreshold: THRESHOLD, olderThanDays: DAYS };
+
+  const heavySessions = db.prepare(`
+    SELECT session_id FROM observations
+    GROUP BY session_id HAVING COUNT(*) > ?
+  `).all(THRESHOLD).map(r => r.session_id);
+
+  if (heavySessions.length === 0) return { sessions: 0, pruned: 0, dryRun, config };
+
+  const placeholders = heavySessions.map(() => '?').join(',');
+  const whereSql = `
+    session_id IN (${placeholders})
+      AND created_at < ?
+      AND importance < 0.5
+      AND decision_rationale IS NULL
+      AND tool != 'git-commit'
+  `;
+
+  const candidates = db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE ${whereSql}`)
+    .get(...heavySessions, cutoff).n;
+
+  if (dryRun || candidates === 0) {
+    return { sessions: heavySessions.length, pruned: candidates, dryRun, config };
+  }
+
+  const sizeBefore = (() => { try { return statSync(DB_PATH).size; } catch { return 0; } })();
+
+  db.prepare(`DELETE FROM observations WHERE ${whereSql}`).run(...heavySessions, cutoff);
+
+  let freedMB;
+  if (vacuum) {
+    try {
+      db.exec('VACUUM');
+      const sizeAfter = (() => { try { return statSync(DB_PATH).size; } catch { return 0; } })();
+      freedMB = +((sizeBefore - sizeAfter) / 1024 / 1024).toFixed(1);
+    } catch { /* non-critical */ }
+  }
+
+  return { sessions: heavySessions.length, pruned: candidates, dryRun: false, freedMB, config };
+}
+
+/**
+ * Check whether the incoming event duplicates the most recent observation of
+ * the same session (#116 ingest sanitization). Heavy sessions repeat identical
+ * Bash/Read calls back-to-back — those add no information.
+ *
+ * Compared on (tool, raw_input) of the LAST observation only, so legitimate
+ * re-runs later in the session are still recorded.
+ *
+ * @returns {boolean}
+ */
+export function isConsecutiveDuplicate({ sessionId, tool, rawInput }) {
+  if (!sessionId || !tool || !rawInput) return false;
+  const db = getDb();
+  const last = db.prepare(`
+    SELECT tool, raw_input FROM observations
+    WHERE session_id = ? ORDER BY id DESC LIMIT 1
+  `).get(sessionId);
+  if (!last || last.tool !== tool || last.raw_input == null) return false;
+  return last.raw_input === String(rawInput).slice(0, 2000);
+}
+
+/**
+ * True if this session already stored an observation with the exact same
+ * decision_rationale (#116 — decisions ×16 spike was identical rationale
+ * re-extracted on every turn of a heavy session).
+ *
+ * @returns {boolean}
+ */
+export function hasDuplicateDecision(sessionId, rationale) {
+  if (!sessionId || !rationale) return false;
+  const db = getDb();
+  return !!db.prepare(`
+    SELECT 1 FROM observations
+    WHERE session_id = ? AND decision_rationale = ? LIMIT 1
+  `).get(sessionId, rationale);
+}
+
+/**
+ * Record today's DB size in db_size_log and compute growth vs the previous
+ * recorded day (#116 — analyzer metric db_growth_mb_per_day, so the analyzer
+ * stops computing page_count × page_size deltas by hand).
+ *
+ * Idempotent per day (upsert) — repeated runs refresh today's size.
+ *
+ * @returns {{ day: string, sizeMB: number, growthMbPerDay: number|null, prevDay: string|null, daysSpan: number|null }}
+ */
+export function recordDbSize() {
+  const db = getDb();
+  let sizeMB = 0;
+  try { sizeMB = +(statSync(DB_PATH).size / 1024 / 1024).toFixed(2); } catch { /* keep 0 */ }
+
+  const day = new Date().toISOString().slice(0, 10);
+  const prev = db.prepare(`
+    SELECT day, size_mb FROM db_size_log WHERE day < ? ORDER BY day DESC LIMIT 1
+  `).get(day);
+
+  db.prepare(`
+    INSERT INTO db_size_log (day, size_mb) VALUES (?, ?)
+    ON CONFLICT(day) DO UPDATE SET size_mb = excluded.size_mb
+  `).run(day, sizeMB);
+
+  let growthMbPerDay = null, daysSpan = null;
+  if (prev) {
+    daysSpan = Math.max(1, Math.round((Date.parse(day) - Date.parse(prev.day)) / 86_400_000));
+    growthMbPerDay = +((sizeMB - prev.size_mb) / daysSpan).toFixed(2);
+  }
+  return { day, sizeMB, growthMbPerDay, prevDay: prev?.day ?? null, daysSpan };
 }
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
