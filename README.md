@@ -230,6 +230,10 @@ claudeye import cowork
 claudeye import cowork --force               # wipes + re-imports (applies new filters)
 claudeye cleanup --cowork-noise              # also clears already-imported noise/dupes
 
+# Heavy-session retention (#116) — prune old low-importance obs from 450+ turn sessions
+claudeye retention --dry-run                 # preview (default: > 300 obs, older than 7d, importance < 0.5)
+claudeye retention                           # prune + VACUUM; decisions/git-commit always kept
+
 # Injection stats (#90) — RAG "tax" per user prompt
 claudeye injection-stats                     # last 7 days, p50/p95/p99
 claudeye injection-stats -d 30 -p /path      # scope to project / window
