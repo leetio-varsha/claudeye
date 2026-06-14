@@ -9,6 +9,12 @@
  * категориями, churn-файлы (многократные правки в одной сессии),
  * high-friction сессии.
  *
+ * Slice 3: Personal benchmarks — твоя скорость vs твоя средняя, тренд по
+ * неделям. Каждая observation бакетится в свою ISO-неделю (понедельник UTC),
+ * активное время оценивается тем же gap-методом. Для последней недели
+ * считаются дельты к личному среднему и направление тренда (least-squares
+ * slope) по каждой метрике.
+ *
  * Время оценивается gap-методом: интервал между соседними observations
  * внутри сессии приписывается категории текущей observation, с капом
  * (паузы > GAP_CAP_MS считаются перерывом и не учитываются).
@@ -315,6 +321,159 @@ export function getBottlenecks({ days = 30, project = null, top = 5, minObs = 5,
     transitions,
     churn_files,
     friction_sessions,
+    hints,
+  };
+}
+
+// ─── Slice 3: Personal benchmarks ────────────────────────────────────────────
+
+// Метрики, по которым считаются benchmark/тренд. Помечаем «больше = лучше»:
+// для производных (throughput) рост хорош, для часов/объёма — нейтрально.
+export const BENCHMARK_METRICS = [
+  { key: 'active_hours',    higher_is_better: null },
+  { key: 'observations',    higher_is_better: null },
+  { key: 'sessions',        higher_is_better: null },
+  { key: 'obs_per_hour',    higher_is_better: true  },
+  { key: 'avg_session_obs', higher_is_better: true  },
+];
+
+/**
+ * Понедельник (UTC) недели, содержащей дату, в формате YYYY-MM-DD.
+ * @param {string} dateStr — ISO-ish datetime
+ * @returns {string}
+ */
+export function weekStart(dateStr) {
+  const d = new Date(dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z');
+  const day = d.getUTCDay();                  // 0=Вс..6=Сб
+  const diff = day === 0 ? -6 : 1 - day;      // сдвиг к понедельнику
+  const mon = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + diff));
+  return mon.toISOString().slice(0, 10);
+}
+
+/**
+ * Направление тренда по ряду значений: least-squares slope, нормированный
+ * на среднее. Возвращает 'up' | 'down' | 'flat'.
+ * @param {number[]} vals — в хронологическом порядке
+ * @param {number} [eps=0.03] — порог относительного наклона за шаг
+ */
+export function trendOf(vals, eps = 0.03) {
+  const n = vals.length;
+  if (n < 2) return 'flat';
+  const mx = (n - 1) / 2;
+  const my = vals.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (i - mx) * (vals[i] - my); den += (i - mx) ** 2; }
+  const slope = den ? num / den : 0;
+  const rel = my ? slope / Math.abs(my) : 0;  // наклон за неделю относительно уровня
+  if (rel > eps) return 'up';
+  if (rel < -eps) return 'down';
+  return 'flat';
+}
+
+/**
+ * Personal benchmarks (#28, slice 3).
+ *
+ * Бьёт окно на ISO-недели, считает по каждой метрику активности и сравнивает
+ * последнюю завершённую динамику с личным средним за окно.
+ *
+ * @param {object} [opts]
+ * @param {number}  [opts.weeks=8]   — сколько недель назад смотреть
+ * @param {string}  [opts.project]   — фильтр по полному пути проекта
+ * @param {object}  [opts.db]        — injectable for tests
+ * @returns {{weeks:number, project:string|null, observations:number,
+ *            weeks_data:object[], benchmarks:object[], hints:string[]}}
+ */
+export function getPersonalBenchmarks({ weeks = 8, project = null, db = null } = {}) {
+  db = db || getDb();
+  const days = weeks * 7;
+
+  const where = [
+    `o.created_at >= datetime('now', '-' || ? || ' days')`,
+    `o.tool NOT IN (${IMPORT_TOOLS.map(t => `'${t}'`).join(',')})`,
+  ];
+  const args = [days];
+  if (project) { where.push('o.project = ?'); args.push(project); }
+
+  const rows = db.prepare(`
+    SELECT o.session_id, o.tool, o.created_at, o.duration_ms
+    FROM observations o
+    WHERE ${where.join(' AND ')}
+    ORDER BY o.session_id, o.created_at
+  `).all(...args);
+
+  const wk = new Map(); // weekKey → { ms, observations, sessions:Set }
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const next = rows[i + 1];
+    let ms;
+    if (next && next.session_id === row.session_id) {
+      const gap = new Date(next.created_at) - new Date(row.created_at);
+      ms = gap > 0 ? Math.min(gap, GAP_CAP_MS) : (row.duration_ms || TAIL_MS);
+    } else {
+      ms = Math.min(row.duration_ms || TAIL_MS, GAP_CAP_MS);
+    }
+    const key = weekStart(row.created_at);
+    let b = wk.get(key);
+    if (!b) { b = { ms: 0, observations: 0, sessions: new Set() }; wk.set(key, b); }
+    b.ms += ms; b.observations += 1; b.sessions.add(row.session_id);
+  }
+
+  const weeks_data = [...wk.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([week, b]) => {
+      const hours = b.ms / 3600000;
+      return {
+        week,
+        observations:    b.observations,
+        sessions:        b.sessions.size,
+        active_hours:    +hours.toFixed(2),
+        obs_per_hour:    hours > 0 ? +(b.observations / hours).toFixed(1) : 0,
+        avg_session_obs: b.sessions.size ? +(b.observations / b.sessions.size).toFixed(1) : 0,
+      };
+    });
+
+  const latest = weeks_data[weeks_data.length - 1] || null;
+
+  const benchmarks = BENCHMARK_METRICS.map(({ key, higher_is_better }) => {
+    const vals = weeks_data.map(w => w[key]);
+    const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+    const cur = latest ? latest[key] : 0;
+    return {
+      metric:       key,
+      latest:       cur,
+      personal_avg: +avg.toFixed(2),
+      vs_avg_pct:   avg ? +(((cur - avg) / avg) * 100).toFixed(1) : 0,
+      trend:        trendOf(vals),
+      higher_is_better,
+    };
+  });
+
+  // Hints — человекочитаемые выводы по производным метрикам (throughput)
+  const hints = [];
+  if (weeks_data.length >= 2 && latest) {
+    const tp = benchmarks.find(b => b.metric === 'obs_per_hour');
+    if (tp && tp.vs_avg_pct >= 15) {
+      hints.push(`На этой неделе throughput ${tp.latest} obs/ч — на ${tp.vs_avg_pct}% выше личного среднего (${tp.personal_avg}).`);
+    } else if (tp && tp.vs_avg_pct <= -15) {
+      hints.push(`Throughput просел до ${tp.latest} obs/ч — на ${Math.abs(tp.vs_avg_pct)}% ниже личного среднего (${tp.personal_avg}); возможно, неделя ушла в research/debug.`);
+    }
+    if (tp && tp.trend === 'up') {
+      hints.push(`Тренд throughput за ${weeks_data.length} недель — растущий: скорость работы повышается.`);
+    } else if (tp && tp.trend === 'down') {
+      hints.push(`Тренд throughput за ${weeks_data.length} недель — падающий: стоит посмотреть bottlenecks.`);
+    }
+    const ah = benchmarks.find(b => b.metric === 'active_hours');
+    if (ah && ah.vs_avg_pct <= -25 && tp && tp.vs_avg_pct >= 0) {
+      hints.push(`Активных часов меньше среднего на ${Math.abs(ah.vs_avg_pct)}%, но throughput не упал — неделя получилась эффективнее.`);
+    }
+  }
+
+  return {
+    weeks,
+    project,
+    observations: rows.length,
+    weeks_data,
+    benchmarks,
     hints,
   };
 }
