@@ -2846,4 +2846,48 @@ workflowCmd
     console.log('');
   });
 
+workflowCmd
+  .command('benchmarks')
+  .description('Personal benchmarks: скорость vs твоя средняя, тренд по неделям (#28)')
+  .option('-w, --weeks <n>', 'Window in weeks', '8')
+  .option('-p, --project <path>', 'Filter by project path')
+  .option('--json', 'Machine-readable output')
+  .action(async (opts) => {
+    const { getPersonalBenchmarks } = await import('./src/workflow.js');
+    const res = getPersonalBenchmarks({ weeks: parseInt(opts.weeks, 10) || 8, project: opts.project || null });
+
+    if (opts.json) { console.log(JSON.stringify(res, null, 2)); return; }
+
+    if (!res.weeks_data.length) {
+      console.log(chalk.yellow(`\n  No observations in the last ${res.weeks} weeks${res.project ? ` for ${res.project}` : ''}.\n`));
+      return;
+    }
+
+    const scope = res.project ? res.project.replace(process.env.HOME || '', '~') : 'all projects';
+    console.log(chalk.bold(`\n📈 Personal Benchmarks — last ${res.weeks} weeks, ${scope}`));
+    console.log(chalk.gray(`   ${res.weeks_data.length} active weeks, ${res.observations} observations\n`));
+
+    console.log(chalk.bold('   Week        obs   sess   active h   obs/h'));
+    for (const w of res.weeks_data) {
+      console.log(`   ${w.week}  ${String(w.observations).padStart(4)}  ${String(w.sessions).padStart(5)}  ${String(w.active_hours).padStart(8)}  ${chalk.blue(String(w.obs_per_hour).padStart(6))}`);
+    }
+
+    const arrow = (t) => t === 'up' ? chalk.green('↑') : t === 'down' ? chalk.red('↓') : chalk.gray('→');
+    const labels = { active_hours: 'active hours', observations: 'observations', sessions: 'sessions', obs_per_hour: 'throughput (obs/h)', avg_session_obs: 'obs/session' };
+    console.log(chalk.bold('\n   This week vs personal average:'));
+    for (const b of res.benchmarks) {
+      const sign = b.vs_avg_pct > 0 ? '+' : '';
+      // colour the delta only for metrics where direction has a clear good/bad
+      let delta = `${sign}${b.vs_avg_pct}%`;
+      if (b.higher_is_better === true) delta = b.vs_avg_pct >= 0 ? chalk.green(delta) : chalk.red(delta);
+      console.log(`     ${(labels[b.metric] || b.metric).padEnd(20)} ${String(b.latest).padStart(7)}  vs avg ${String(b.personal_avg).padStart(7)}  ${delta.padStart(7)}  ${arrow(b.trend)}`);
+    }
+
+    if (res.hints.length) {
+      console.log(chalk.bold('\n   💡 Выводы:'));
+      for (const h of res.hints) console.log(chalk.yellow(`     • ${h}`));
+    }
+    console.log('');
+  });
+
 program.parse();

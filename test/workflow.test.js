@@ -12,7 +12,7 @@ import { unlinkSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { classifyObservation, getTimeAllocation, getBottlenecks, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS } from '../src/workflow.js';
+import { classifyObservation, getTimeAllocation, getBottlenecks, getPersonalBenchmarks, weekStart, trendOf, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS } from '../src/workflow.js';
 
 const TEST_DIR = join(tmpdir(), 'claudeye-workflow-test-' + Date.now());
 const TEST_DB  = join(TEST_DIR, 'test.db');
@@ -240,5 +240,119 @@ describe('getBottlenecks (#28 slice 2)', () => {
     assert.deepEqual(res.transitions, []);
     assert.deepEqual(res.churn_files, []);
     assert.deepEqual(res.hints, []);
+  });
+});
+
+describe('weekStart', () => {
+  // June 14 2026 is a Sunday → its week's Monday is June 8.
+  it('Sunday maps back to its Monday', () => {
+    assert.equal(weekStart('2026-06-14'), '2026-06-08');
+  });
+  it('Monday maps to itself', () => {
+    assert.equal(weekStart('2026-06-08'), '2026-06-08');
+  });
+  it('midweek maps to its Monday', () => {
+    assert.equal(weekStart('2026-06-10 13:45:00'), '2026-06-08');
+  });
+  it('next Monday starts a new week', () => {
+    assert.equal(weekStart('2026-06-15'), '2026-06-15');
+  });
+});
+
+describe('trendOf', () => {
+  it('rising series → up', () => assert.equal(trendOf([1, 2, 3, 4]), 'up'));
+  it('falling series → down', () => assert.equal(trendOf([4, 3, 2, 1]), 'down'));
+  it('flat series → flat', () => assert.equal(trendOf([5, 5, 5, 5]), 'flat'));
+  it('single point → flat', () => assert.equal(trendOf([5]), 'flat'));
+});
+
+describe('getPersonalBenchmarks (#28 slice 3)', () => {
+  let pdb;
+  const PDB_PATH = join(TEST_DIR, 'benchmarks.db');
+  // place an observation `daysAgo` in the past, at HH:MM (UTC) — minutes apart
+  // → controls both ISO-week bucket and within-session gaps
+  const dayAt = (daysAgo, min) => {
+    const d = new Date(Date.now() - daysAgo * 86400000);
+    d.setUTCHours(12, min, 0, 0);
+    return d.toISOString().replace('T', ' ').slice(0, 19);
+  };
+
+  before(() => {
+    pdb = new Database(PDB_PATH);
+    pdb.exec(`
+      CREATE TABLE observations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL,
+        project     TEXT NOT NULL,
+        tool        TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        tags        TEXT NOT NULL DEFAULT '[]',
+        created_at  TEXT NOT NULL,
+        duration_ms INTEGER
+      );
+    `);
+    const ins = pdb.prepare(`
+      INSERT INTO observations (session_id, project, tool, summary, tags, created_at, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    // Old week (~17 days ago): slow — 3 obs, gaps 10 min → low throughput
+    ins.run('w1', '/p', 'Edit', 'work', '[]', dayAt(17, 0),  null);
+    ins.run('w1', '/p', 'Edit', 'work', '[]', dayAt(17, 10), null);
+    ins.run('w1', '/p', 'Edit', 'work', '[]', dayAt(17, 20), null);
+    // Mid week (~10 days ago): 3 obs, gaps 5 min
+    ins.run('w2', '/p', 'Edit', 'work', '[]', dayAt(10, 0),  null);
+    ins.run('w2', '/p', 'Edit', 'work', '[]', dayAt(10, 5),  null);
+    ins.run('w2', '/p', 'Edit', 'work', '[]', dayAt(10, 10), null);
+    // Latest week (~3 days ago): fast — 4 obs, gaps 1 min → high throughput
+    ins.run('w3', '/p', 'Edit', 'work', '[]', dayAt(3, 0), null);
+    ins.run('w3', '/p', 'Edit', 'work', '[]', dayAt(3, 1), null);
+    ins.run('w3', '/p', 'Edit', 'work', '[]', dayAt(3, 2), null);
+    ins.run('w3', '/p', 'Edit', 'work', '[]', dayAt(3, 3), null);
+    // import tool — must be excluded
+    ins.run('w3', '/p', 'git-commit', 'imported', '[]', dayAt(3, 4), null);
+  });
+
+  after(() => {
+    pdb?.close();
+    try { unlinkSync(PDB_PATH); } catch {}
+  });
+
+  it('buckets into 3 ascending weeks, excludes import tools', () => {
+    const res = getPersonalBenchmarks({ weeks: 8, db: pdb });
+    assert.equal(res.observations, 10, 'git-commit excluded');
+    assert.equal(res.weeks_data.length, 3);
+    const ks = res.weeks_data.map(w => w.week);
+    assert.deepEqual([...ks].sort(), ks, 'weeks ascending');
+    assert.equal(res.weeks_data[2].observations, 4, 'latest week has 4 obs');
+  });
+
+  it('reports all benchmark metrics', () => {
+    const res = getPersonalBenchmarks({ weeks: 8, db: pdb });
+    const keys = res.benchmarks.map(b => b.metric).sort();
+    assert.deepEqual(keys, ['active_hours', 'avg_session_obs', 'obs_per_hour', 'observations', 'sessions']);
+  });
+
+  it('latest week throughput beats personal average → up trend, positive delta', () => {
+    const res = getPersonalBenchmarks({ weeks: 8, db: pdb });
+    const tp = res.benchmarks.find(b => b.metric === 'obs_per_hour');
+    assert.equal(tp.trend, 'up');
+    assert.ok(tp.vs_avg_pct > 0, `vs_avg_pct ${tp.vs_avg_pct}`);
+    assert.ok(tp.latest > tp.personal_avg, `latest ${tp.latest} > avg ${tp.personal_avg}`);
+    assert.equal(tp.higher_is_better, true);
+  });
+
+  it('emits a throughput hint when latest is well above average', () => {
+    const res = getPersonalBenchmarks({ weeks: 8, db: pdb });
+    assert.ok(res.hints.some(h => /throughput/i.test(h)), `hints: ${JSON.stringify(res.hints)}`);
+  });
+
+  it('empty window: no crash, empty data', () => {
+    const res = getPersonalBenchmarks({ weeks: 8, project: '/nope', db: pdb });
+    assert.equal(res.observations, 0);
+    assert.deepEqual(res.weeks_data, []);
+    assert.deepEqual(res.hints, []);
+    // benchmarks still listed, all zeroed
+    assert.equal(res.benchmarks.length, 5);
+    assert.ok(res.benchmarks.every(b => b.latest === 0 && b.personal_avg === 0));
   });
 });
