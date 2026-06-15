@@ -282,6 +282,7 @@ claudeye agent learn [--days <n>] [--json]    # advisor analyzes actions → tun
 claudeye workflow time [-d 30] [-p <path>]    # time allocation: code/debug/review/docs/research/ops
 claudeye workflow bottlenecks [-d 30] [-t 5]  # slow steps, costly transitions, churn files, high-friction sessions
 claudeye workflow benchmarks [-w 8] [-p <path>] # personal speed vs your average, trend by week
+claudeye workflow templates [-d 30] [-m 3]    # recommended step order per task type (A→B→C)
 
 # Pattern Detection & Automation
 claudeye patterns                             # repeat-fixes, hotspots, time sinks

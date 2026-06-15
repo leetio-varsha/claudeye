@@ -15,6 +15,12 @@
  * считаются дельты к личному среднему и направление тренда (least-squares
  * slope) по каждой метрике.
  *
+ * Slice 4: Workflow templates — «для задач типа X оптимальный порядок A→B→C».
+ * Сессии группируются по доминирующей (по времени) категории = тип задачи.
+ * Внутри типа категория попадает в шаблон, если встречается минимум в
+ * TEMPLATE_PRESENCE сессий; порядок шагов = среднее нормированное время первого
+ * появления категории внутри сессии (0 = начало, 1 = конец).
+ *
  * Время оценивается gap-методом: интервал между соседними observations
  * внутри сессии приписывается категории текущей observation, с капом
  * (паузы > GAP_CAP_MS считаются перерывом и не учитываются).
@@ -476,4 +482,135 @@ export function getPersonalBenchmarks({ weeks = 8, project = null, db = null } =
     benchmarks,
     hints,
   };
+}
+
+// ─── Slice 4: Workflow templates ─────────────────────────────────────────────
+
+// Категории-шум: не несут смысла как шаг шаблона
+const TEMPLATE_SKIP = new Set(['other']);
+// Доля сессий типа, в которой категория должна встречаться, чтобы войти в шаблон
+export const TEMPLATE_PRESENCE = 0.5;
+
+/**
+ * Workflow templates (#28, slice 4).
+ *
+ * Для каждого «типа задачи» (доминирующая по времени категория сессии)
+ * выводит рекомендованный порядок шагов: категории, встречающиеся минимум в
+ * TEMPLATE_PRESENCE сессий этого типа, упорядоченные по среднему нормированному
+ * времени первого появления внутри сессии.
+ *
+ * Чистый SQLite + JS, без внешних вызовов. friction_score — опционально
+ * (graceful degradation, если таблицы sessions нет — как в тестовой БД).
+ *
+ * @param {object} [opts]
+ * @param {number}  [opts.days=30]
+ * @param {string}  [opts.project]     — фильтр по полному пути проекта
+ * @param {number}  [opts.minSessions=3] — мин. сессий типа, чтобы вывести шаблон
+ * @param {object}  [opts.db]          — injectable for tests
+ * @returns {{days:number, project:string|null, observations:number, sessions:number,
+ *            templates: object[], hints:string[]}}
+ */
+export function getWorkflowTemplates({ days = 30, project = null, minSessions = 3, db = null } = {}) {
+  db = db || getDb();
+
+  const where = [
+    `o.created_at >= datetime('now', '-' || ? || ' days')`,
+    `o.tool NOT IN (${IMPORT_TOOLS.map(t => `'${t}'`).join(',')})`,
+  ];
+  const args = [days];
+  if (project) { where.push('o.project = ?'); args.push(project); }
+
+  const rows = db.prepare(`
+    SELECT o.session_id, o.tool, o.tags, o.summary, o.created_at, o.duration_ms
+    FROM observations o
+    WHERE ${where.join(' AND ')}
+    ORDER BY o.session_id, o.created_at
+  `).all(...args);
+
+  // Сгруппировать observations по сессии с gap-оценкой времени категории
+  const bySession = new Map(); // session_id → [{ cat, ms }]
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const next = rows[i + 1];
+    let ms;
+    if (next && next.session_id === row.session_id) {
+      const gap = new Date(next.created_at) - new Date(row.created_at);
+      ms = gap > 0 ? Math.min(gap, GAP_CAP_MS) : (row.duration_ms || TAIL_MS);
+    } else {
+      ms = Math.min(row.duration_ms || TAIL_MS, GAP_CAP_MS);
+    }
+    const cat = classifyObservation(row.tool, row.tags, row.summary);
+    let arr = bySession.get(row.session_id);
+    if (!arr) { arr = []; bySession.set(row.session_id, arr); }
+    arr.push({ cat, ms });
+  }
+
+  // friction по сессиям (guard на отсутствие таблицы/колонки в тестовой БД)
+  const fric = new Map();
+  try {
+    const fWhere = [`s.started_at >= datetime('now', '-' || ? || ' days')`];
+    const fArgs = [days];
+    if (project) { fWhere.push('s.project = ?'); fArgs.push(project); }
+    for (const s of db.prepare(`SELECT s.id, s.friction_score FROM sessions s WHERE ${fWhere.join(' AND ')}`).all(...fArgs)) {
+      if (s.friction_score != null) fric.set(s.id, s.friction_score);
+    }
+  } catch { /* нет таблицы sessions */ }
+
+  // Аккумулятор по типам задач (dominant category)
+  const types = new Map(); // dominant → { sessions, friction:[], hours:[], firstIdx: Map(cat→[norm]), present: Map(cat→cnt) }
+
+  for (const [sid, obs] of bySession) {
+    const catMs = {};     // cat → ms (для dominant)
+    const firstAt = {};   // cat → индекс первого появления
+    obs.forEach((o, idx) => {
+      catMs[o.cat] = (catMs[o.cat] || 0) + o.ms;
+      if (firstAt[o.cat] === undefined) firstAt[o.cat] = idx;
+    });
+    const dominant = Object.entries(catMs).sort((a, b) => b[1] - a[1])[0][0];
+    const denom = Math.max(1, obs.length - 1);
+    let totMs = 0; for (const c in catMs) totMs += catMs[c];
+
+    let g = types.get(dominant);
+    if (!g) { g = { sessions: 0, friction: [], hours: [], firstIdx: new Map(), present: new Map() }; types.set(dominant, g); }
+    g.sessions += 1;
+    if (fric.has(sid)) g.friction.push(fric.get(sid));
+    g.hours.push(totMs / 3600000);
+    for (const cat in firstAt) {
+      if (TEMPLATE_SKIP.has(cat)) continue;
+      const norm = firstAt[cat] / denom;
+      if (!g.firstIdx.has(cat)) g.firstIdx.set(cat, []);
+      g.firstIdx.get(cat).push(norm);
+      g.present.set(cat, (g.present.get(cat) || 0) + 1);
+    }
+  }
+
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+
+  const templates = [...types.entries()]
+    .filter(([, g]) => g.sessions >= minSessions)
+    .map(([type, g]) => {
+      const steps = [...g.present.entries()]
+        .filter(([, cnt]) => cnt / g.sessions >= TEMPLATE_PRESENCE)
+        .map(([cat]) => ({ category: cat, presence: +(g.present.get(cat) / g.sessions).toFixed(2), avg_position: +avg(g.firstIdx.get(cat)).toFixed(2) }))
+        .sort((a, b) => a.avg_position - b.avg_position);
+      return {
+        type,
+        sessions:     g.sessions,
+        sequence:     steps.map(s => s.category),
+        steps,
+        avg_friction: g.friction.length ? +avg(g.friction).toFixed(2) : null,
+        avg_hours:    +avg(g.hours).toFixed(2),
+      };
+    })
+    .sort((a, b) => b.sessions - a.sessions);
+
+  const hints = [];
+  for (const t of templates) {
+    if (t.sequence.length >= 2) {
+      const fr = t.avg_friction != null ? `, средний friction ${t.avg_friction}` : '';
+      hints.push(`Для задач типа «${t.type}» (${t.sessions} сессий${fr}) типичный порядок: ${t.sequence.join(' → ')}.`);
+    }
+  }
+
+  return { days, project, observations: rows.length, sessions: bySession.size, templates, hints };
 }
