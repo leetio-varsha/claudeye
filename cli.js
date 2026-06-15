@@ -2931,4 +2931,59 @@ workflowCmd
     console.log('');
   });
 
+workflowCmd
+  .command('compare')
+  .description('Before/after: как изменились метрики до и после рекомендации (#28)')
+  .option('-w, --window <n>', 'Длина каждого окна в днях', '14')
+  .option('--pivot <datetime>', 'Граница before/after (по умолч. — дата последнего insight)')
+  .option('-p, --project <path>', 'Filter by project path')
+  .option('--json', 'Machine-readable output')
+  .action(async (opts) => {
+    const { getBeforeAfter } = await import('./src/workflow.js');
+    const res = getBeforeAfter({
+      windowDays: parseInt(opts.window, 10) || 14,
+      pivot:      opts.pivot || null,
+      project:    opts.project || null,
+    });
+
+    if (opts.json) { console.log(JSON.stringify(res, null, 2)); return; }
+
+    if (!res.before.observations && !res.after.observations) {
+      console.log(chalk.yellow(`\n  Нет данных в окнах ±${res.window_days}д вокруг ${res.pivot}${res.project ? ` для ${res.project}` : ''}.\n`));
+      return;
+    }
+
+    const scope = res.project ? res.project.replace(process.env.HOME || '', '~') : 'all projects';
+    const srcLabel = { latest_insight: 'последний insight', explicit: 'задан вручную', default: 'по умолчанию' }[res.pivot_source] || res.pivot_source;
+    console.log(chalk.bold(`\n🔬 Before/After — окна по ${res.window_days}д, ${scope}`));
+    console.log(chalk.gray(`   pivot ${res.pivot} (${srcLabel}) · before ${res.before.observations} obs · after ${res.after.observations} obs\n`));
+
+    const arrow = (d) => d === 'improved' || d === 'up' ? chalk.green('↑') : d === 'regressed' || d === 'down' ? chalk.red('↓') : chalk.gray('→');
+    const labels = { active_hours: 'active hours', observations: 'observations', sessions: 'sessions', obs_per_hour: 'throughput (obs/h)', avg_session_obs: 'obs/session', avg_friction: 'avg friction' };
+    console.log(chalk.bold('   Metric                 before    after    delta'));
+    for (const c of res.comparison) {
+      const b = c.before == null ? '—' : String(c.before);
+      const a = c.after == null ? '—' : String(c.after);
+      let d = c.delta_pct == null ? (c.delta == null ? '—' : (c.delta > 0 ? '+' : '') + c.delta) : (c.delta_pct > 0 ? '+' : '') + c.delta_pct + '%';
+      if (c.direction === 'improved' || c.direction === 'up') d = chalk.green(d);
+      else if (c.direction === 'regressed' || c.direction === 'down') d = chalk.red(d);
+      console.log(`   ${(labels[c.metric] || c.metric).padEnd(20)} ${b.padStart(7)}  ${a.padStart(7)}  ${String(d).padStart(8)}  ${arrow(c.direction)}`);
+    }
+
+    if (res.category_shift.length) {
+      console.log(chalk.bold('\n   Сдвиг по категориям (п.п.):'));
+      for (const s of res.category_shift) {
+        const sign = s.delta_pp > 0 ? '+' : '';
+        const col = s.delta_pp > 0 ? chalk.cyan : chalk.gray;
+        console.log(`     ${s.category.padEnd(9)} ${String(s.before).padStart(5)}% → ${String(s.after).padStart(5)}%  ${col(`${sign}${s.delta_pp}пп`)}`);
+      }
+    }
+
+    if (res.hints.length) {
+      console.log(chalk.bold('\n   💡 Выводы:'));
+      for (const h of res.hints) console.log(chalk.yellow(`     • ${h}`));
+    }
+    console.log('');
+  });
+
 program.parse();

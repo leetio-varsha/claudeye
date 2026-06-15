@@ -614,3 +614,195 @@ export function getWorkflowTemplates({ days = 30, project = null, minSessions = 
 
   return { days, project, observations: rows.length, sessions: bySession.size, templates, hints };
 }
+
+// ─── Slice 5: Before/after comparison ────────────────────────────────────────
+
+/**
+ * Метрики для before/after-сравнения. higher_is_better управляет интерпретацией
+ * дельты: true → рост = улучшение, false → падение = улучшение, null → нейтрально
+ * (просто up/down, без оценки «лучше/хуже»).
+ */
+const COMPARE_METRICS = [
+  { key: 'active_hours',    higher_is_better: null  },
+  { key: 'observations',    higher_is_better: null  },
+  { key: 'sessions',        higher_is_better: null  },
+  { key: 'obs_per_hour',    higher_is_better: true  },
+  { key: 'avg_session_obs', higher_is_better: true  },
+  { key: 'avg_friction',    higher_is_better: false },
+];
+
+/**
+ * created_at последнего insight = дата последней рекомендации. Используется как
+ * pivot по умолчанию («после рекомендации»). Таблица insights может
+ * отсутствовать (graceful degradation) — тогда null.
+ * @returns {string|null} ISO datetime или null
+ */
+function latestInsightAt(db) {
+  try {
+    const row = db.prepare(`SELECT created_at FROM insights ORDER BY created_at DESC LIMIT 1`).get();
+    return row?.created_at || null;
+  } catch { return null; }
+}
+
+/**
+ * Агрегирует активность за окно [startIso, endIso) тем же gap-методом, что и
+ * остальной workflow-движок. Возвращает метрики + распределение времени по
+ * категориям (доли в %).
+ */
+function aggregateWindow(db, startIso, endIso, project) {
+  const where = [
+    `o.created_at >= ?`,
+    `o.created_at < ?`,
+    `o.tool NOT IN (${IMPORT_TOOLS.map(t => `'${t}'`).join(',')})`,
+  ];
+  const args = [startIso, endIso];
+  if (project) { where.push('o.project = ?'); args.push(project); }
+
+  const rows = db.prepare(`
+    SELECT o.session_id, o.tool, o.tags, o.summary, o.created_at, o.duration_ms
+    FROM observations o
+    WHERE ${where.join(' AND ')}
+    ORDER BY o.session_id, o.created_at
+  `).all(...args);
+
+  let totalMs = 0;
+  const sessions = new Set();
+  const catMs = Object.fromEntries(CATEGORIES.map(c => [c, 0]));
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const next = rows[i + 1];
+    let ms;
+    if (next && next.session_id === row.session_id) {
+      const gap = new Date(next.created_at) - new Date(row.created_at);
+      ms = gap > 0 ? Math.min(gap, GAP_CAP_MS) : (row.duration_ms || TAIL_MS);
+    } else {
+      ms = Math.min(row.duration_ms || TAIL_MS, GAP_CAP_MS);
+    }
+    totalMs += ms;
+    sessions.add(row.session_id);
+    catMs[classifyObservation(row.tool, row.tags, row.summary)] += ms;
+  }
+
+  const hours = totalMs / 3600000;
+  const obs = rows.length;
+
+  // Средний friction по затронутым сессиям. Через подзапрос (а не IN-список id),
+  // чтобы не упереться в лимит переменных SQLite на широких окнах.
+  let avgFriction = null;
+  if (sessions.size) {
+    try {
+      const fr = db.prepare(`
+        SELECT AVG(friction_score) a FROM sessions
+        WHERE id IN (SELECT DISTINCT o.session_id FROM observations o WHERE ${where.join(' AND ')})
+      `).get(...args);
+      avgFriction = fr?.a != null ? +fr.a.toFixed(3) : null;
+    } catch { /* sessions table missing — friction unavailable */ }
+  }
+
+  const category_share = {};
+  for (const c of CATEGORIES) {
+    category_share[c] = totalMs > 0 ? +((catMs[c] / totalMs) * 100).toFixed(1) : 0;
+  }
+
+  return {
+    active_hours:    +hours.toFixed(2),
+    observations:    obs,
+    sessions:        sessions.size,
+    obs_per_hour:    hours > 0 ? +(obs / hours).toFixed(1) : 0,
+    avg_session_obs: sessions.size ? +(obs / sessions.size).toFixed(1) : 0,
+    avg_friction:    avgFriction,
+    category_share,
+  };
+}
+
+/**
+ * Before/after comparison (#28, slice 5).
+ *
+ * Делит активность на два окна одинаковой длины — до и после pivot-даты — и
+ * сравнивает метрики, чтобы показать, как изменился workflow «после
+ * рекомендации». Pivot по умолчанию — дата последнего insight (последней
+ * рекомендации); можно задать явно через opts.pivot.
+ *
+ * Каждая метрика получает before/after/delta/delta_pct и direction:
+ *   - higher_is_better=null → 'up' | 'down' | 'flat' (нейтрально)
+ *   - higher_is_better заданo → 'improved' | 'regressed' | 'flat'
+ * Дельта в пределах ±5% от before считается 'flat'.
+ *
+ * @param {object} [opts]
+ * @param {number}  [opts.windowDays=14] — длина каждого окна в днях
+ * @param {string}  [opts.pivot]         — ISO datetime границы (по умолч. — последний insight)
+ * @param {string}  [opts.project]       — фильтр по полному пути проекта
+ * @param {object}  [opts.db]            — injectable for tests
+ * @returns {{window_days:number, pivot:string, pivot_source:string, project:string|null,
+ *            before:object, after:object, comparison:object[], category_shift:object[], hints:string[]}}
+ */
+export function getBeforeAfter({ windowDays = 14, pivot = null, project = null, db = null } = {}) {
+  db = db || getDb();
+
+  const autoPivot = latestInsightAt(db);
+  const pivotIso = pivot || autoPivot || new Date(Date.now() - windowDays * 86400000).toISOString();
+  const pivotMs = new Date(pivotIso.includes('T') ? pivotIso : pivotIso.replace(' ', 'T') + 'Z').getTime();
+
+  // Формат под колонку observations.created_at: 'YYYY-MM-DD HH:MM:SS' (UTC).
+  const toCol = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+  const pivotCol    = toCol(pivotMs);
+  const beforeStart = toCol(pivotMs - windowDays * 86400000);
+  const afterEnd    = toCol(pivotMs + windowDays * 86400000);
+
+  const before = aggregateWindow(db, beforeStart, pivotCol, project);
+  const after  = aggregateWindow(db, pivotCol, afterEnd, project);
+
+  const comparison = COMPARE_METRICS.map(({ key, higher_is_better }) => {
+    const b = before[key];
+    const a = after[key];
+    let delta = null, delta_pct = null, direction = 'flat';
+    if (b != null && a != null) {
+      delta = +(a - b).toFixed(3);
+      delta_pct = b !== 0 ? +(((a - b) / Math.abs(b)) * 100).toFixed(1) : (a !== 0 ? null : 0);
+      const eps = Math.abs(b) * 0.05;
+      if (Math.abs(delta) <= eps) direction = 'flat';
+      else if (higher_is_better == null) direction = delta > 0 ? 'up' : 'down';
+      else direction = (higher_is_better ? delta > 0 : delta < 0) ? 'improved' : 'regressed';
+    }
+    return { metric: key, before: b, after: a, delta, delta_pct, direction, higher_is_better };
+  });
+
+  // Сдвиг распределения времени по категориям (в процентных пунктах).
+  const category_shift = CATEGORIES
+    .map(c => ({
+      category: c,
+      before:   before.category_share[c],
+      after:    after.category_share[c],
+      delta_pp: +(after.category_share[c] - before.category_share[c]).toFixed(1),
+    }))
+    .filter(x => Math.abs(x.delta_pp) >= 1)
+    .sort((a, b) => Math.abs(b.delta_pp) - Math.abs(a.delta_pp));
+
+  const hints = [];
+  const tp = comparison.find(c => c.metric === 'obs_per_hour');
+  if (tp && tp.before != null && tp.after != null && tp.delta_pct != null) {
+    if (tp.direction === 'improved') hints.push(`Throughput вырос на ${tp.delta_pct}% (${tp.before}→${tp.after} obs/ч) после ${pivotCol}.`);
+    else if (tp.direction === 'regressed') hints.push(`Throughput упал на ${Math.abs(tp.delta_pct)}% (${tp.before}→${tp.after} obs/ч) после ${pivotCol}.`);
+  }
+  const fr = comparison.find(c => c.metric === 'avg_friction');
+  if (fr && fr.before != null && fr.after != null && fr.direction !== 'flat') {
+    if (fr.direction === 'improved') hints.push(`Friction снизился: ${fr.before} → ${fr.after}.`);
+    else hints.push(`Friction вырос: ${fr.before} → ${fr.after} — рекомендация не помогла или появились новые тормоза.`);
+  }
+  if (category_shift.length) {
+    const top = category_shift[0];
+    hints.push(`Доля «${top.category}» ${top.delta_pp > 0 ? 'выросла' : 'снизилась'} на ${Math.abs(top.delta_pp)} п.п. (${top.before}% → ${top.after}%).`);
+  }
+
+  return {
+    window_days:  windowDays,
+    pivot:        pivotCol,
+    pivot_source: pivot ? 'explicit' : (autoPivot ? 'latest_insight' : 'default'),
+    project,
+    before,
+    after,
+    comparison,
+    category_shift,
+    hints,
+  };
+}
