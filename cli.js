@@ -2747,7 +2747,7 @@ agentCmd
 // ─── workflow: Self-Improving Workflow Engine (#28) ──────────────────────────
 
 const workflowCmd = program.command('workflow')
-  .description('Workflow optimization: time allocation, bottlenecks (#28)');
+  .description('Workflow optimization: time allocation, bottlenecks, benchmarks, templates (#28)');
 
 workflowCmd
   .command('time')
@@ -2881,6 +2881,47 @@ workflowCmd
       let delta = `${sign}${b.vs_avg_pct}%`;
       if (b.higher_is_better === true) delta = b.vs_avg_pct >= 0 ? chalk.green(delta) : chalk.red(delta);
       console.log(`     ${(labels[b.metric] || b.metric).padEnd(20)} ${String(b.latest).padStart(7)}  vs avg ${String(b.personal_avg).padStart(7)}  ${delta.padStart(7)}  ${arrow(b.trend)}`);
+    }
+
+    if (res.hints.length) {
+      console.log(chalk.bold('\n   💡 Выводы:'));
+      for (const h of res.hints) console.log(chalk.yellow(`     • ${h}`));
+    }
+    console.log('');
+  });
+
+workflowCmd
+  .command('templates')
+  .description('Workflow templates: рекомендованный порядок шагов для каждого типа задач (#28)')
+  .option('-d, --days <n>', 'Window in days', '30')
+  .option('-p, --project <path>', 'Filter by project path')
+  .option('-m, --min-sessions <n>', 'Мин. сессий типа для вывода шаблона', '3')
+  .option('--json', 'Machine-readable output')
+  .action(async (opts) => {
+    const { getWorkflowTemplates } = await import('./src/workflow.js');
+    const res = getWorkflowTemplates({
+      days:        parseInt(opts.days, 10) || 30,
+      project:     opts.project || null,
+      minSessions: parseInt(opts.minSessions, 10) || 3,
+    });
+
+    if (opts.json) { console.log(JSON.stringify(res, null, 2)); return; }
+
+    if (!res.templates.length) {
+      console.log(chalk.yellow(`\n  Недостаточно данных за ${res.days} дней${res.project ? ` для ${res.project}` : ''}: ${res.sessions} сессий, нужно ≥${parseInt(opts.minSessions, 10) || 3} на тип.\n`));
+      return;
+    }
+
+    const scope = res.project ? res.project.replace(process.env.HOME || '', '~') : 'all projects';
+    console.log(chalk.bold(`\n🧭 Workflow Templates — last ${res.days} days, ${scope}`));
+    console.log(chalk.gray(`   ${res.sessions} сессий, ${res.observations} observations\n`));
+
+    const icons = { code: '⌨️ ', debug: '🐛', review: '👀', docs: '📝', research: '🔎', ops: '⚙️ ', other: '・' };
+    for (const t of res.templates) {
+      const seq = t.sequence.map(c => `${icons[c] || ''}${c}`).join(chalk.gray(' → ')) || chalk.gray('(нет устойчивого порядка)');
+      const fr = t.avg_friction != null ? `, friction ${t.avg_friction}` : '';
+      console.log(`   ${chalk.bold(t.type.padEnd(9))} ${chalk.gray(`(${t.sessions} сессий, ${t.avg_hours}h${fr})`)}`);
+      console.log(`     ${seq}`);
     }
 
     if (res.hints.length) {

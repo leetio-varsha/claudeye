@@ -12,7 +12,7 @@ import { unlinkSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { classifyObservation, getTimeAllocation, getBottlenecks, getPersonalBenchmarks, weekStart, trendOf, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS } from '../src/workflow.js';
+import { classifyObservation, getTimeAllocation, getBottlenecks, getPersonalBenchmarks, getWorkflowTemplates, weekStart, trendOf, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS, TEMPLATE_PRESENCE } from '../src/workflow.js';
 
 const TEST_DIR = join(tmpdir(), 'claudeye-workflow-test-' + Date.now());
 const TEST_DB  = join(TEST_DIR, 'test.db');
@@ -354,5 +354,113 @@ describe('getPersonalBenchmarks (#28 slice 3)', () => {
     // benchmarks still listed, all zeroed
     assert.equal(res.benchmarks.length, 5);
     assert.ok(res.benchmarks.every(b => b.latest === 0 && b.personal_avg === 0));
+  });
+});
+
+describe('getWorkflowTemplates (#28 slice 4)', () => {
+  let tdb;
+  const TDB_PATH = join(TEST_DIR, 'templates.db');
+
+  // Code-type session spine: research → code → debug → review (code dominates by time)
+  const codeSession = (ins, sid) => {
+    ins.run(sid, '/p', 'Read', 'read src/db.js',      '[]',            at(0),   null); // research
+    ins.run(sid, '/p', 'Edit', 'impl feature',        '[]',            at(60),  null); // code
+    ins.run(sid, '/p', 'Edit', 'impl more',           '[]',            at(120), null); // code
+    ins.run(sid, '/p', 'Bash', 'npm test — 1 fail',   '[]',            at(180), null); // debug
+    ins.run(sid, '/p', 'Edit', 'fix guard',           '[]',            at(240), null); // code
+    ins.run(sid, '/p', 'Bash', 'gh pr review 12',     '["pr-review"]', at(300), null); // review
+  };
+
+  before(() => {
+    tdb = new Database(TDB_PATH);
+    tdb.exec(`
+      CREATE TABLE observations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL,
+        project     TEXT NOT NULL,
+        tool        TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        tags        TEXT NOT NULL DEFAULT '[]',
+        created_at  TEXT NOT NULL,
+        duration_ms INTEGER
+      );
+      CREATE TABLE sessions (
+        id             TEXT PRIMARY KEY,
+        project        TEXT NOT NULL,
+        started_at     TEXT NOT NULL,
+        friction_score REAL DEFAULT 0
+      );
+    `);
+    const ins = tdb.prepare(`
+      INSERT INTO observations (session_id, project, tool, summary, tags, created_at, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    codeSession(ins, 'C1');
+    codeSession(ins, 'C2');
+    codeSession(ins, 'C3');
+    // 'ops' appears in only 1/3 sessions → presence 0.33 < TEMPLATE_PRESENCE → excluded
+    ins.run('C1', '/p', 'Bash', 'git push origin main', '[]', at(360), null);
+
+    const sess = tdb.prepare(`INSERT INTO sessions (id, project, started_at, friction_score) VALUES (?, ?, ?, ?)`);
+    sess.run('C1', '/p', at(0), 0.6);
+    sess.run('C2', '/p', at(0), 0.2);
+    sess.run('C3', '/p', at(0), 0.4);
+  });
+
+  after(() => {
+    tdb?.close();
+    try { unlinkSync(TDB_PATH); } catch {}
+  });
+
+  it('groups by dominant category and recommends ordered step sequence', () => {
+    const res = getWorkflowTemplates({ days: 30, db: tdb });
+    assert.equal(res.templates.length, 1, 'only the code type has >= minSessions');
+    const t = res.templates[0];
+    assert.equal(t.type, 'code');
+    assert.equal(t.sessions, 3);
+    assert.deepEqual(t.sequence, ['research', 'code', 'debug', 'review'],
+      `ordered by first-appearance; got ${JSON.stringify(t.sequence)}`);
+  });
+
+  it('excludes categories below TEMPLATE_PRESENCE (ops in 1/3 sessions)', () => {
+    const res = getWorkflowTemplates({ days: 30, db: tdb });
+    assert.ok(!res.templates[0].sequence.includes('ops'), 'ops appears in only 1/3 sessions');
+    assert.ok(res.templates[0].steps.every(s => s.presence >= TEMPLATE_PRESENCE));
+  });
+
+  it('averages friction over the type', () => {
+    const res = getWorkflowTemplates({ days: 30, db: tdb });
+    assert.equal(res.templates[0].avg_friction, 0.4); // (0.6+0.2+0.4)/3
+  });
+
+  it('emits an ordered-sequence hint', () => {
+    const res = getWorkflowTemplates({ days: 30, db: tdb });
+    assert.ok(res.hints.some(h => h.includes('code') && h.includes('→')), `hints: ${JSON.stringify(res.hints)}`);
+  });
+
+  it('minSessions filters thin types', () => {
+    const res = getWorkflowTemplates({ days: 30, minSessions: 4, db: tdb });
+    assert.deepEqual(res.templates, []);
+  });
+
+  it('graceful degradation without sessions table → avg_friction null', () => {
+    const ndb = new Database(':memory:');
+    ndb.exec(`CREATE TABLE observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, project TEXT NOT NULL,
+      tool TEXT NOT NULL, summary TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL, duration_ms INTEGER);`);
+    const ins = ndb.prepare(`INSERT INTO observations (session_id, project, tool, summary, tags, created_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    codeSession(ins, 'C1'); codeSession(ins, 'C2'); codeSession(ins, 'C3');
+    const res = getWorkflowTemplates({ days: 30, db: ndb });
+    assert.equal(res.templates.length, 1);
+    assert.equal(res.templates[0].avg_friction, null);
+    ndb.close();
+  });
+
+  it('empty window: no crash, empty templates', () => {
+    const res = getWorkflowTemplates({ days: 30, project: '/nope', db: tdb });
+    assert.equal(res.observations, 0);
+    assert.deepEqual(res.templates, []);
+    assert.deepEqual(res.hints, []);
   });
 });
