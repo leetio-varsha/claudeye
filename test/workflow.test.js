@@ -12,7 +12,7 @@ import { unlinkSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { classifyObservation, getTimeAllocation, getBottlenecks, getPersonalBenchmarks, getWorkflowTemplates, weekStart, trendOf, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS, TEMPLATE_PRESENCE } from '../src/workflow.js';
+import { classifyObservation, getTimeAllocation, getBottlenecks, getPersonalBenchmarks, getWorkflowTemplates, getBeforeAfter, weekStart, trendOf, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS, TEMPLATE_PRESENCE } from '../src/workflow.js';
 
 const TEST_DIR = join(tmpdir(), 'claudeye-workflow-test-' + Date.now());
 const TEST_DB  = join(TEST_DIR, 'test.db');
@@ -462,5 +462,110 @@ describe('getWorkflowTemplates (#28 slice 4)', () => {
     assert.equal(res.observations, 0);
     assert.deepEqual(res.templates, []);
     assert.deepEqual(res.hints, []);
+  });
+});
+
+describe('getBeforeAfter (#28 slice 5)', () => {
+  let cdb;
+  const CDB_PATH = join(TEST_DIR, 'compare.db');
+  const PIVOT = '2026-06-01 12:00:00';
+  const pivotMs = Date.parse('2026-06-01T12:00:00Z');
+  const fmt = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+  const D = 86400000, S = 1000;
+
+  before(() => {
+    cdb = new Database(CDB_PATH);
+    cdb.exec(`
+      CREATE TABLE observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, project TEXT NOT NULL,
+        tool TEXT NOT NULL, summary TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL, duration_ms INTEGER);
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, project TEXT NOT NULL, started_at TEXT NOT NULL, friction_score REAL DEFAULT 0);
+      CREATE TABLE insights (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, alerts TEXT, summary TEXT, created_at TEXT NOT NULL);
+    `);
+    const ins = cdb.prepare(`INSERT INTO observations (session_id, project, tool, summary, tags, created_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    // BEFORE window (session B1): debug-heavy, 3 observations 5 days before pivot
+    ins.run('B1', '/p', 'Edit', 'impl',            '[]', fmt(pivotMs - 5 * D),          null);
+    ins.run('B1', '/p', 'Bash', 'npm test — fail', '[]', fmt(pivotMs - 5 * D + 120 * S), null);
+    ins.run('B1', '/p', 'Bash', 'npm test — fail', '[]', fmt(pivotMs - 5 * D + 240 * S), null);
+    // AFTER window (session A1): code-only, 4 observations 2 days after pivot
+    for (let i = 0; i < 4; i++) ins.run('A1', '/p', 'Edit', 'impl ' + i, '[]', fmt(pivotMs + 2 * D + i * 120 * S), null);
+
+    const sess = cdb.prepare(`INSERT INTO sessions (id, project, started_at, friction_score) VALUES (?, ?, ?, ?)`);
+    sess.run('B1', '/p', fmt(pivotMs - 5 * D), 0.5);
+    sess.run('A1', '/p', fmt(pivotMs + 2 * D), 0.2);
+
+    cdb.prepare(`INSERT INTO insights (date, alerts, summary, created_at) VALUES (?, ?, ?, ?)`)
+      .run('2026-06-01', '[]', 'rec', PIVOT);
+  });
+
+  after(() => {
+    cdb?.close();
+    try { unlinkSync(CDB_PATH); } catch {}
+  });
+
+  it('splits activity at an explicit pivot and counts each window', () => {
+    const res = getBeforeAfter({ windowDays: 14, pivot: PIVOT, db: cdb });
+    assert.equal(res.pivot_source, 'explicit');
+    assert.ok(res.pivot.startsWith('2026-06-01'));
+    assert.equal(res.before.observations, 3);
+    assert.equal(res.after.observations, 4);
+    assert.equal(res.before.sessions, 1);
+    assert.equal(res.after.sessions, 1);
+  });
+
+  it('marks throughput/observations rising as up (neutral metric)', () => {
+    const res = getBeforeAfter({ windowDays: 14, pivot: PIVOT, db: cdb });
+    const obs = res.comparison.find(c => c.metric === 'observations');
+    assert.equal(obs.before, 3);
+    assert.equal(obs.after, 4);
+    assert.equal(obs.direction, 'up');
+  });
+
+  it('reads friction as improved when it drops (lower_is_better)', () => {
+    const res = getBeforeAfter({ windowDays: 14, pivot: PIVOT, db: cdb });
+    const fr = res.comparison.find(c => c.metric === 'avg_friction');
+    assert.equal(fr.before, 0.5);
+    assert.equal(fr.after, 0.2);
+    assert.equal(fr.direction, 'improved');
+  });
+
+  it('reports category shift: debug share drops after', () => {
+    const res = getBeforeAfter({ windowDays: 14, pivot: PIVOT, db: cdb });
+    const debug = res.category_shift.find(c => c.category === 'debug');
+    assert.ok(debug, 'debug should appear in category_shift');
+    assert.ok(debug.delta_pp < 0, `debug share should drop; got ${debug.delta_pp}`);
+    assert.equal(debug.after, 0);
+  });
+
+  it('defaults pivot to the latest insight when none given', () => {
+    const res = getBeforeAfter({ windowDays: 14, db: cdb });
+    assert.equal(res.pivot_source, 'latest_insight');
+    assert.ok(res.pivot.startsWith('2026-06-01'));
+  });
+
+  it('falls back to default pivot without insights table (graceful)', () => {
+    const ndb = new Database(':memory:');
+    ndb.exec(`CREATE TABLE observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, project TEXT NOT NULL,
+      tool TEXT NOT NULL, summary TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL, duration_ms INTEGER);`);
+    const res = getBeforeAfter({ windowDays: 7, db: ndb });
+    assert.equal(res.pivot_source, 'default');
+    assert.equal(res.before.observations, 0);
+    assert.equal(res.after.observations, 0);
+    assert.deepEqual(res.hints, []);
+    ndb.close();
+  });
+
+  it('empty windows produce null deltas, no crash', () => {
+    const res = getBeforeAfter({ windowDays: 14, pivot: PIVOT, project: '/nope', db: cdb });
+    assert.equal(res.before.observations, 0);
+    assert.equal(res.after.observations, 0);
+    const obs = res.comparison.find(c => c.metric === 'observations');
+    assert.equal(obs.direction, 'flat');
+    assert.deepEqual(res.category_shift, []);
   });
 });
