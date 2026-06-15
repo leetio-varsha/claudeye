@@ -13,6 +13,7 @@ import {
   isNoiseEvent,
   dedupEvents,
   parseTranscript,
+  parseUsage,
 } from '../src/import-cowork.js';
 
 describe('isNoiseEvent (#93)', () => {
@@ -164,5 +165,56 @@ describe('parseTranscript assistant bundling (#93)', () => {
     assert.equal(tools.length, 1);
     assert.equal(tools[0].tool, 'Bash');
     assert.equal(tools[0].output, 'file1\nfile2');
+  });
+});
+
+describe('parseUsage — model + token recovery (#81 follow-up)', () => {
+  let tmp;
+  test.before(() => { tmp = mkdtempSync(join(tmpdir(), 'claudeye-usage-')); });
+  test.after(() => { rmSync(tmp, { recursive: true, force: true }); });
+
+  test('sums token usage across assistant turns and captures model', () => {
+    const path = join(tmp, 'usage.jsonl');
+    const lines = [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant', model: 'claude-opus-4-6',
+          content: [{ type: 'text', text: 'hi' }],
+          usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 5, output_tokens: 10 },
+        },
+      }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'next' } }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant', model: 'claude-opus-4-6',
+          content: [{ type: 'text', text: 'done' }],
+          usage: { input_tokens: 200, output_tokens: 30 },
+        },
+      }),
+    ];
+    writeFileSync(path, lines.join('\n'));
+    const u = parseUsage(path);
+    assert.equal(u.model, 'claude-opus-4-6');
+    assert.equal(u.tokenInput, 100 + 20 + 5 + 200); // 325
+    assert.equal(u.tokenOutput, 10 + 30);           // 40
+  });
+
+  test('returns nulls for a transcript with no usage', () => {
+    const path = join(tmp, 'nousage.jsonl');
+    writeFileSync(path, JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'no usage block' }] },
+    }));
+    const u = parseUsage(path);
+    assert.equal(u.tokenInput, null);
+    assert.equal(u.tokenOutput, null);
+    assert.equal(u.model, null);
+  });
+
+  test('returns nulls for a missing transcript file', () => {
+    const u = parseUsage(join(tmp, 'does-not-exist.jsonl'));
+    assert.deepEqual(u, { tokenInput: null, tokenOutput: null, model: null });
   });
 });

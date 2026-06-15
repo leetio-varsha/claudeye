@@ -157,6 +157,49 @@ export function parseTranscript(path) {
   return events;
 }
 
+/**
+ * Extract aggregated token usage + model from a Cowork .jsonl transcript.
+ *
+ * Live sessions capture model/token_input/token_output at session close via the
+ * Stop hook (summary-hook.js). Cowork sessions are imported after the fact, so
+ * that hook never fires — without this, every cowork-* session lands with
+ * model/token_input/token_output = NULL, which flatlined with_model/with_tokens
+ * once recent activity shifted entirely to Cowork (#81 follow-up).
+ *
+ * The transcript is the most reliable source: assistant rows carry
+ * message.model and message.usage (base + cache-creation + cache-read input
+ * tokens, plus output_tokens).
+ *
+ * @param {string} path
+ * @returns {{ tokenInput: number|null, tokenOutput: number|null, model: string|null }}
+ */
+export function parseUsage(path) {
+  if (!existsSync(path)) return { tokenInput: null, tokenOutput: null, model: null };
+  let totalInput = 0, totalOutput = 0, model = null;
+  try {
+    const raw = readFileSync(path, 'utf8');
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (row.type !== 'assistant' || !row.message) continue;
+      if (row.message.model) model = row.message.model;
+      const u = row.message.usage;
+      if (u) {
+        totalInput  += (u.input_tokens || 0)
+                     + (u.cache_creation_input_tokens || 0)
+                     + (u.cache_read_input_tokens || 0);
+        totalOutput += (u.output_tokens || 0);
+      }
+    }
+  } catch { /* non-critical — leave nulls */ }
+  return {
+    tokenInput:  totalInput  > 0 ? totalInput  : null,
+    tokenOutput: totalOutput > 0 ? totalOutput : null,
+    model,
+  };
+}
+
 // ─── System session filter ────────────────────────────────────────────────
 
 /**
@@ -339,7 +382,19 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
       }
       imported++;
     }
-    closeSession(storedSessionId);
+    // #81 follow-up: recover model + token usage from the transcript, since the
+    // live Stop hook never fires for imported Cowork sessions. Prefer the model
+    // recorded inside the transcript (clean name, e.g. claude-opus-4-6) and fall
+    // back to meta.model with its context-window suffix stripped (e.g. [1m]).
+    const usage = parseUsage(transcriptPath);
+    const metaModel = (typeof meta.model === 'string' && meta.model.startsWith('claude'))
+      ? meta.model.replace(/\[.*\]$/, '')
+      : null;
+    closeSession(storedSessionId, null, {
+      model:       usage.model || metaModel,
+      tokenInput:  usage.tokenInput,
+      tokenOutput: usage.tokenOutput,
+    });
     db.prepare(`
       INSERT OR REPLACE INTO cowork_imports (cli_session_id, project, imported_at, events, meta)
       VALUES (?, ?, datetime('now'), ?, ?)
