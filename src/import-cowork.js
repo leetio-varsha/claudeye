@@ -200,6 +200,61 @@ export function parseUsage(path) {
   };
 }
 
+/**
+ * Normalize a Cowork meta.model string ("claude-opus-4-8[1m]") to the clean
+ * tracking form used by live sessions ("claude-opus-4-8"). Returns null for
+ * anything that isn't a recognizable Claude model id.
+ * @param {*} raw
+ * @returns {string|null}
+ */
+export function normalizeMetaModel(raw) {
+  if (typeof raw !== 'string' || !raw.startsWith('claude')) return null;
+  return raw.replace(/\[.*\]$/, '');
+}
+
+/**
+ * Backfill sessions.model for cowork-* sessions from the persistent
+ * cowork_imports.meta.
+ *
+ * Why this is needed (#81 follow-up): Cowork transcripts live in ephemeral
+ * per-session `local_<uuid>/.claude/projects/…` working dirs that are removed
+ * shortly after the session ends. The import-time `parseUsage()` recovery only
+ * works while that file still exists; once it's gone, model + tokens can't be
+ * re-read — which flatlined `with_model` (377) across many runs even though the
+ * import code "looked" correct. meta.model, however, is captured into
+ * cowork_imports at import time and persists, so we can always recover MODEL
+ * from it. Token counts are unrecoverable post-hoc (the transcript is the only
+ * source) — that's a separate, documented limitation.
+ *
+ * Deterministic + idempotent: only touches rows where model IS NULL.
+ *
+ * @param {object} [opts]
+ * @param {object} [opts.db] — injectable for tests
+ * @returns {{ scanned:number, updated:number }}
+ */
+export function backfillCoworkModels({ db = null } = {}) {
+  db = db || getDb();
+  let imports;
+  try {
+    imports = db.prepare(`SELECT cli_session_id, meta FROM cowork_imports`).all();
+  } catch {
+    return { scanned: 0, updated: 0 }; // no cowork_imports table yet
+  }
+  const update = db.prepare(`UPDATE sessions SET model = ? WHERE id = ? AND model IS NULL`);
+  let updated = 0;
+  const tx = db.transaction(() => {
+    for (const r of imports) {
+      let meta;
+      try { meta = JSON.parse(r.meta); } catch { continue; }
+      const model = normalizeMetaModel(meta && meta.model);
+      if (!model) continue;
+      updated += update.run(model, 'cowork-' + r.cli_session_id).changes;
+    }
+  });
+  tx();
+  return { scanned: imports.length, updated };
+}
+
 // ─── System session filter ────────────────────────────────────────────────
 
 /**
@@ -387,9 +442,7 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
     // recorded inside the transcript (clean name, e.g. claude-opus-4-6) and fall
     // back to meta.model with its context-window suffix stripped (e.g. [1m]).
     const usage = parseUsage(transcriptPath);
-    const metaModel = (typeof meta.model === 'string' && meta.model.startsWith('claude'))
-      ? meta.model.replace(/\[.*\]$/, '')
-      : null;
+    const metaModel = normalizeMetaModel(meta.model);
     closeSession(storedSessionId, null, {
       model:       usage.model || metaModel,
       tokenInput:  usage.tokenInput,
@@ -476,6 +529,12 @@ export async function importAllCoworkSessions({ force = false, skipEmbeddings = 
       });
     }
   }
+  // Self-heal model tracking from persistent meta (#81 follow-up). Cheap,
+  // idempotent — recovers model for any cowork session whose transcript was
+  // already cleaned up before parseUsage could read it.
+  try {
+    summary.modelsBackfilled = backfillCoworkModels().updated;
+  } catch { summary.modelsBackfilled = 0; }
   return summary;
 }
 

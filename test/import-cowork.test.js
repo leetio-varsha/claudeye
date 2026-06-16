@@ -9,11 +9,15 @@ import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import Database from 'better-sqlite3';
+
 import {
   isNoiseEvent,
   dedupEvents,
   parseTranscript,
   parseUsage,
+  normalizeMetaModel,
+  backfillCoworkModels,
 } from '../src/import-cowork.js';
 
 describe('isNoiseEvent (#93)', () => {
@@ -216,5 +220,70 @@ describe('parseUsage — model + token recovery (#81 follow-up)', () => {
   test('returns nulls for a missing transcript file', () => {
     const u = parseUsage(join(tmp, 'does-not-exist.jsonl'));
     assert.deepEqual(u, { tokenInput: null, tokenOutput: null, model: null });
+  });
+});
+
+describe('normalizeMetaModel (#81 follow-up)', () => {
+  test('strips context-window suffix', () => {
+    assert.equal(normalizeMetaModel('claude-opus-4-8[1m]'), 'claude-opus-4-8');
+  });
+  test('passes through clean model id', () => {
+    assert.equal(normalizeMetaModel('claude-sonnet-4-6'), 'claude-sonnet-4-6');
+  });
+  test('rejects non-claude / non-string', () => {
+    assert.equal(normalizeMetaModel('gpt-4'), null);
+    assert.equal(normalizeMetaModel(null), null);
+    assert.equal(normalizeMetaModel(undefined), null);
+    assert.equal(normalizeMetaModel(42), null);
+  });
+});
+
+describe('backfillCoworkModels (#81 follow-up)', () => {
+  function makeDb() {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, project TEXT, model TEXT, token_input INTEGER, token_output INTEGER);
+      CREATE TABLE cowork_imports (id INTEGER PRIMARY KEY AUTOINCREMENT, cli_session_id TEXT UNIQUE, project TEXT, imported_at TEXT, events INTEGER, meta TEXT);
+    `);
+    return db;
+  }
+
+  test('recovers model from persistent meta for NULL-model cowork sessions', () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO sessions (id, project, model) VALUES (?, ?, ?)`).run('cowork-aaa', '/p', null);
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('aaa', JSON.stringify({ model: 'claude-opus-4-8[1m]' }));
+    const res = backfillCoworkModels({ db });
+    assert.equal(res.updated, 1);
+    assert.equal(db.prepare(`SELECT model FROM sessions WHERE id='cowork-aaa'`).get().model, 'claude-opus-4-8');
+    db.close();
+  });
+
+  test('idempotent — does not overwrite an existing model', () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO sessions (id, project, model) VALUES (?, ?, ?)`).run('cowork-bbb', '/p', 'claude-sonnet-4-6');
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('bbb', JSON.stringify({ model: 'claude-opus-4-8[1m]' }));
+    const res = backfillCoworkModels({ db });
+    assert.equal(res.updated, 0);
+    assert.equal(db.prepare(`SELECT model FROM sessions WHERE id='cowork-bbb'`).get().model, 'claude-sonnet-4-6');
+    db.close();
+  });
+
+  test('skips meta without a usable model and malformed JSON', () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO sessions (id, project, model) VALUES (?, ?, ?)`).run('cowork-ccc', '/p', null);
+    db.prepare(`INSERT INTO sessions (id, project, model) VALUES (?, ?, ?)`).run('cowork-ddd', '/p', null);
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('ccc', JSON.stringify({ model: 'unknown' }));
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('ddd', '{not json');
+    const res = backfillCoworkModels({ db });
+    assert.equal(res.updated, 0);
+    db.close();
+  });
+
+  test('returns zero when cowork_imports table is absent', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT);`);
+    const res = backfillCoworkModels({ db });
+    assert.deepEqual(res, { scanned: 0, updated: 0 });
+    db.close();
   });
 });
