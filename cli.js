@@ -1336,6 +1336,9 @@ program.command('import')
           `${result.errors} errors — ${result.observations} observations${embStr} from ${result.total} sessions` +
           (dropped ? ` (filtered ${result.noiseDropped} noise + ${result.dedupDropped} dups from ${result.rawEvents} raw)` : '')
         );
+        if (result.modelsBackfilled) {
+          console.log(chalk.gray(`    +${result.modelsBackfilled} model values recovered from meta (#81 self-heal)`));
+        }
         // Surface projects touched so user can validate what ended up where.
         const byProject = new Map();
         for (const d of result.details) {
@@ -2982,6 +2985,35 @@ workflowCmd
     if (res.hints.length) {
       console.log(chalk.bold('\n   💡 Выводы:'));
       for (const h of res.hints) console.log(chalk.yellow(`     • ${h}`));
+    }
+    console.log('');
+  });
+
+workflowCmd
+  .command('suggest')
+  .description('Проактивные подсказки «при старте сессии» — то, что инжектится в начало промпта (#28)')
+  .option('-d, --days <n>', 'Окно анализа в днях', '30')
+  .option('-p, --project <path>', 'Filter by project path')
+  .option('-m, --max <n>', 'Макс. число подсказок', '3')
+  .option('--json', 'Machine-readable output')
+  .action(async (opts) => {
+    const { getProactiveSuggestions } = await import('./src/workflow.js');
+    const res = getProactiveSuggestions({
+      days:    parseInt(opts.days, 10) || 30,
+      project: opts.project || null,
+      max:     parseInt(opts.max, 10) || 3,
+    });
+
+    if (opts.json) { console.log(JSON.stringify(res, null, 2)); return; }
+
+    const scope = res.project ? res.project.replace(process.env.HOME || '', '~') : 'all projects';
+    console.log(chalk.bold(`\n🧭 Proactive suggestions — ${scope}, окно ${res.days}д\n`));
+    if (!res.suggestions.length) {
+      console.log(chalk.gray('   Пока нечего предложить — недостаточно данных или нет сильных сигналов.\n'));
+      return;
+    }
+    for (const s of res.suggestions) {
+      console.log(`   ${chalk.cyan(s.kind.padEnd(11))} ${chalk.yellow(s.text)}`);
     }
     console.log('');
   });

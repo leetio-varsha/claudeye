@@ -306,6 +306,31 @@ async function main() {
       process.stdout.write(handoff + '\n\n');
     }
 
+    // Proactive workflow suggestions (#28, slice 6/7) — «при старте сессии».
+    // Показываем РОВНО на первом промпте новой сессии (prompt_count === 0 сразу
+    // после первого upsertSession), чтобы не шуметь на каждом промпте и не
+    // дублировать handoff (длинная сессия → prompt_count > 0 → сюда не зайдём).
+    try {
+      const db = getDb();
+      const s = db.prepare('SELECT prompt_count FROM sessions WHERE id = ?').get(sessionId);
+      if (s && s.prompt_count === 0) {
+        const { getProactiveSuggestions } = await import(srcDir + 'workflow.js');
+        const { hints } = getProactiveSuggestions({ project, max: 3, db });
+        if (hints.length) {
+          const lines = ['<!-- claudeye: proactive workflow suggestions (#28) -->'];
+          lines.push(`## 🧭 Claudeye — по опыту работы над ${project.split('/').pop()}`);
+          lines.push('');
+          for (const h of hints) lines.push(`- ${h}`);
+          lines.push('');
+          lines.push('<!-- end claudeye proactive suggestions -->');
+          process.stdout.write(lines.join('\n') + '\n\n');
+          process.stderr.write(`🧭 Claudeye: ${hints.length} workflow-подсказ${hints.length === 1 ? 'ка' : 'ки'} в начале промпта\n`);
+        }
+      }
+    } catch (e) {
+      try { logHookError('inject-hook', 'proactive-suggest', e.message, project); } catch {}
+    }
+
     // Behavioral advise injection (#87) — top-1 new high-confidence advise.
     // Shown once per advise; marks status='shown' so next session doesn't loop.
     try {

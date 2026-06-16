@@ -806,3 +806,92 @@ export function getBeforeAfter({ windowDays = 14, pivot = null, project = null, 
     hints,
   };
 }
+
+// ─── Slice 6: Proactive suggestions (session start) ──────────────────────────
+
+// Сколько подсказок отдавать по умолчанию при старте сессии. Держим мало —
+// инжектится в начало промпта, шум недопустим.
+export const PROACTIVE_DEFAULT_MAX = 3;
+
+/**
+ * Proactive suggestions (#28, slice 6).
+ *
+ * Агрегирует сильнейшие сигналы остальных слайсов (bottlenecks / templates /
+ * benchmarks) в короткий приоритизированный список «в прошлый раз на этом
+ * проекте помогло …». Предназначено для показа один раз при старте сессии
+ * (см. интеграцию в inject-hook, slice 7), поэтому scope обычно = текущий
+ * проект.
+ *
+ * Чистый SQLite + JS, без внешних вызовов. Каждый под-движок завёрнут в
+ * try/catch — частичные данные (нет таблицы sessions в тестовой БД, пустое
+ * окно) не должны ронять подсказки целиком.
+ *
+ * @param {object} [opts]
+ * @param {string}  [opts.project]  — фильтр по полному пути проекта (обычно текущий)
+ * @param {number}  [opts.days=30]  — окно анализа
+ * @param {number}  [opts.max=PROACTIVE_DEFAULT_MAX] — макс. число подсказок
+ * @param {object}  [opts.db]       — injectable for tests
+ * @returns {{project:string|null, days:number,
+ *            suggestions:{kind:string, priority:number, text:string}[],
+ *            hints:string[]}}
+ */
+export function getProactiveSuggestions({ project = null, days = 30, max = PROACTIVE_DEFAULT_MAX, db = null } = {}) {
+  db = db || getDb();
+  const suggestions = [];
+
+  // 1. Bottlenecks — самый actionable сигнал («вот где ты тормозишь»).
+  let bn = null;
+  try { bn = getBottlenecks({ days, project, top: 3, db }); } catch { /* частичные данные */ }
+  if (bn) {
+    const churn = bn.churn_files[0];
+    if (churn && churn.edits >= CHURN_MIN_EDITS) {
+      suggestions.push({ kind: 'churn', priority: 90,
+        text: `${churn.file} ты правил ${churn.edits} раз за ${churn.sessions} сессий — в прошлый раз помогало вынести логику или добавить тест, чтобы разорвать edit-test-edit цикл.` });
+    }
+    const slow = bn.slow_steps[0];
+    if (slow && slow.slowdown >= 1.5 && ['debug', 'ops', 'other'].includes(slow.category)) {
+      suggestions.push({ kind: 'slow_step', priority: 70,
+        text: `Шаги «${slow.category}» у тебя в ${slow.slowdown}× медленнее среднего (${slow.avg_sec}s) — заложи на них больше времени или автоматизируй.` });
+    }
+    const trans = bn.transitions[0];
+    if (trans && bn.overall_avg_sec && trans.avg_sec >= bn.overall_avg_sec * 2 && trans.count >= 3) {
+      suggestions.push({ kind: 'transition', priority: 60,
+        text: `Переход ${trans.from}→${trans.to} стоит в среднем ${trans.avg_sec}s — дорогой контекст-свитч; группируй такие шаги вместе.` });
+    }
+  }
+
+  // 2. Workflow template для доминирующего типа задач («оптимальный порядок A→B→C»).
+  let tpl = null;
+  try { tpl = getWorkflowTemplates({ days, project, db }); } catch { /* нет данных */ }
+  if (tpl && tpl.templates.length) {
+    const t = tpl.templates[0];
+    if (t.sequence.length >= 2) {
+      suggestions.push({ kind: 'template', priority: 50,
+        text: `Для задач типа «${t.type}» (${t.sessions} сессий) обычно эффективен порядок: ${t.sequence.join(' → ')}.` });
+    }
+  }
+
+  // 3. Personal benchmark тренд («твоя скорость vs твоя средняя»).
+  let bench = null;
+  try { bench = getPersonalBenchmarks({ weeks: Math.max(2, Math.ceil(days / 7)), project, db }); } catch { /* нет данных */ }
+  if (bench) {
+    const tp = bench.benchmarks.find(b => b.metric === 'obs_per_hour');
+    if (tp && tp.trend === 'down' && tp.vs_avg_pct <= -15) {
+      suggestions.push({ kind: 'throughput', priority: 40,
+        text: `Throughput просел до ${tp.latest} obs/ч (−${Math.abs(tp.vs_avg_pct)}% к личной средней) — глянь \`claudeye workflow bottlenecks\`.` });
+    } else if (tp && tp.trend === 'up' && tp.vs_avg_pct >= 15) {
+      suggestions.push({ kind: 'throughput', priority: 20,
+        text: `Throughput на ${tp.vs_avg_pct}% выше личной средней — неделя идёт продуктивно.` });
+    }
+  }
+
+  suggestions.sort((a, b) => b.priority - a.priority);
+  const picked = suggestions.slice(0, Math.max(0, max));
+
+  return {
+    project,
+    days,
+    suggestions: picked,
+    hints: picked.map(s => s.text),
+  };
+}

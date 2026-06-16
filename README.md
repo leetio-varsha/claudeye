@@ -284,6 +284,7 @@ claudeye workflow bottlenecks [-d 30] [-t 5]  # slow steps, costly transitions, 
 claudeye workflow benchmarks [-w 8] [-p <path>] # personal speed vs your average, trend by week
 claudeye workflow templates [-d 30] [-m 3]    # recommended step order per task type (A→B→C)
 claudeye workflow compare [-w 14] [--pivot <datetime>] # before/after metrics around a recommendation
+claudeye workflow suggest [-d 30] [-m 3]      # proactive session-start hints (also injected on first prompt)
 
 # Pattern Detection & Automation
 claudeye patterns                             # repeat-fixes, hotspots, time sinks
