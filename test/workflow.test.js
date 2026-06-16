@@ -12,7 +12,7 @@ import { unlinkSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { classifyObservation, getTimeAllocation, getBottlenecks, getPersonalBenchmarks, getWorkflowTemplates, getBeforeAfter, weekStart, trendOf, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS, TEMPLATE_PRESENCE } from '../src/workflow.js';
+import { classifyObservation, getTimeAllocation, getBottlenecks, getPersonalBenchmarks, getWorkflowTemplates, getBeforeAfter, getProactiveSuggestions, weekStart, trendOf, GAP_CAP_MS, CATEGORIES, CHURN_MIN_EDITS, TEMPLATE_PRESENCE } from '../src/workflow.js';
 
 const TEST_DIR = join(tmpdir(), 'claudeye-workflow-test-' + Date.now());
 const TEST_DB  = join(TEST_DIR, 'test.db');
@@ -567,5 +567,91 @@ describe('getBeforeAfter (#28 slice 5)', () => {
     const obs = res.comparison.find(c => c.metric === 'observations');
     assert.equal(obs.direction, 'flat');
     assert.deepEqual(res.category_shift, []);
+  });
+});
+
+describe('getProactiveSuggestions (#28 slice 6)', () => {
+  let sdb;
+  const SDB_PATH = join(TEST_DIR, 'proactive.db');
+
+  before(() => {
+    sdb = new Database(SDB_PATH);
+    sdb.exec(`
+      CREATE TABLE observations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL,
+        project     TEXT NOT NULL,
+        tool        TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        tags        TEXT NOT NULL DEFAULT '[]',
+        created_at  TEXT NOT NULL,
+        duration_ms INTEGER
+      );
+      CREATE TABLE sessions (
+        id             TEXT PRIMARY KEY,
+        project        TEXT NOT NULL,
+        started_at     TEXT NOT NULL,
+        friction_score REAL DEFAULT 0
+      );
+    `);
+    const ins = sdb.prepare(`
+      INSERT INTO observations (session_id, project, tool, summary, tags, created_at, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    // Churn-сценарий: src/api.js правится 3 раза в одной сессии (как в slice 2).
+    ins.run('S1', '/p', 'Edit', 'fix handler in src/api.js',  '[]', at(0),   null);
+    ins.run('S1', '/p', 'Bash', 'npm test — 2 failures',      '[]', at(300), null);
+    ins.run('S1', '/p', 'Edit', 'retry fix src/api.js guard', '[]', at(330), null);
+    ins.run('S1', '/p', 'Bash', 'npm test — 1 failure',       '[]', at(630), null);
+    ins.run('S1', '/p', 'Edit', 'final fix src/api.js',       '[]', at(660), null);
+    sdb.prepare(`INSERT INTO sessions (id, project, started_at, friction_score) VALUES (?, ?, ?, ?)`)
+      .run('S1', '/p', at(0), 0.8);
+  });
+
+  after(() => {
+    sdb?.close();
+    try { unlinkSync(SDB_PATH); } catch {}
+  });
+
+  it('surfaces a churn suggestion at top priority', () => {
+    const res = getProactiveSuggestions({ days: 30, db: sdb });
+    assert.ok(res.suggestions.length >= 1);
+    assert.equal(res.suggestions[0].kind, 'churn');
+    assert.ok(res.suggestions[0].text.includes('src/api.js'));
+    assert.deepEqual(res.hints, res.suggestions.map(s => s.text));
+  });
+
+  it('respects max cap', () => {
+    const res = getProactiveSuggestions({ days: 30, max: 1, db: sdb });
+    assert.equal(res.suggestions.length, 1);
+  });
+
+  it('suggestions are sorted by descending priority', () => {
+    const res = getProactiveSuggestions({ days: 30, max: 10, db: sdb });
+    for (let i = 1; i < res.suggestions.length; i++) {
+      assert.ok(res.suggestions[i - 1].priority >= res.suggestions[i].priority);
+    }
+  });
+
+  it('empty scope: no crash, no suggestions', () => {
+    const res = getProactiveSuggestions({ days: 30, project: '/nope', db: sdb });
+    assert.deepEqual(res.suggestions, []);
+    assert.deepEqual(res.hints, []);
+  });
+
+  it('works without sessions table (graceful degradation)', () => {
+    const ndb = new Database(':memory:');
+    ndb.exec(`CREATE TABLE observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, project TEXT NOT NULL,
+      tool TEXT NOT NULL, summary TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL, duration_ms INTEGER);`);
+    const ins = ndb.prepare(`INSERT INTO observations (session_id, project, tool, summary, tags, created_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    ins.run('S1', '/p', 'Edit', 'fix x in src/api.js',  '[]', at(0),   null);
+    ins.run('S1', '/p', 'Bash', 'npm test fail',         '[]', at(60),  null);
+    ins.run('S1', '/p', 'Edit', 'fix y in src/api.js',  '[]', at(120), null);
+    ins.run('S1', '/p', 'Edit', 'fix z in src/api.js',  '[]', at(180), null);
+    const res = getProactiveSuggestions({ days: 30, db: ndb });
+    assert.ok(Array.isArray(res.suggestions));
+    ndb.close();
   });
 });
