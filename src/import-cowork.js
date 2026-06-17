@@ -255,6 +255,52 @@ export function backfillCoworkModels({ db = null } = {}) {
   return { scanned: imports.length, updated };
 }
 
+/**
+ * Backfill sessions.token_input/token_output for cowork-* sessions from the
+ * persistent cowork_imports.meta (#117).
+ *
+ * Companion to backfillCoworkModels. Token counts live ONLY in the transcript,
+ * and Cowork transcripts are ephemeral, so tokens are unrecoverable once the
+ * file is gone (model, by contrast, is recoverable from the persistent
+ * meta.model). From #117 onward importCoworkSession persists
+ * token_input/token_output into cowork_imports.meta at import time — while the
+ * transcript still exists — so this backfill can restore them onto any session
+ * whose token_input was left NULL (a re-import that ran after cleanup, or a row
+ * that predates closeSession writing the columns).
+ *
+ * Deterministic + idempotent: only touches rows where token_input IS NULL, and
+ * only when meta carries a finite token_input.
+ *
+ * @param {object} [opts]
+ * @param {object} [opts.db] — injectable for tests
+ * @returns {{ scanned:number, updated:number }}
+ */
+export function backfillCoworkTokens({ db = null } = {}) {
+  db = db || getDb();
+  let imports;
+  try {
+    imports = db.prepare(`SELECT cli_session_id, meta FROM cowork_imports`).all();
+  } catch {
+    return { scanned: 0, updated: 0 }; // no cowork_imports table yet
+  }
+  const update = db.prepare(
+    `UPDATE sessions SET token_input = ?, token_output = ? WHERE id = ? AND token_input IS NULL`
+  );
+  let updated = 0;
+  const tx = db.transaction(() => {
+    for (const r of imports) {
+      let meta;
+      try { meta = JSON.parse(r.meta); } catch { continue; }
+      const ti = meta && Number.isFinite(meta.token_input)  ? meta.token_input  : null;
+      if (ti == null) continue; // nothing usable persisted
+      const to = meta && Number.isFinite(meta.token_output) ? meta.token_output : null;
+      updated += update.run(ti, to, 'cowork-' + r.cli_session_id).changes;
+    }
+  });
+  tx();
+  return { scanned: imports.length, updated };
+}
+
 // ─── System session filter ────────────────────────────────────────────────
 
 /**
@@ -443,10 +489,31 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
     // back to meta.model with its context-window suffix stripped (e.g. [1m]).
     const usage = parseUsage(transcriptPath);
     const metaModel = normalizeMetaModel(meta.model);
+
+    // #117: persist token usage into cowork_imports.meta while the transcript is
+    // still alive. Cowork transcripts are ephemeral — removed shortly after the
+    // session ends — and the transcript is the ONLY source of token counts
+    // (meta.model carries the model but never the usage figures). The first
+    // import that runs while the file exists is our one chance to capture them.
+    // On a later re-import the transcript may already be gone → parseUsage()
+    // returns null; in that case preserve the tokens a prior import persisted
+    // instead of clobbering meta with nulls.
+    let prevTokenInput = null, prevTokenOutput = null;
+    try {
+      const prev = db.prepare(`SELECT meta FROM cowork_imports WHERE cli_session_id = ?`).get(cliSessionId);
+      if (prev && prev.meta) {
+        const pm = JSON.parse(prev.meta);
+        if (Number.isFinite(pm.token_input))  prevTokenInput  = pm.token_input;
+        if (Number.isFinite(pm.token_output)) prevTokenOutput = pm.token_output;
+      }
+    } catch { /* no prior import / malformed meta — ignore */ }
+    const tokenInput  = usage.tokenInput  ?? prevTokenInput;
+    const tokenOutput = usage.tokenOutput ?? prevTokenOutput;
+
     closeSession(storedSessionId, null, {
       model:       usage.model || metaModel,
-      tokenInput:  usage.tokenInput,
-      tokenOutput: usage.tokenOutput,
+      tokenInput,
+      tokenOutput,
     });
     db.prepare(`
       INSERT OR REPLACE INTO cowork_imports (cli_session_id, project, imported_at, events, meta)
@@ -455,6 +522,8 @@ export async function importCoworkSession(session, { force = false, skipEmbeddin
       coworkSessionId: meta.sessionId,
       title:           meta.title,
       model:           meta.model,
+      token_input:     tokenInput,
+      token_output:    tokenOutput,
       createdAt:       meta.createdAt,
       lastActivityAt:  meta.lastActivityAt,
       raw_events:      rawEvents.length,
@@ -535,6 +604,11 @@ export async function importAllCoworkSessions({ force = false, skipEmbeddings = 
   try {
     summary.modelsBackfilled = backfillCoworkModels().updated;
   } catch { summary.modelsBackfilled = 0; }
+  // #117: recover token counts persisted into meta on a prior import (the
+  // transcript is likely gone by now, so this is the only way to fill them in).
+  try {
+    summary.tokensBackfilled = backfillCoworkTokens().updated;
+  } catch { summary.tokensBackfilled = 0; }
   return summary;
 }
 
