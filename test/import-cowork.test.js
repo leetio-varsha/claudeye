@@ -18,6 +18,7 @@ import {
   parseUsage,
   normalizeMetaModel,
   backfillCoworkModels,
+  backfillCoworkTokens,
 } from '../src/import-cowork.js';
 
 describe('isNoiseEvent (#93)', () => {
@@ -283,6 +284,74 @@ describe('backfillCoworkModels (#81 follow-up)', () => {
     const db = new Database(':memory:');
     db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT);`);
     const res = backfillCoworkModels({ db });
+    assert.deepEqual(res, { scanned: 0, updated: 0 });
+    db.close();
+  });
+});
+
+describe('backfillCoworkTokens (#117)', () => {
+  function makeDb() {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, project TEXT, model TEXT, token_input INTEGER, token_output INTEGER);
+      CREATE TABLE cowork_imports (id INTEGER PRIMARY KEY AUTOINCREMENT, cli_session_id TEXT UNIQUE, project TEXT, imported_at TEXT, events INTEGER, meta TEXT);
+    `);
+    return db;
+  }
+
+  test('recovers tokens from persistent meta for NULL-token cowork sessions', () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO sessions (id, project, token_input, token_output) VALUES (?, ?, ?, ?)`).run('cowork-aaa', '/p', null, null);
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('aaa', JSON.stringify({ token_input: 12000, token_output: 3400 }));
+    const res = backfillCoworkTokens({ db });
+    assert.equal(res.updated, 1);
+    const row = db.prepare(`SELECT token_input, token_output FROM sessions WHERE id='cowork-aaa'`).get();
+    assert.equal(row.token_input, 12000);
+    assert.equal(row.token_output, 3400);
+    db.close();
+  });
+
+  test('idempotent — does not overwrite existing token counts', () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO sessions (id, project, token_input, token_output) VALUES (?, ?, ?, ?)`).run('cowork-bbb', '/p', 999, 111);
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('bbb', JSON.stringify({ token_input: 12000, token_output: 3400 }));
+    const res = backfillCoworkTokens({ db });
+    assert.equal(res.updated, 0);
+    const row = db.prepare(`SELECT token_input, token_output FROM sessions WHERE id='cowork-bbb'`).get();
+    assert.equal(row.token_input, 999);
+    assert.equal(row.token_output, 111);
+    db.close();
+  });
+
+  test('skips meta without finite token_input and malformed JSON', () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO sessions (id, project, token_input) VALUES (?, ?, ?)`).run('cowork-ccc', '/p', null);
+    db.prepare(`INSERT INTO sessions (id, project, token_input) VALUES (?, ?, ?)`).run('cowork-ddd', '/p', null);
+    db.prepare(`INSERT INTO sessions (id, project, token_input) VALUES (?, ?, ?)`).run('cowork-eee', '/p', null);
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('ccc', JSON.stringify({ model: 'claude-opus-4-8[1m]' })); // no tokens
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('ddd', JSON.stringify({ token_input: null })); // explicit null
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('eee', '{not json');
+    const res = backfillCoworkTokens({ db });
+    assert.equal(res.updated, 0);
+    db.close();
+  });
+
+  test('recovers token_input even when token_output is missing', () => {
+    const db = makeDb();
+    db.prepare(`INSERT INTO sessions (id, project, token_input, token_output) VALUES (?, ?, ?, ?)`).run('cowork-fff', '/p', null, null);
+    db.prepare(`INSERT INTO cowork_imports (cli_session_id, meta) VALUES (?, ?)`).run('fff', JSON.stringify({ token_input: 500 }));
+    const res = backfillCoworkTokens({ db });
+    assert.equal(res.updated, 1);
+    const row = db.prepare(`SELECT token_input, token_output FROM sessions WHERE id='cowork-fff'`).get();
+    assert.equal(row.token_input, 500);
+    assert.equal(row.token_output, null);
+    db.close();
+  });
+
+  test('returns zero when cowork_imports table is absent', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, token_input INTEGER);`);
+    const res = backfillCoworkTokens({ db });
     assert.deepEqual(res, { scanned: 0, updated: 0 });
     db.close();
   });
