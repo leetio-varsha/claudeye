@@ -27,7 +27,8 @@ import { homedir } from 'os';
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
 const DATA_DIR    = join(homedir(), '.claudeye');
-const DB_PATH     = join(DATA_DIR, 'mem.db');
+// CLAUDEYE_DB lets tests point at a throwaway copy instead of the live db.
+const DB_PATH     = process.env.CLAUDEYE_DB || join(DATA_DIR, 'mem.db');
 const LOG_PATH    = join(DATA_DIR, 'logs', 'insights-heartbeat.log');
 const COWORK_ROOT = join(homedir(), 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions');
 
@@ -109,10 +110,100 @@ function upsertSession(db, id, project) {
   `).run(id, project);
 }
 
-function closeSession(db, id) {
+// COALESCE-safe: never clobber an already-captured model/token figure with a
+// null from a later re-import whose transcript has since been purged (#81/#117).
+function closeSession(db, id, { model = null, tokenInput = null, tokenOutput = null } = {}) {
   db.prepare(`
-    UPDATE sessions SET ended_at = datetime('now') WHERE id = ? AND ended_at IS NULL
-  `).run(id);
+    UPDATE sessions SET
+      ended_at     = COALESCE(ended_at, datetime('now')),
+      model        = COALESCE(?, model),
+      token_input  = COALESCE(?, token_input),
+      token_output = COALESCE(?, token_output)
+    WHERE id = ?
+  `).run(model, tokenInput, tokenOutput, id);
+}
+
+// ─── Model + token usage recovery (#81 follow-up / #117) ───────────────────────
+// Cowork sessions are imported after the fact, so the live Stop hook never fires
+// and model/token_input/token_output land NULL. The transcript is the only source
+// of token counts (assistant rows carry message.model + message.usage). Cowork
+// transcripts are ephemeral, so the first import that runs while the file still
+// exists is the one chance to capture tokens — they're then persisted into
+// cowork_imports.meta so backfillCowork{Models,Tokens} can restore them later.
+function parseUsage(path) {
+  if (!existsSync(path)) return { tokenInput: null, tokenOutput: null, model: null };
+  let totalInput = 0, totalOutput = 0, model = null;
+  try {
+    const raw = readFileSync(path, 'utf8');
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (row.type !== 'assistant' || !row.message) continue;
+      if (row.message.model) model = row.message.model;
+      const u = row.message.usage;
+      if (u) {
+        totalInput  += (u.input_tokens || 0)
+                     + (u.cache_creation_input_tokens || 0)
+                     + (u.cache_read_input_tokens || 0);
+        totalOutput += (u.output_tokens || 0);
+      }
+    }
+  } catch { /* non-critical — leave nulls */ }
+  return {
+    tokenInput:  totalInput  > 0 ? totalInput  : null,
+    tokenOutput: totalOutput > 0 ? totalOutput : null,
+    model,
+  };
+}
+
+// Normalize "claude-opus-4-8[1m]" → "claude-opus-4-8". Returns null for non-Claude.
+function normalizeMetaModel(raw) {
+  if (typeof raw !== 'string' || !raw.startsWith('claude')) return null;
+  return raw.replace(/\[.*\]$/, '');
+}
+
+// Backfill sessions.model from persistent cowork_imports.meta (idempotent;
+// only touches rows where model IS NULL). meta.model always persists.
+function backfillCoworkModels(db) {
+  let imports;
+  try { imports = db.prepare('SELECT cli_session_id, meta FROM cowork_imports').all(); }
+  catch { return { scanned: 0, updated: 0 }; }
+  const update = db.prepare('UPDATE sessions SET model = ? WHERE id = ? AND model IS NULL');
+  let updated = 0;
+  const tx = db.transaction(() => {
+    for (const r of imports) {
+      let meta; try { meta = JSON.parse(r.meta); } catch { continue; }
+      const model = normalizeMetaModel(meta && meta.model);
+      if (!model) continue;
+      updated += update.run(model, 'cowork-' + r.cli_session_id).changes;
+    }
+  });
+  tx();
+  return { scanned: imports.length, updated };
+}
+
+// Backfill sessions.token_input/token_output from persisted meta (#117;
+// idempotent; only rows where token_input IS NULL and meta carries finite tokens).
+function backfillCoworkTokens(db) {
+  let imports;
+  try { imports = db.prepare('SELECT cli_session_id, meta FROM cowork_imports').all(); }
+  catch { return { scanned: 0, updated: 0 }; }
+  const update = db.prepare(
+    'UPDATE sessions SET token_input = ?, token_output = ? WHERE id = ? AND token_input IS NULL'
+  );
+  let updated = 0;
+  const tx = db.transaction(() => {
+    for (const r of imports) {
+      let meta; try { meta = JSON.parse(r.meta); } catch { continue; }
+      const ti = meta && Number.isFinite(meta.token_input)  ? meta.token_input  : null;
+      if (ti == null) continue;
+      const to = meta && Number.isFinite(meta.token_output) ? meta.token_output : null;
+      updated += update.run(ti, to, 'cowork-' + r.cli_session_id).changes;
+    }
+  });
+  tx();
+  return { scanned: imports.length, updated };
 }
 
 // ─── Cowork session discovery ─────────────────────────────────────────────────
@@ -351,6 +442,22 @@ function importSession(db, session, { force = false } = {}) {
 
   upsertSession(db, storedSessionId, project);
 
+  // #81/#117: recover model + token usage from the (still-live) transcript and
+  // persist tokens into meta so they survive the transcript being purged.
+  const usage = parseUsage(transcriptPath);
+  const metaModel = normalizeMetaModel(meta.model);
+  let prevTokenInput = null, prevTokenOutput = null;
+  try {
+    const prev = db.prepare('SELECT meta FROM cowork_imports WHERE cli_session_id = ?').get(cliSessionId);
+    if (prev && prev.meta) {
+      const pm = JSON.parse(prev.meta);
+      if (Number.isFinite(pm.token_input))  prevTokenInput  = pm.token_input;
+      if (Number.isFinite(pm.token_output)) prevTokenOutput = pm.token_output;
+    }
+  } catch { /* no prior import / malformed meta — ignore */ }
+  const tokenInput  = usage.tokenInput  ?? prevTokenInput;
+  const tokenOutput = usage.tokenOutput ?? prevTokenOutput;
+
   let imported = 0;
   const tx = db.transaction(() => {
     for (const ev of events) {
@@ -359,7 +466,11 @@ function importSession(db, session, { force = false } = {}) {
       saveObservation(db, { sessionId: storedSessionId, project, ...obs });
       imported++;
     }
-    closeSession(db, storedSessionId);
+    closeSession(db, storedSessionId, {
+      model:       usage.model || metaModel,
+      tokenInput,
+      tokenOutput,
+    });
     db.prepare(`
       INSERT OR REPLACE INTO cowork_imports (cli_session_id, project, imported_at, events, meta)
       VALUES (?, ?, datetime('now'), ?, ?)
@@ -367,6 +478,8 @@ function importSession(db, session, { force = false } = {}) {
       coworkSessionId: meta.sessionId,
       title:           meta.title,
       model:           meta.model,
+      token_input:     tokenInput,
+      token_output:    tokenOutput,
       createdAt:       meta.createdAt,
       lastActivityAt:  meta.lastActivityAt,
       raw_events:      rawEvents.length,
@@ -379,11 +492,59 @@ function importSession(db, session, { force = false } = {}) {
   return { imported, skipped: 0, noiseDropped, dedupDropped, rawEvents: rawEvents.length };
 }
 
+// One-time usage backfill (#117): recover model + tokens for already-imported
+// cowork sessions whose transcript is still on disk, WITHOUT re-importing
+// observations. Additive + COALESCE-safe — only fills NULL model/token columns
+// and persists tokens into meta so they survive transcript purge. Idempotent.
+function backfillUsageFromTranscripts(db, sessions) {
+  const updateMeta = db.prepare(
+    'UPDATE cowork_imports SET meta = ? WHERE cli_session_id = ?'
+  );
+  let scanned = 0, tokensFilled = 0, modelsFilled = 0;
+  for (const s of sessions) {
+    const cliSessionId = s.meta?.cliSessionId;
+    if (!cliSessionId || !s.transcriptPath || !existsSync(s.transcriptPath)) continue;
+    scanned++;
+    const usage = parseUsage(s.transcriptPath);
+    const model = usage.model || normalizeMetaModel(s.meta.model);
+    if (usage.tokenInput == null && usage.tokenOutput == null && !model) continue;
+    const sid = 'cowork-' + cliSessionId;
+    const before = db.prepare('SELECT model, token_input FROM sessions WHERE id = ?').get(sid);
+    if (!before) continue; // never imported — leave to a normal import pass
+    closeSession(db, sid, { model, tokenInput: usage.tokenInput, tokenOutput: usage.tokenOutput });
+    const after = db.prepare('SELECT model, token_input FROM sessions WHERE id = ?').get(sid);
+    if (before.token_input == null && after.token_input != null) tokensFilled++;
+    if (before.model == null && after.model != null) modelsFilled++;
+    // Persist tokens into meta so backfillCoworkTokens can restore them post-purge.
+    try {
+      const row = db.prepare('SELECT meta FROM cowork_imports WHERE cli_session_id = ?').get(cliSessionId);
+      if (row && row.meta) {
+        const m = JSON.parse(row.meta);
+        if (usage.tokenInput  != null) m.token_input  = usage.tokenInput;
+        if (usage.tokenOutput != null) m.token_output = usage.tokenOutput;
+        updateMeta.run(JSON.stringify(m), cliSessionId);
+      }
+    } catch { /* malformed meta — skip persistence */ }
+  }
+  return { scanned, tokensFilled, modelsFilled };
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
   const force  = args.includes('--force');
+  const backfillUsage = args.includes('--backfill-usage');
+
+  if (backfillUsage) {
+    const sessions = listCoworkSessions();
+    const db = openDb();
+    const r = backfillUsageFromTranscripts(db, sessions);
+    db.close();
+    logLine(`[import-cowork] backfill-usage: scanned=${r.scanned} tokensFilled=${r.tokensFilled} modelsFilled=${r.modelsFilled}`);
+    console.log(JSON.stringify({ mode: 'backfill-usage', ...r }));
+    return;
+  }
 
   logLine(`[import-cowork] start (dryRun=${dryRun}, force=${force})`);
 
@@ -410,8 +571,12 @@ async function main() {
     }
   }
 
+  // #81/#117: restore model + tokens onto any NULL session from persisted meta.
+  try { summary.modelsBackfilled = backfillCoworkModels(db).updated; } catch { summary.modelsBackfilled = 0; }
+  try { summary.tokensBackfilled = backfillCoworkTokens(db).updated; } catch { summary.tokensBackfilled = 0; }
+
   db.close();
-  logLine(`[import-cowork] finish: imported=${summary.imported} sessions (+${summary.observations} obs), skipped=${summary.skipped}, errors=${summary.errors}`);
+  logLine(`[import-cowork] finish: imported=${summary.imported} sessions (+${summary.observations} obs), skipped=${summary.skipped}, errors=${summary.errors}, modelsBackfilled=${summary.modelsBackfilled}, tokensBackfilled=${summary.tokensBackfilled}`);
   console.log(JSON.stringify(summary));
 }
 
