@@ -8,7 +8,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -43,6 +43,51 @@ describe('regression: scheduler standalone scripts (#82, #65, #87)', () => {
         depSize,
         `Size drift: ${src}=${srcSize}B vs ${deployed}=${depSize}B — re-deploy`,
       );
+    });
+  }
+});
+
+// ─── Logic-parity guard (#118) ────────────────────────────────────────────────
+// Size-only comparison above catches "src changed, deploy didn't" but NOT
+// "logic added to src/* but never ported to the standalone twin" (the #117/#118
+// drift class). This block asserts that key behavioral markers present in the
+// canonical src/* implementation are ALSO present in the standalone script that
+// launchd actually runs — so a missing filter/parser fails CI instead of silently
+// polluting analytics.
+const PARITY = [
+  {
+    name: 'cowork importer: src ↔ standalone',
+    canonical: 'src/import-cowork.js',
+    standalone: 'scripts/import-cowork-standalone.mjs',
+    markers: [
+      'SYSTEM_SESSION_TITLE_PATTERNS',
+      'isSystemSession',
+      'parseUsage',
+      'normalizeMetaModel',
+      'backfillCoworkModels',
+      'backfillCoworkTokens',
+      'isNoiseEvent',
+      'dedupEvents',
+    ],
+  },
+];
+
+describe('regression: standalone logic parity (#118)', () => {
+  for (const { name, canonical, standalone, markers } of PARITY) {
+    it(name, () => {
+      assert.ok(existsSync(canonical), `Missing canonical source: ${canonical}`);
+      assert.ok(existsSync(standalone), `Missing standalone: ${standalone}`);
+      const srcText = readFileSync(canonical, 'utf8');
+      const stdText = readFileSync(standalone, 'utf8');
+      for (const m of markers) {
+        // Marker must exist in the canonical impl to be a meaningful guard…
+        assert.ok(srcText.includes(m), `Marker "${m}" missing from ${canonical}`);
+        // …and must have been ported into the standalone twin (the drift bug).
+        assert.ok(
+          stdText.includes(m),
+          `Logic drift: "${m}" exists in ${canonical} but NOT in ${standalone} — port it`,
+        );
+      }
     });
   }
 });
