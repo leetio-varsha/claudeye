@@ -412,10 +412,33 @@ function eventToObservation(ev) {
   return null;
 }
 
+// ─── System-session filter (#118; parity with src/import-cowork.js) ────────────
+// Claudeye's own scheduled tasks (dev-agent / analyzer / insights) run as Cowork
+// sessions. Importing them creates a self-observation loop: their osascript `gh`
+// calls land in the transcript and get re-ingested as user observations, inflating
+// osascript / CoworkAssistantText counts and polluting behavioral analytics.
+// Matching is case-insensitive substring. Keep in sync with src/import-cowork.js.
+const SYSTEM_SESSION_TITLE_PATTERNS = [
+  'claudeye dev agent',
+  'claudeye analyzer',
+  'claudeye insights',
+];
+
+function isSystemSession(meta) {
+  const title = (meta.title || '').toLowerCase();
+  return SYSTEM_SESSION_TITLE_PATTERNS.some(p => title.includes(p));
+}
+
 // ─── Import orchestration ─────────────────────────────────────────────────────
 function importSession(db, session, { force = false } = {}) {
   const { meta, transcriptPath } = session;
   const cliSessionId = meta.cliSessionId;
+
+  // #118: skip Claudeye's own scheduled-task sessions to avoid a self-observation
+  // loop (parity with src/import-cowork.js importCoworkSession).
+  if (isSystemSession(meta)) {
+    return { imported: 0, skipped: 1, reason: 'system session (scheduled task)' };
+  }
 
   if (!force) {
     const already = db.prepare('SELECT 1 FROM cowork_imports WHERE cli_session_id=?').get(cliSessionId);
