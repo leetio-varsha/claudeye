@@ -247,13 +247,17 @@ function checkSCHEMA2() {
 }
 
 function checkINFRA1() {
-  // mem.db ≤ 150MB
+  // mem.db ≤ 300MB
+  // Threshold raised 150 → 300 (#116 retention holds a steady ~262MB plateau with
+  // ~+0.02MB/day growth, so 150 sat permanently below the working-set floor and
+  // fired a false RED every analyzer run). 300MB gives headroom above the plateau
+  // while still catching genuine runaway growth (e.g. if retention regresses).
   const dbPath = join(DATA_DIR, 'mem.db');
   if (!existsSync(dbPath)) return skipped('INFRA-1', 'mem.db not found');
   const sizeMB = +(statSync(dbPath).size / 1024 / 1024).toFixed(1);
-  const threshold = 150;
+  const threshold = 300;
   if (sizeMB <= threshold) return green('INFRA-1', `${sizeMB}MB`, `≤${threshold}MB`, `mem.db: ${sizeMB}MB`);
-  return red('INFRA-1', `${sizeMB}MB`, `≤${threshold}MB`, `mem.db ${sizeMB}MB exceeds 150MB threshold — run claudeye archive`);
+  return red('INFRA-1', `${sizeMB}MB`, `≤${threshold}MB`, `mem.db ${sizeMB}MB exceeds ${threshold}MB threshold — retention may have regressed; run claudeye archive`);
 }
 
 function checkINFRA2(db) {
