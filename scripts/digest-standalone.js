@@ -206,8 +206,19 @@ async function generateDigest() {
     env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}` },
   });
 
-  if (result.status !== 0) {
-    console.error(`[digest] Claude CLI failed: ${result.stderr}`);
+  // Diagnose ALL failure modes — the old code only logged result.stderr, which is
+  // empty when the CLI fails to spawn (ENOENT) or is killed by the 120s timeout
+  // (status=null, signal=SIGTERM). That masked the real cause and left the digest
+  // silently stuck (#65/#79 regress). Surface spawn errors, signals, exit codes
+  // and empty-output cases explicitly, and name the resolved binary.
+  if (result.error || result.status !== 0 || !(result.stdout || '').trim()) {
+    let reason;
+    if (result.error)       reason = `spawn error: ${result.error.message}`;
+    else if (result.signal) reason = `killed by signal ${result.signal} (likely 120s timeout)`;
+    else if (result.status !== 0)
+      reason = `exit ${result.status}: ${(result.stderr || '').trim() || '(no stderr)'}`;
+    else                    reason = `exit 0 but empty stdout: ${(result.stderr || '').trim() || '(no stderr)'}`;
+    console.error(`[digest] Claude CLI failed via ${CLAUDE_BIN} — ${reason}`);
     return null;
   }
 
