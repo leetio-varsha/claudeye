@@ -70,9 +70,14 @@ async function main() {
   const output = stripPrivate(typeof rawOutput === 'string' ? rawOutput : JSON.stringify(rawOutput));
 
   try {
-    const { saveObservation, saveEmbedding, upsertSession, logHookError } = await import(srcDir + 'db.js');
+    const { saveObservation, saveEmbedding, upsertSession, isDegenerateProject, logHookError } = await import(srcDir + 'db.js');
     const { compressObservation }                           = await import(srcDir + 'compress.js');
     const { embedWithMeta }                                 = await import(srcDir + 'embeddings.js');
+
+    // #121: skip Claudeye's own Cowork scheduled/agent runs (project resolves to
+    // '/' or $TMPDIR). Exit before upsertSession/saveObservation so we neither
+    // create junk sessions nor trip the observations FK and pollute hook_errors.
+    if (isDegenerateProject(project)) process.exit(0);
 
     // Ensure session exists — pass model if available (#81)
     upsertSession(sessionId, project, { model });

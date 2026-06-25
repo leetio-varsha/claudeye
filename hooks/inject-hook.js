@@ -252,8 +252,14 @@ async function main() {
   }, TIMEOUT_MS);
 
   try {
-    const { upsertSession, logHookError, getDb, saveEffortClassification, saveInjectionStat } = await import(srcDir + 'db.js');
+    const { upsertSession, isDegenerateProject, logHookError, getDb, saveEffortClassification, saveInjectionStat } = await import(srcDir + 'db.js');
     const { buildContextWithMetrics }  = await import(srcDir + 'search.js');
+
+    // #121: skip Claudeye's own Cowork scheduled/agent runs — they execute with no
+    // CLAUDE_PROJECT_DIR, so `project` resolves to '/' or $TMPDIR. Registering a
+    // session here creates an observation-less, never-closing junk row. Exit
+    // before any DB write (parity with CLAUDEYE_INTERNAL guard above).
+    if (isDegenerateProject(project)) { clearTimeout(timeout); process.exit(0); }
 
     upsertSession(sessionId, project);
 
