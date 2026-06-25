@@ -569,7 +569,31 @@ export function ftsSearch(query, project = null, limit = 20) {
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
 
+/**
+ * #121: a "degenerate" project root is one that never belongs to a real user
+ * project — the filesystem root ('/'), an empty/blank value, or a path inside the
+ * OS temp dir ($TMPDIR → macOS /var/folders/.../T, often /private-prefixed; or
+ * /tmp). Claudeye's own Cowork scheduled/agent runs (analyzer, dev-agent, digest)
+ * execute without CLAUDE_PROJECT_DIR, so the live hooks resolve `project` to one
+ * of these and would register observation-less, never-closing session rows that
+ * pile up (1,900+) and produce a false "sessions↑ / obs flat" host-import-lag
+ * signal. This is the live-hook parity of the import-side system-session filter
+ * (#118).
+ */
+export function isDegenerateProject(project) {
+  if (typeof project !== 'string') return true;
+  const p = project.trim();
+  if (p === '' || p === '/') return true;
+  if (/^\/(private\/)?var\/folders\//.test(p)) return true;  // macOS $TMPDIR
+  if (p === '/tmp' || p.startsWith('/tmp/')) return true;     // generic temp
+  return false;
+}
+
 export function upsertSession(id, project, { model = null } = {}) {
+  // #121: never register a session for a degenerate project root — these are
+  // Claudeye's own automated Cowork runs, not real user work. Central guard so
+  // every caller (inject-hook, save-hook, future) is covered.
+  if (isDegenerateProject(project)) return;
   getDb().prepare(`
     INSERT INTO sessions (id, project, model) VALUES (?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET prompt_count = prompt_count + 1, model = COALESCE(?, model)
