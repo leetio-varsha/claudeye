@@ -702,8 +702,9 @@ program.command('cleanup')
   .option('--no-vacuum', 'Skip VACUUM (faster, but does not reclaim disk space)')
   .option('--cowork-noise', 'Also drop Cowork noise + intra-session duplicates (#93)')
   .option('--system-sessions', 'Remove observations from Claudeye scheduled-task sessions (self-observation loop fix)')
+  .option('--degenerate-sessions', 'Purge accumulated observation-less degenerate-project junk sessions (#122, follow-up #121)')
   .action(async (opts) => {
-    const { cleanup, compact, getDbMetrics, closeOrphanedSessions, cleanupCoworkNoise, cleanupSystemSessionObservations } = await import('./src/db.js');
+    const { cleanup, compact, getDbMetrics, closeOrphanedSessions, cleanupCoworkNoise, cleanupSystemSessionObservations, cleanupDegenerateSessions } = await import('./src/db.js');
     const { computeFrictionScore } = await import('./src/analytics.js');
     const ora = (await import('ora')).default;
 
@@ -819,8 +820,27 @@ program.command('cleanup')
       }
     }
 
+    // Step 2.7: Degenerate junk-session sweep (#122) — opt-in, destructive.
+    // Removes observation-less '/' / $TMPDIR sessions left over before the #121
+    // guard. Dry-run shows count + examples; deletes only with the flag.
+    let degenCounts = { sessions: 0, examples: [] };
+    if (opts.degenerateSessions) {
+      const dSpinner = ora(opts.dryRun ? 'Scanning degenerate junk sessions...' : 'Purging degenerate junk sessions...').start();
+      degenCounts = cleanupDegenerateSessions({ dryRun: opts.dryRun });
+      if (degenCounts.sessions > 0) {
+        if (opts.dryRun) {
+          dSpinner.info(`Would delete ${chalk.yellow(degenCounts.sessions)} empty degenerate-project sessions:`);
+        } else {
+          dSpinner.succeed(`Deleted ${chalk.green(degenCounts.sessions)} empty degenerate-project sessions.`);
+        }
+        for (const ex of degenCounts.examples) console.log(`    e.g. ${ex}`);
+      } else {
+        dSpinner.succeed('No degenerate junk sessions found.');
+      }
+    }
+
     // Step 3: VACUUM to reclaim disk space
-    if (opts.vacuum !== false && !opts.dryRun && (compactCounts.total > 0 || counts.total > 0 || coworkCounts.total > 0 || sysCounts.observations > 0)) {
+    if (opts.vacuum !== false && !opts.dryRun && (compactCounts.total > 0 || counts.total > 0 || coworkCounts.total > 0 || sysCounts.observations > 0 || degenCounts.sessions > 0)) {
       const vacSpinner = ora('Running VACUUM to reclaim disk space...').start();
       const { getDb } = await import('./src/db.js');
       getDb().exec('VACUUM');
