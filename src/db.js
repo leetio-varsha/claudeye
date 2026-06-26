@@ -911,6 +911,59 @@ export function cleanupSystemSessionObservations({ dryRun = false } = {}) {
   return { sessions: cliIds.length, observations: obsCount };
 }
 
+/**
+ * #122: purge accumulated observation-less "degenerate-project" sessions.
+ *
+ * #121 added isDegenerateProject() as a live-hook guard so NEW junk sessions
+ * (project resolved to '/', blank, or $TMPDIR/tmp by Claudeye's own Cowork
+ * scheduled/agent runs) stop being created. But ~1,900 historical rows already
+ * accumulated in the DB, inflating the `sessions` total and analytics history.
+ * This sweeps them out.
+ *
+ * Only deletes sessions that are ALL of:
+ *   - isDegenerateProject(project) === true   (single source of truth, reused)
+ *   - 0 observations
+ *   - id NOT LIKE 'import-%' and NOT LIKE 'cowork-%' — those id namespaces are
+ *     legitimate even when empty and are handled by their own cleanups.
+ *
+ * Destructive and opt-in (CLI `--degenerate-sessions`). Empty sessions carry no
+ * observations/embeddings, so nothing cascades — only the bare session rows go.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun — count + sample without deleting.
+ * @returns {{ sessions: number, examples: string[] }}
+ */
+export function cleanupDegenerateSessions({ dryRun = false } = {}) {
+  const db = getDb();
+
+  // Candidate sessions: no observations, not import/cowork ids. The project
+  // filter is applied in JS to reuse isDegenerateProject() verbatim rather than
+  // re-encoding its rules in SQL (keeps #121 and #122 in lockstep).
+  const candidates = db.prepare(`
+    SELECT s.id, s.project
+    FROM sessions s
+    WHERE s.id NOT LIKE 'import-%'
+      AND s.id NOT LIKE 'cowork-%'
+      AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.session_id = s.id)
+  `).all();
+
+  const targets = candidates.filter(s => isDegenerateProject(s.project));
+  const examples = targets.slice(0, 5).map(s => `${s.id} (${s.project})`);
+
+  if (dryRun || targets.length === 0) {
+    return { sessions: targets.length, examples };
+  }
+
+  const ids = targets.map(s => s.id);
+  const del = db.prepare('DELETE FROM sessions WHERE id = ?');
+  const tx = db.transaction(() => {
+    for (const id of ids) del.run(id);
+  });
+  tx();
+
+  return { sessions: targets.length, examples };
+}
+
 export function cleanupCoworkNoise({ dryRun = false } = {}) {
   const db = getDb();
 
