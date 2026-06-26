@@ -229,6 +229,8 @@ claudeye import sentry --query "is:unresolved level:error" --no-stacks
 claudeye import cowork
 claudeye import cowork --force               # wipes + re-imports (applies new filters)
 claudeye cleanup --cowork-noise              # also clears already-imported noise/dupes
+claudeye cleanup --degenerate-sessions --dry-run  # preview empty '/' / $TMPDIR junk sessions (#122)
+claudeye cleanup --degenerate-sessions       # purge them (destructive; follow-up to #121 guard)
 
 # Heavy-session retention (#116) — prune old low-importance obs from 450+ turn sessions
 claudeye retention --dry-run                 # preview (default: > 300 obs, older than 7d, importance < 0.5)
