@@ -50,7 +50,8 @@ const THRESHOLDS = {
   REPEAT_FIX_THRESHOLD: 5,         // 🟡 same file edited 5+ times in 7 days (high importance)
 
   // Infrastructure
-  HOOK_SILENCE_HOURS: 36,          // 🔴 no observations for 36+ hours
+  HOOK_SILENCE_HOURS: 72,             // floor before any silence alert (covers a normal weekend idle for a solo user) (#123)
+  HOOK_SILENCE_CRITICAL_HOURS: 168,   // 🔴 ≥1 week of silence → likely a real hook failure, escalate to critical (#123)
   DB_SIZE_WARN_MB: 150,            // 🟡 database getting large
   DB_SIZE_AUTO_COMPACT_MB: 150,    // auto-run compact when DB exceeds this (aligned with db.js autoCleanup, #102)
   ERROR_RATE_CRIT: 20,             // 🔴 >20 hook errors in 24h
@@ -61,6 +62,54 @@ const THRESHOLDS = {
   // Agent feedback loop (#115)
   AGENT_REVIEW_PENDING_WARN: 50,   // 🟡 50+ agent actions pending and none reviewed in 7d
 };
+
+// ─── Hook-silence detector (#123) ──────────────────────────────────────────
+// A solo user is regularly idle (nights, weekends, working only through Cowork
+// or scheduled tasks instead of the interactive CLI). The old detector cried
+// `critical` at a flat 36h floor, so every quiet stretch produced a FALSE-RED
+// "Хуки молчат" even though the infrastructure was perfectly healthy.
+//
+// Two independent signals separate a real hook failure from normal idle:
+//   1. hoursSince       — gap since the last *live-hook* observation (non-git).
+//   2. pipelineGapHours — gap since the last observation of ANY kind, including
+//                         automated git-import rows. A fresh value proves the
+//                         machine, DB and import/daemon pipeline are alive, so a
+//                         quiet live-hook stream just means the user isn't
+//                         running interactive CLI — never a `critical`.
+// We escalate to `critical` ONLY when the whole pipeline has gone dark (a true
+// outage); otherwise an anomalous-for-this-user gap is at most a `warning`.
+
+export function percentile(values, p) {
+  if (!values || values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx];
+}
+
+/**
+ * Classify a silence gap as breakage vs normal idle.
+ * @param {object} o
+ * @param {number} o.hoursSince         hours since the last non-git observation
+ * @param {number} [o.typicalGapHours]  p90 of the user's recent activity gaps
+ * @param {number|null} [o.pipelineGapHours] hours since the last observation of
+ *        ANY tool (incl. git-import); null/unknown is treated as "not alive".
+ * @param {object} o.thresholds         must expose HOOK_SILENCE_HOURS and HOOK_SILENCE_CRITICAL_HOURS
+ * @returns {{severity:'warning'|'critical', hoursSince:number}|null}
+ */
+export function detectHookSilence({ hoursSince, typicalGapHours = 0, pipelineGapHours = null, thresholds }) {
+  const floor = thresholds.HOOK_SILENCE_HOURS;
+  const crit  = thresholds.HOOK_SILENCE_CRITICAL_HOURS;
+  if (!(hoursSince > floor)) return null;                 // within the quiet floor
+  // Pipeline alive recently ⇒ infra is fine, user is just idle. Don't escalate.
+  const pipelineAlive = pipelineGapHours != null && pipelineGapHours < crit;
+  if (hoursSince >= crit && !pipelineAlive) {
+    return { severity: 'critical', hoursSince };          // whole pipeline dark ≥1 week → real failure
+  }
+  // Below critical horizon (or pipeline still alive): flag only if anomalous for THIS user.
+  const idleBand = Math.max(floor, typicalGapHours * 1.5);
+  if (hoursSince <= idleBand) return null;                // normal idle rhythm, not breakage
+  return { severity: 'warning', hoursSince };
+}
 
 // ─── Main ────────────────────────────────────────────────────────────────
 
@@ -265,20 +314,45 @@ export async function runInsights({ days = 1, verbose = false, notify = true } =
 
   // ── 3. Infrastructure Health ──────────────────────────────────────────
 
-  // Hook silence
+  // Hook silence (#123) — idle-aware, tiered severity
   const lastObs = db.prepare(`
     SELECT MAX(created_at) as last_at FROM observations WHERE tool != 'git-commit'
   `).get();
 
   if (lastObs?.last_at) {
     const hoursSince = (Date.now() - new Date(lastObs.last_at + 'Z').getTime()) / 3600000;
-    if (hoursSince > THRESHOLDS.HOOK_SILENCE_HOURS) {
+    // Baseline: the user's own idle rhythm = p90 of inter-observation gaps over the last 30d.
+    const gapRows = db.prepare(`
+      WITH obs AS (
+        SELECT created_at,
+               LAG(created_at) OVER (ORDER BY created_at) AS prev_at
+        FROM observations
+        WHERE tool != 'git-commit'
+          AND created_at > datetime('now', '-30 day')
+      )
+      SELECT (julianday(created_at) - julianday(prev_at)) * 24.0 AS gap_h
+      FROM obs WHERE prev_at IS NOT NULL
+    `).all();
+    const typicalGapHours = percentile(gapRows.map(r => r.gap_h), 90);
+    // Liveness proxy: gap since the last observation of ANY tool (incl. automated
+    // git-import rows). Fresh ⇒ machine/DB/import pipeline alive ⇒ not a hook break.
+    const lastAny = db.prepare(`SELECT MAX(created_at) as last_at FROM observations`).get();
+    const pipelineGapHours = lastAny?.last_at
+      ? (Date.now() - new Date(lastAny.last_at + 'Z').getTime()) / 3600000
+      : null;
+    const silence = detectHookSilence({ hoursSince, typicalGapHours, pipelineGapHours, thresholds: THRESHOLDS });
+    if (silence) {
+      const isCrit = silence.severity === 'critical';
       alerts.push({
-        severity: 'critical',
+        severity: silence.severity,
         category: 'infra',
-        title: `Хуки молчат ${Math.round(hoursSince)}ч`,
-        detail: `Последний observation: ${lastObs.last_at}. Либо Claude Code не запускался, либо хуки сломаны.`,
-        action: 'Проверь `claudeye health` и переустанови хуки если нужно.',
+        title: isCrit
+          ? `Хуки молчат ${Math.round(hoursSince)}ч — вероятен отказ`
+          : `Live-хуки тихо ${Math.round(hoursSince)}ч`,
+        detail: isCrit
+          ? `Последний observation: ${lastObs.last_at}. Весь пайплайн молчит — скорее всего хуки сломаны или Claude Code не запускался неделю+.`
+          : `Последний live-observation: ${lastObs.last_at} (типичный idle p90 ~${Math.round(typicalGapHours)}ч). Пайплайн жив (последняя активность ~${Math.round(pipelineGapHours)}ч назад) — вероятно просто нет интерактивных CLI-сессий, не поломка.`,
+        action: isCrit ? 'Проверь `claudeye health` и переустанови хуки если нужно.' : null,
       });
     }
   }
