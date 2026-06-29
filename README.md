@@ -369,7 +369,7 @@ Can also be invoked via CLI: `claudeye insights`.
 Monitors for:
 - **Quota burn** — sessions with 250+ prompts, daily volume spikes
 - **Friction anomalies** — per-project friction increase >30%, repeat-fix hotspots
-- **Infrastructure health** — hook silence >36h, DB size, hook error rate, embedding gaps
+- **Infrastructure health** — idle-aware hook silence (warning past a 72h floor vs the user's own idle rhythm; `critical` only when the whole pipeline goes dark ≥1 week, cross-checked against automated import liveness — #123), DB size, hook error rate, embedding gaps
 - **Positive signals** — friction drops (so you know what's working)
 
 Alert severity: 🔴 critical (act now), 🟡 warning (trend worsening), 🟢 insight (opportunity).
