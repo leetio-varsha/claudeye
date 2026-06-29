@@ -17,9 +17,13 @@ const PAIRS = [
   ['scripts/insights-runner.sh',               join(homedir(), '.claudeye/insights-runner.sh')],
   ['scripts/behavioral-standalone.mjs',        join(homedir(), '.claudeye/behavioral-standalone.mjs')],
   ['scripts/import-cowork-standalone.mjs',     join(homedir(), '.claudeye/import-cowork-standalone.mjs')],
-  // digest-standalone.mjs and insights-standalone.mjs lived in ~/.claudeye/
-  // before being mirrored into the repo — pair them up once they're added
-  // to scripts/. Until then this list grows as standalones are formalized.
+  // #123: insights-scheduler.js copies scripts/insights-standalone.js verbatim to
+  // ~/.claudeye/insights-standalone.mjs — they must stay byte-identical or launchd
+  // keeps running the stale detector (the root cause of the recurring FALSE-RED).
+  ['scripts/insights-standalone.js',           join(homedir(), '.claudeye/insights-standalone.mjs')],
+  // digest-standalone.mjs lived in ~/.claudeye/ before being mirrored into the
+  // repo — pair it up once it's added to scripts/. This list grows as
+  // standalones are formalized.
 ];
 
 describe('regression: scheduler standalone scripts (#82, #65, #87)', () => {
@@ -68,6 +72,19 @@ const PARITY = [
       'backfillCoworkTokens',
       'isNoiseEvent',
       'dedupEvents',
+    ],
+  },
+  {
+    // #123: the idle-aware hook-silence detector must live in BOTH the canonical
+    // insights script and the standalone twin that launchd actually runs.
+    // If only daily-insights.js gets the fix, the host keeps emitting FALSE-RED.
+    name: 'hook-silence detector: daily-insights ↔ standalone',
+    canonical: 'scripts/daily-insights.js',
+    standalone: 'scripts/insights-standalone.js',
+    markers: [
+      'HOOK_SILENCE_CRITICAL_HOURS',
+      'detectHookSilence',
+      'typicalGapHours',
     ],
   },
 ];
