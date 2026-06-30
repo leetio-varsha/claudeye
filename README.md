@@ -456,7 +456,7 @@ Select via `settings.embedding_provider` (`openai` | `voyage` | `fallback`) or a
 - [x] npm test — node:test runner with 29 tests (#72)
 - [x] GitHub Actions CI — automated tests on push (#66) ← #72
 - [x] Tool distribution anomaly — git-commit filtered from analytics (#67)
-- [x] DB auto-compact — daily auto-compact at 150MB, alert at 250MB (#74, threshold raised 2026-05-04)
+- [x] DB auto-compact — silent maintenance triggers (retention 150MB, archive 250MB); user-facing health alarms warn 280 / crit 300, unified in `src/thresholds.js` (#74, #124)
 
 ### Phase 2.6: Stability gate (May 2026)
 
