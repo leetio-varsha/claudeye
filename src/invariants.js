@@ -15,6 +15,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { lastMondayLocal } from './dates.js';
+import { DB_SIZE_CRIT_MB } from './thresholds.js';
 
 const DATA_DIR    = join(homedir(), '.claudeye');
 const HEARTBEAT   = join(DATA_DIR, 'logs', 'insights-heartbeat.log');
@@ -247,15 +248,17 @@ function checkSCHEMA2() {
 }
 
 function checkINFRA1() {
-  // mem.db ≤ 300MB
+  // mem.db ≤ DB_SIZE_CRIT_MB (300MB)
   // Threshold raised 150 → 300 (#116 retention holds a steady ~262MB plateau with
   // ~+0.02MB/day growth, so 150 sat permanently below the working-set floor and
   // fired a false RED every analyzer run). 300MB gives headroom above the plateau
   // while still catching genuine runaway growth (e.g. if retention regresses).
+  // #124: now sourced from src/thresholds.js so health-display and this invariant
+  // share one number (the recurring 150/250/300 drift the analyzer flagged).
   const dbPath = join(DATA_DIR, 'mem.db');
   if (!existsSync(dbPath)) return skipped('INFRA-1', 'mem.db not found');
   const sizeMB = +(statSync(dbPath).size / 1024 / 1024).toFixed(1);
-  const threshold = 300;
+  const threshold = DB_SIZE_CRIT_MB;
   if (sizeMB <= threshold) return green('INFRA-1', `${sizeMB}MB`, `≤${threshold}MB`, `mem.db: ${sizeMB}MB`);
   return red('INFRA-1', `${sizeMB}MB`, `≤${threshold}MB`, `mem.db ${sizeMB}MB exceeds ${threshold}MB threshold — retention may have regressed; run claudeye archive`);
 }

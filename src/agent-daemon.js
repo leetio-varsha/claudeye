@@ -326,6 +326,11 @@ function runDbGrowthAlert({ dryRun = false }) {
  * Archives old low/medium-importance observations to archive.db when hot DB
  * exceeds the critical size threshold (default 250 MB).
  *
+ * NOTE (#124): 250 MB here is a MAINTENANCE trigger that keeps the retention
+ * plateau in equilibrium silently — it is NOT the user-facing alarm. The
+ * alarm thresholds live in src/thresholds.js (warn 280 / crit 300); they sit
+ * above the plateau on purpose and must not be conflated with this trigger.
+ *
  * In 'confirm' mode (dryRun=true): logs intent, does NOT move data.
  * In 'auto' mode (dryRun=false): calls archiveObservations() and logs result.
  *

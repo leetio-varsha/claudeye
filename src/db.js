@@ -1590,8 +1590,11 @@ export function getDbMetrics() {
  *
  * @param {object} opts
  * @param {number} opts.maxSizeMB  — trigger threshold (default 150MB).
- *   Aligned with `claudeye health` warn level (was 100MB, raised to 150MB
- *   so auto-compact doesn't fire right after a successful `claudeye archive`).
+ *   This is a MAINTENANCE trigger (keeps the retention plateau in equilibrium),
+ *   NOT a user-facing alarm — it runs silently. Distinct from the alarm
+ *   thresholds in src/thresholds.js (warn 280 / crit 300, #124); do not align
+ *   them, the lower 150MB here is intentional so cleanup fires before the
+ *   user-facing ceiling is ever reached.
  * @returns {{ ran: boolean, compact?: object, cleanup?: object, vacuumed?: boolean }}
  */
 export function autoCleanup({ maxSizeMB = 150 } = {}) {

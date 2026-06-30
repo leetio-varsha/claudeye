@@ -15,6 +15,7 @@
 import { program } from 'commander';
 import chalk from 'chalk';
 import { registerAnalyticsCommands } from './src/analytics-cli.js';
+import { DB_SIZE_WARN_MB, DB_SIZE_CRIT_MB } from './src/thresholds.js';
 
 program
   .name('claudeye')
@@ -346,16 +347,18 @@ program.command('health')
       const { getDbMetrics } = await import('./src/db.js');
       const stats = getStats();
       const metrics = getDbMetrics();
-      // Thresholds: 150MB action (run archive), 250MB critical. Steady-state floor
-      // after `claudeye archive` is ~100MB (recent + high-importance hot data) — alerting
-      // on >100 caused noise immediately after a successful archive.
-      const sizeWarn = metrics.fileSizeMB > 150;
-      const sizeCrit = metrics.fileSizeMB > 250;
+      // DB-size ALARM thresholds (single source of truth in src/thresholds.js,
+      // #124). Warn/crit sit ABOVE the ~262MB retention plateau (#116) so health
+      // stops crying "run archive" every run while INFRA-1 (#119) ceiling is 300.
+      // The background retention/archive maintenance triggers (db.js autoCleanup
+      // 150MB, daemon 250MB) are a different category and intentionally lower.
+      const sizeWarn = metrics.fileSizeMB > DB_SIZE_WARN_MB;
+      const sizeCrit = metrics.fileSizeMB > DB_SIZE_CRIT_MB;
       const embCoverage = metrics.obsCount > 0 ? Math.round(metrics.embCount / metrics.obsCount * 100) : 0;
       const gitPct = metrics.obsCount > 0 ? Math.round(metrics.gitCommitCount / metrics.obsCount * 100) : 0;
       let sizeAdvice = '';
-      if (sizeCrit) sizeAdvice = ` 🔴 >250MB — run ${chalk.red('claudeye archive')} to move old obs to archive.db`;
-      else if (sizeWarn) sizeAdvice = ` ⚠️  >150MB — run ${chalk.yellow('claudeye archive --dry-run')} to see what can be archived`;
+      if (sizeCrit) sizeAdvice = ` 🔴 >${DB_SIZE_CRIT_MB}MB — run ${chalk.red('claudeye archive')} to move old obs to archive.db`;
+      else if (sizeWarn) sizeAdvice = ` ⚠️  >${DB_SIZE_WARN_MB}MB — run ${chalk.yellow('claudeye archive --dry-run')} to see what can be archived`;
       const effCov = metrics.effectiveCoverage;
       const embCovWarn = effCov < 80;
       checks.push({
