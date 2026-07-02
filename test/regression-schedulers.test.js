@@ -21,6 +21,9 @@ const PAIRS = [
   // ~/.claudeye/insights-standalone.mjs — they must stay byte-identical or launchd
   // keeps running the stale detector (the root cause of the recurring FALSE-RED).
   ['scripts/insights-standalone.js',           join(homedir(), '.claudeye/insights-standalone.mjs')],
+  // #125: agent-daemon-standalone.mjs — launchd-runner демона; дрейфовал от src
+  // с 06-04 (#111 не был портирован) — session-analysis вечно видел 0.
+  ['scripts/agent-daemon-standalone.mjs',      join(homedir(), '.claudeye/agent-daemon-standalone.mjs')],
   // digest-standalone.mjs lived in ~/.claudeye/ before being mirrored into the
   // repo — pair it up once it's added to scripts/. This list grows as
   // standalones are formalized.
@@ -85,6 +88,21 @@ const PARITY = [
       'HOOK_SILENCE_CRITICAL_HOURS',
       'detectHookSilence',
       'typicalGapHours',
+    ],
+  },
+  {
+    // #125: T-cutoff фикс (#111) жил только в src/agent-daemon.js — standalone,
+    // который реально запускает launchd, три недели писал "Sessions since ...T..."
+    // и считал 0 same-day sessions. Маркеры держат порт в синхроне.
+    // NB: 'runAutoArchive' и rate limiter (#22) в standalone отсутствуют — см. #126,
+    // добавить маркеры при портировании.
+    name: 'agent daemon: src ↔ standalone',
+    canonical: 'src/agent-daemon.js',
+    standalone: 'scripts/agent-daemon-standalone.mjs',
+    markers: [
+      ".replace('T', ' ')",
+      'isNoopResult',
+      'db-growth-alert',
     ],
   },
 ];
