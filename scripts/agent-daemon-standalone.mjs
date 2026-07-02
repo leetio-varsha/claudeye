@@ -144,7 +144,10 @@ function logDaemonAction({ action, query, result, dryRun }) {
 function runSessionAnalysis({ intervalHours = 1, dryRun = false }) {
   try {
     const db = getDb();
-    const cutoff = new Date(Date.now() - intervalHours * 60 * 60 * 1000).toISOString().slice(0, 19);
+    // NB (#111, портировано из src/agent-daemon.js): created_at в SQLite хранится как
+    // 'YYYY-MM-DD HH:MM:SS'; ISO-формат с 'T' лексикографически больше (' ' < 'T'),
+    // поэтому без replace same-day строки не проходят фильтр и счётчик вечно 0.
+    const cutoff = new Date(Date.now() - intervalHours * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
     const rows = db.prepare(`
       SELECT COUNT(DISTINCT session_id) AS new_sessions, COUNT(*) AS new_observations
       FROM observations WHERE created_at >= ?
