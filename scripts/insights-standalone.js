@@ -48,7 +48,7 @@ const TH = {
   SESSION_CRIT_PROMPTS: 450,
   HOOK_SILENCE_HOURS: 72,              // floor before any silence alert (covers a normal weekend idle for a solo user) (#123)
   HOOK_SILENCE_CRITICAL_HOURS: 168,    // 🔴 ≥1 week of silence → likely a real hook failure, escalate to critical (#123)
-  DB_SIZE_WARN_MB: 150,
+  DB_SIZE_WARN_MB: 280,                // ALARM — mirrors src/thresholds.js (#124); was 150, below the ~262MB retention plateau → false warning every run. Value-parity guarded by test/thresholds.test.js
   ERROR_RATE_CRIT: 20,
 };
 
