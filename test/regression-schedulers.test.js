@@ -24,9 +24,10 @@ const PAIRS = [
   // #125: agent-daemon-standalone.mjs — launchd-runner демона; дрейфовал от src
   // с 06-04 (#111 не был портирован) — session-analysis вечно видел 0.
   ['scripts/agent-daemon-standalone.mjs',      join(homedir(), '.claudeye/agent-daemon-standalone.mjs')],
-  // digest-standalone.mjs lived in ~/.claudeye/ before being mirrored into the
-  // repo — pair it up once it's added to scripts/. This list grows as
-  // standalones are formalized.
+  // digest-standalone: insights-runner.sh dispatches the ~/.claudeye copy daily;
+  // the daily-regeneration fix (Sunday-only refresh + SIGKILL deadline) must not
+  // drift the way #117/#125 did.
+  ['scripts/digest-standalone.js',             join(homedir(), '.claudeye/digest-standalone.mjs')],
 ];
 
 describe('regression: scheduler standalone scripts (#82, #65, #87)', () => {
