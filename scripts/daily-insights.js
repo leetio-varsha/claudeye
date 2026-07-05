@@ -19,6 +19,7 @@
  */
 
 import { getDb, getDbMetrics, getErrorStats, cleanup, compact } from '../src/db.js';
+import { DB_SIZE_WARN_MB } from '../src/thresholds.js';
 import { isEmbeddingEnabled } from '../src/embeddings.js';
 import { existsSync, statSync, appendFileSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
@@ -52,8 +53,11 @@ const THRESHOLDS = {
   // Infrastructure
   HOOK_SILENCE_HOURS: 72,             // floor before any silence alert (covers a normal weekend idle for a solo user) (#123)
   HOOK_SILENCE_CRITICAL_HOURS: 168,   // 🔴 ≥1 week of silence → likely a real hook failure, escalate to critical (#123)
-  DB_SIZE_WARN_MB: 150,            // 🟡 database getting large
-  DB_SIZE_AUTO_COMPACT_MB: 150,    // auto-run compact when DB exceeds this (aligned with db.js autoCleanup, #102)
+  // 🟡 ALARM: database getting large. Single source of truth = src/thresholds.js
+  // (#124). Was hardcoded at 150 — below the ~262MB retention plateau (#116),
+  // so every run emitted a size alert that health/invariants no longer agreed with.
+  DB_SIZE_WARN_MB,
+  DB_SIZE_AUTO_COMPACT_MB: 150,    // MAINTENANCE trigger (not an alarm) — deliberately below the plateau, aligned with db.js autoCleanup (#102); see src/thresholds.js note
   ERROR_RATE_CRIT: 20,             // 🔴 >20 hook errors in 24h
 
   // Activity
