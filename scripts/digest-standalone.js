@@ -173,17 +173,33 @@ async function generateDigest() {
   monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
   const weekStart = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
 
-  // Skip only if already generated TODAY — allow regeneration if digest was created
-  // earlier in the week (so the Sunday scheduler can update a mid-week manual digest
-  // with a full week of data).
-  const today = new Date().toISOString().slice(0, 10);
+  // Skip logic. The old rule ("skip only if already generated TODAY") interacted
+  // badly with the DAILY insights-runner dispatch: the current week's digest was
+  // regenerated EVERY morning (INSERT OR REPLACE moved created_at, count stayed
+  // flat), burning one Claude CLI call per day — and on 07-01…07-04 those calls
+  // hung/ETIMEDOUT, wedging the runner for up to ~1h. Analyzer 07-05 flagged the
+  // symptom as "last_digest_at = Sunday at flat count 14".
+  //
+  // New rule, preserving the documented intent (Sunday full-week refresh):
+  //   - no digest for this week yet  → generate (normally Monday's run);
+  //   - digest exists, today is NOT Sunday → skip (no daily churn);
+  //   - digest exists, today IS Sunday → refresh once with the full week of data
+  //     (skip if the refresh already happened today).
+  const today = new Date().toISOString().slice(0, 10); // UTC — matches sqlite datetime('now') in created_at
   try {
     const existing = db.prepare(
-      "SELECT id FROM digests WHERE week_start = ? AND date(created_at) = ?"
-    ).get(weekStart, today);
+      "SELECT id, date(created_at) AS created_day FROM digests WHERE week_start = ?"
+    ).get(weekStart);
     if (existing) {
-      console.error(`[digest] Already generated today for week ${weekStart}, skipping`);
-      return null;
+      if (day !== 0) {
+        console.error(`[digest] Digest for week ${weekStart} exists (created ${existing.created_day}); weekly refresh runs on Sunday — skipping`);
+        return null;
+      }
+      if (existing.created_day === today) {
+        console.error(`[digest] Already refreshed today for week ${weekStart}, skipping`);
+        return null;
+      }
+      console.error(`[digest] Sunday full-week refresh for week ${weekStart}...`);
     }
   } catch {} // table might not exist yet
 
@@ -203,6 +219,10 @@ async function generateDigest() {
     input: fullPrompt,
     encoding: 'utf8',
     timeout: 120_000,
+    // Default SIGTERM is ignored by a hung CLI: heartbeat 07-01…07-04 shows the
+    // 120s "timeout" actually blocking the runner 9–53 min until the child died
+    // on its own. SIGKILL makes the deadline real.
+    killSignal: 'SIGKILL',
     env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}` },
   });
 
