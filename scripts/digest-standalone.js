@@ -215,31 +215,42 @@ async function generateDigest() {
   const userPrompt = `Analyze my Claude Code usage for the last 7 days.\n\nDATA:\n${JSON.stringify(stats, null, 2)}`;
   const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
 
-  const result = spawnSync(CLAUDE_BIN, ['--print', '-'], {
-    input: fullPrompt,
-    encoding: 'utf8',
-    timeout: 120_000,
-    // Default SIGTERM is ignored by a hung CLI: heartbeat 07-01…07-04 shows the
-    // 120s "timeout" actually blocking the runner 9–53 min until the child died
-    // on its own. SIGKILL makes the deadline real.
-    killSignal: 'SIGKILL',
-    env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}` },
-  });
+  // Timeout 300s (was 120s) + 1 retry. The 120s deadline from c2efd69 turned out
+  // to be too tight: Monday 07-06 the generation call ran ~146s and was SIGKILLed
+  // (ETIMEDOUT), so digest №15 was never created — while behavioral-standalone's
+  // comparable call on the same run finished in 84s. Real generation time is
+  // volatile (35s…146s+ observed). SIGKILL keeps the deadline hard, so 300s can't
+  // wedge the runner the way the pre-c2efd69 9–53 min hangs did; worst case with
+  // the retry is a bounded 2×300s.
+  const CLAUDE_TIMEOUT_MS = 300_000;
+  const MAX_ATTEMPTS = 2;
 
-  // Diagnose ALL failure modes — the old code only logged result.stderr, which is
-  // empty when the CLI fails to spawn (ENOENT) or is killed by the 120s timeout
-  // (status=null, signal=SIGTERM). That masked the real cause and left the digest
-  // silently stuck (#65/#79 regress). Surface spawn errors, signals, exit codes
-  // and empty-output cases explicitly, and name the resolved binary.
-  if (result.error || result.status !== 0 || !(result.stdout || '').trim()) {
+  let result;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    result = spawnSync(CLAUDE_BIN, ['--print', '-'], {
+      input: fullPrompt,
+      encoding: 'utf8',
+      timeout: CLAUDE_TIMEOUT_MS,
+      // SIGTERM is ignored by a hung CLI (pre-c2efd69 heartbeat shows the child
+      // blocking the runner 9–53 min). SIGKILL makes the deadline real.
+      killSignal: 'SIGKILL',
+      env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ''}` },
+    });
+
+    const ok = !result.error && result.status === 0 && (result.stdout || '').trim();
+    if (ok) break;
+
+    // Diagnose ALL failure modes — stderr alone is empty when the CLI fails to
+    // spawn (ENOENT) or is killed on timeout (status=null). Surface spawn errors,
+    // signals, exit codes and empty-output cases explicitly, name the binary.
     let reason;
     if (result.error)       reason = `spawn error: ${result.error.message}`;
-    else if (result.signal) reason = `killed by signal ${result.signal} (likely 120s timeout)`;
+    else if (result.signal) reason = `killed by signal ${result.signal} (likely ${CLAUDE_TIMEOUT_MS / 1000}s timeout)`;
     else if (result.status !== 0)
       reason = `exit ${result.status}: ${(result.stderr || '').trim() || '(no stderr)'}`;
     else                    reason = `exit 0 but empty stdout: ${(result.stderr || '').trim() || '(no stderr)'}`;
-    console.error(`[digest] Claude CLI failed via ${CLAUDE_BIN} — ${reason}`);
-    return null;
+    console.error(`[digest] Claude CLI failed via ${CLAUDE_BIN} (attempt ${attempt}/${MAX_ATTEMPTS}) — ${reason}`);
+    if (attempt === MAX_ATTEMPTS) return null;
   }
 
   const report = result.stdout;
