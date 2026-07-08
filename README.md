@@ -165,6 +165,26 @@ Three hook scripts, one SQLite file, that's it.
 
 ---
 
+## Desktop app (Tauri) — `apps/desktop/`
+
+Нативное macOS-приложение в стиле Tahoe / Liquid Glass поверх `~/.claudeye/mem.db`.
+Заменяет эфемерные macOS-попапы постоянным дашбордом: аналитика, управление
+сессиями, центр уведомлений, панель обслуживания (reindex / cleanup / digest).
+
+Stack: Tauri v2 (Rust + rusqlite, tray, нативные нотификации) + Vite/Chart.js.
+Каркас v1 — эпик [#128](https://github.com/leetio-varsha/claudeye/issues/128).
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri dev      # требует Rust toolchain (rustup)
+```
+
+Попапы отключены по умолчанию (`CLAUDEYE_NOTIFICATIONS=0`); insights по-прежнему
+пишутся в БД и показываются в приложении.
+
+---
+
 ## Usage
 
 ```bash
