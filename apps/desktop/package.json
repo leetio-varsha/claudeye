@@ -1,0 +1,14 @@
+{
+  "name": "claudeye-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Claudeye Desktop — Tahoe-style memory + analytics UI over ~/.claudeye/mem.db",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

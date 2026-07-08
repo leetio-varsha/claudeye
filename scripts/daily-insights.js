@@ -628,6 +628,12 @@ export function formatReport(result) {
 // ─── macOS Notification ──────────────────────────────────────────────────
 
 function sendNotification(critAlerts, warnAlerts) {
+  // macOS popups are OFF by default — the Claudeye Desktop app (apps/desktop)
+  // owns the notification surface now (in-app center + rare actionable native
+  // notifications). Insights are still computed and persisted to the `insights`
+  // table regardless; only the ephemeral osascript popup is suppressed.
+  // Set CLAUDEYE_NOTIFICATIONS=1 to re-enable the legacy popups.
+  if (process.env.CLAUDEYE_NOTIFICATIONS !== '1') return;
   try {
     const title = critAlerts.length > 0
       ? `🔴 Claudeye: ${critAlerts.length} critical`
