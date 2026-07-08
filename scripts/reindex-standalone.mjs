@@ -111,26 +111,53 @@ log(`found ${candidates.length} obs to embed (max=${MAX_PER_RUN})`);
 
 // ─── OpenAI embed helper ───────────────────────────────────────────────────
 
+const EMBED_URL     = 'https://api.openai.com/v1/embeddings';
+const EMBED_RETRIES = 3;     // network attempts per batch (launchd runs right after
+                             // wake — DNS/route may not be up for the first seconds)
+const RETRY_BASE_MS = 2000;  // backoff: 2s, 4s
+
+// undici's fetch() throws TypeError('fetch failed') and hides the real reason
+// (ENOTFOUND, ECONNREFUSED, ETIMEDOUT…) in e.cause — surface it in logs.
+function describeNetError(e) {
+  const c = e.cause;
+  if (!c) return e.message;
+  const code = c.code || c.errno || c.name || '';
+  return `${e.message} (cause: ${code}${c.message ? ` ${c.message}` : ''})`;
+}
+
 async function embedBatch(texts) {
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${openaiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-3-small',
-      input: texts,
-    }),
-  });
+  for (let attempt = 1; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(EMBED_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'text-embedding-3-small',
+          input: texts,
+        }),
+      });
+    } catch (netErr) {
+      if (attempt < EMBED_RETRIES) {
+        const delay = RETRY_BASE_MS * attempt;
+        log(`openai ${EMBED_URL}: ${describeNetError(netErr)} — retry ${attempt}/${EMBED_RETRIES} in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw new Error(`openai ${EMBED_URL}: ${describeNetError(netErr)} after ${EMBED_RETRIES} attempts`);
+    }
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`OpenAI ${res.status}: ${body.slice(0, 200)}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`openai ${EMBED_URL} HTTP ${res.status}: ${body.slice(0, 200)}`);
+    }
+
+    const json = await res.json();
+    return json.data.map(d => d.embedding); // array of float[] in input order
   }
-
-  const json = await res.json();
-  return json.data.map(d => d.embedding); // array of float[] in input order
 }
 
 // ─── Save embedding ────────────────────────────────────────────────────────
