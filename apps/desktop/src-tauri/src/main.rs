@@ -101,7 +101,23 @@ fn dashboard_summary() -> Health {
          ) WHERE breaks = 0 AND all_green = 1",
     );
 
-    h.quota = "нормально".into();
+    // темп: среднее obs/день за 3 дня против предыдущей недели
+    let recent = scalar_i64(
+        &conn,
+        "SELECT COUNT(*) FROM observations WHERE created_at >= datetime('now','-3 day')",
+    ) as f64
+        / 3.0;
+    let base = scalar_i64(
+        &conn,
+        "SELECT COUNT(*) FROM observations
+         WHERE created_at >= datetime('now','-10 day') AND created_at < datetime('now','-3 day')",
+    ) as f64
+        / 7.0;
+    h.quota = if base > 0.0 && recent / base >= 1.3 {
+        format!("{:.1}×", recent / base)
+    } else {
+        "норма".into()
+    };
     h
 }
 
@@ -118,11 +134,21 @@ fn activity_14d() -> Activity {
         Some(c) => c,
         None => return a,
     };
+    // дни без наблюдений отдаём нулями — иначе ось X с дырками
     let mut stmt = match conn.prepare(
-        "SELECT strftime('%d', created_at) AS d, COUNT(*)
-         FROM observations
-         WHERE created_at >= datetime('now','-14 day')
-         GROUP BY date(created_at) ORDER BY date(created_at)",
+        "WITH RECURSIVE days(d) AS (
+            SELECT date('now','-13 day')
+            UNION ALL SELECT date(d, '+1 day') FROM days WHERE d < date('now')
+         )
+         SELECT strftime('%d', d), COALESCE(cnt, 0)
+         FROM days
+         LEFT JOIN (
+            SELECT date(created_at) AS dd, COUNT(*) AS cnt
+            FROM observations
+            WHERE created_at >= date('now','-13 day')
+            GROUP BY dd
+         ) ON dd = d
+         ORDER BY d",
     ) {
         Ok(s) => s,
         Err(_) => return a,
@@ -153,19 +179,19 @@ fn recent_notifications() -> Vec<Notif> {
         Some(c) => c,
         None => return out,
     };
-    let latest: Option<String> = conn
+    let latest: Option<(String, String)> = conn
         .query_row(
-            "SELECT alerts FROM insights ORDER BY created_at DESC LIMIT 1",
+            "SELECT alerts, created_at FROM insights ORDER BY created_at DESC LIMIT 1",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok();
-    if let Some(json) = latest {
+    if let Some((json, created_at)) = latest {
         if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
             for a in arr.into_iter().take(12) {
                 let severity = a.get("severity").and_then(|v| v.as_str()).unwrap_or("insight");
                 let sev = match severity {
-                    "critical" => "warn",
+                    "critical" => "crit",
                     "warning" => "warn",
                     "insight" => "info",
                     _ => "mut",
@@ -177,7 +203,7 @@ fn recent_notifications() -> Vec<Notif> {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
-                    meta: severity.to_string(),
+                    meta: created_at.clone(),
                 });
             }
         }
@@ -201,10 +227,14 @@ fn recent_sessions(limit: Option<i64>) -> Vec<Sess> {
         None => return out,
     };
     let lim = limit.unwrap_or(12);
+    // import-git сессии (0 промптов, служебные) — шум для этого вью
     let mut stmt = match conn.prepare(
         "SELECT project, COALESCE(summary,''), prompt_count,
                 COALESCE(ended_at, started_at)
-         FROM sessions ORDER BY started_at DESC LIMIT ?1",
+         FROM sessions
+         WHERE id NOT LIKE 'import-%'
+           AND NOT (prompt_count = 0 AND summary LIKE 'Git import:%')
+         ORDER BY started_at DESC LIMIT ?1",
     ) {
         Ok(s) => s,
         Err(_) => return out,
@@ -261,6 +291,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Открыть Claudeye", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
