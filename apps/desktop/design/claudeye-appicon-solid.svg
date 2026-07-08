@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8b80f4"/>
+      <stop offset="100%" stop-color="#5f52dd"/>
+    </linearGradient>
+    <mask id="pulse" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#fff"/>
+      <path d="M 272.0 512.0 L 377.0 512.0 L 429.5 407.0 L 489.5 632.0 L 542.0 467.0 L 587.0 512.0 L 752.0 512.0" fill="none" stroke="#000" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect width="1024" height="1024" rx="229" fill="url(#bg)"/>
+  <g stroke="#ffffff" stroke-width="34" stroke-linecap="round">
+    <line x1="512.0" y1="120.0" x2="512.0" y2="38.0" opacity="0.82"/>
+    <line x1="662.0" y1="149.8" x2="693.4" y2="74.1" opacity="0.94"/>
+    <line x1="789.2" y1="234.8" x2="847.2" y2="176.8" opacity="0.64"/>
+    <line x1="874.2" y1="362.0" x2="949.9" y2="330.6" opacity="0.96"/>
+    <line x1="904.0" y1="512.0" x2="986.0" y2="512.0" opacity="0.79"/>
+    <line x1="874.2" y1="662.0" x2="949.9" y2="693.4" opacity="0.72"/>
+    <line x1="789.2" y1="789.2" x2="847.2" y2="847.2" opacity="0.99"/>
+    <line x1="662.0" y1="874.2" x2="693.4" y2="949.9" opacity="0.66"/>
+    <line x1="512.0" y1="904.0" x2="512.0" y2="986.0" opacity="0.88"/>
+    <line x1="362.0" y1="874.2" x2="330.6" y2="949.9" opacity="0.89"/>
+    <line x1="234.8" y1="789.2" x2="176.8" y2="847.2" opacity="0.66"/>
+    <line x1="149.8" y1="662.0" x2="74.1" y2="693.4" opacity="0.99"/>
+    <line x1="120.0" y1="512.0" x2="38.0" y2="512.0" opacity="0.73"/>
+    <line x1="149.8" y1="362.0" x2="74.1" y2="330.6" opacity="0.78"/>
+    <line x1="234.8" y1="234.8" x2="176.8" y2="176.8" opacity="0.97"/>
+    <line x1="362.0" y1="149.8" x2="330.6" y2="74.1" opacity="0.64"/>
+  </g>
+  <circle cx="512" cy="512" r="288" fill="#ffffff" mask="url(#pulse)"/>
+</svg>

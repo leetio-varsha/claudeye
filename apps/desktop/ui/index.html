@@ -10,8 +10,10 @@
   <div class="win">
     <header class="titlebar" data-tauri-drag-region>
       <div class="tb-title" data-tauri-drag-region>Claudeye</div>
-      <div class="tb-status" id="hookStatus">
-        <span class="dot" id="hookDot"></span><span id="hookText">проверяю…</span>
+      <!-- drag-region работает только если атрибут стоит на САМОМ элементе под курсором,
+           дети без атрибута перехватывают mousedown — поэтому дублируем на всех потомках -->
+      <div class="tb-status" id="hookStatus" data-tauri-drag-region>
+        <span class="dot" id="hookDot" data-tauri-drag-region></span><span id="hookText" data-tauri-drag-region>проверяю…</span>
       </div>
     </header>
 
