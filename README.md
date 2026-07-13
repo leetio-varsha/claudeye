@@ -276,7 +276,9 @@ claudeye digest                               # latest weekly digest
 claudeye digest --generate                    # generate now
 claudeye insights                             # daily proactive insights (rule-based)
 claudeye insights --schedule                  # install unified launchd agent (daily 09:00)
-claudeye insights --status                    # scheduler status
+claudeye insights --status                    # insights scheduler status
+claudeye scheduler status                     # unified launchd status: insights + digest + agent daemon
+claudeye scheduler status --json              # machine-readable (used by Desktop app)
 claudeye health                               # self-check (DB, digests, insights freshness)
 
 # Behavioral Advises (#87) — Claude-powered, written to advises table
