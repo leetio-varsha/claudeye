@@ -1917,6 +1917,30 @@ program.command('insights')
     }
   });
 
+// ─── scheduler (#133) ─────────────────────────────────────────────────────
+// Unified launchd status for all three schedulers (insights / digest / daemon).
+// The Desktop app's "Управление" view calls `claudeye scheduler status`
+// (Rust cmd_agents_status), so this is the single source both rely on.
+
+const schedulerCmd = program.command('scheduler')
+  .description('Inspect Claudeye launchd schedulers (insights / digest / agent daemon)');
+
+schedulerCmd
+  .command('status')
+  .description('Show launchd status of all schedulers')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    const { collectSchedulerStatus, formatSchedulerStatus } = await import('./scripts/scheduler-status.js');
+    const list = await collectSchedulerStatus();
+    if (opts.json) {
+      console.log(JSON.stringify(list, null, 2));
+      return;
+    }
+    console.log(chalk.bold('\n  Claudeye schedulers\n'));
+    console.log(formatSchedulerStatus(list, { color: true, chalk }));
+    console.log('');
+  });
+
 // ─── export (#11) ────────────────────────────────────────────────────────
 
 program.command('export')
