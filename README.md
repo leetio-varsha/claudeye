@@ -150,6 +150,7 @@ Same principles, scaled to a team. Privacy-first — raw data never leaves dev m
 Claude Code
   │
   ├── UserPromptSubmit ──► inject-hook.js ──► hybridSearch() ──► prepend context
+  │                                        └─► capture prompt obs (live)
   ├── PostToolUse      ──► save-hook.js   ──► compress() + embed() ──► SQLite
   └── Stop             ──► summary-hook.js ──► compressSession() ──► session summary
 ```
