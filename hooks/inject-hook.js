@@ -252,7 +252,7 @@ async function main() {
   }, TIMEOUT_MS);
 
   try {
-    const { upsertSession, isDegenerateProject, logHookError, getDb, saveEffortClassification, saveInjectionStat } = await import(srcDir + 'db.js');
+    const { upsertSession, isDegenerateProject, logHookError, getDb, saveEffortClassification, saveInjectionStat, saveObservation, isConsecutiveDuplicate } = await import(srcDir + 'db.js');
     const { buildContextWithMetrics }  = await import(srcDir + 'search.js');
 
     // #121: skip Claudeye's own Cowork scheduled/agent runs — they execute with no
@@ -262,6 +262,34 @@ async function main() {
     if (isDegenerateProject(project)) { clearTimeout(timeout); process.exit(0); }
 
     upsertSession(sessionId, project);
+
+    // ── Live prompt capture ────────────────────────────────────────────────
+    // The `ClaudeCodeUserPrompt` observation used to be written ONLY by the
+    // transcript backfill script (scripts/backfill-claude-code.mjs), so the
+    // metric silently froze whenever the periodic import stopped running — it
+    // sat at 2,631 for 8 days (last 2026-07-08) while live tool obs (Bash/Read/
+    // Edit) streamed normally. The analyzer mistook this import-lag artifact for
+    // a dead UserPromptSubmit hook and prescribed an irrelevant ABI-pin fix.
+    // Fix: capture the prompt in real time here, the same way PostToolUse
+    // captures tool obs — no import dependency, no lag. Backfill is now only an
+    // outage-recovery tool. Dedup guards against Claude Code re-submitting the
+    // same prompt (resume/retry). tags 'live' distinguish these from 'backfill'.
+    try {
+      const promptText = prompt.trim();
+      if (promptText && !isConsecutiveDuplicate({ sessionId, tool: 'ClaudeCodeUserPrompt', rawInput: promptText })) {
+        const wc = promptText.split(/\s+/).length;
+        saveObservation({
+          sessionId, project,
+          tool: 'ClaudeCodeUserPrompt',
+          summary: promptText.slice(0, 500),
+          rawInput: promptText,
+          tags: ['claude-code', 'user', 'live'],
+          importance: wc <= 5 ? 0.2 : 0.55,
+        });
+      }
+    } catch (e) {
+      try { logHookError('inject-hook', 'prompt-capture', e.message, project); } catch {}
+    }
 
     const { text: context, bytes, tokensEst, sections, budgetHit } =
       await buildContextWithMetrics(prompt, project);

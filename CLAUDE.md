@@ -190,6 +190,8 @@ User prompt
     top-K deduped results → inject as markdown comment block before user prompt
 ```
 
+**Live prompt capture (#137):** the same `UserPromptSubmit` hook (`inject-hook.js`) also records the prompt itself as a `ClaudeCodeUserPrompt` observation (from the clean `event.prompt`, before injection), deduped, tag `live`. Before #137 this obs was written *only* by the transcript backfill script, so the metric silently froze (2,631 for 8 days) whenever the manual import stopped — and the analyzer misread that import-lag as a dead hook. Live-hook-driven metrics (`Bash`/`Read`/`Edit`/`Write`/`ClaudeCodeUserPrompt`) advance in real time; import-driven ones (`ClaudeCodeAssistantText`, historical `ClaudeCodeUserPrompt` tag `backfill`) only move when `scripts/backfill-claude-code.mjs` runs. Note: transcript-reconstructed prompts are polluted (injections/slash-commands land in the user turn), so historical `backfill` rows aren't a clean prompt count.
+
 ---
 
 ## AI compression (compress.js)
@@ -435,6 +437,7 @@ Each issue has readiness criteria — scheduler checks them daily.
 - ~~Unclosed sessions (57%)~~ — root cause: import-git sessions + orphan cleanup added (#60)
 
 ### Resolved (recent)
+- ~~`ClaudeCodeUserPrompt` frozen 8 days (import-lag mistaken for dead hook)~~ — obs was written only by the backfill script; added live capture in `inject-hook.js` + analyzer now classifies metric source (live vs import) so it stops prescribing hook fixes for frozen import-driven metrics (#137)
 - ~~`duration_ms/model/token_input/token_output` always NULL~~ — `closeSession` queried `created_at` (doesn't exist in sessions; use `started_at`). Stop hook silently failed, sessions fell to orphan cleanup. Fixed + backfilled (#81)
 - ~~Sessions count explosion (×2.9/run)~~ — `compress.js` calls `claude --print` which triggered `UserPromptSubmit` inject-hook, creating phantom sessions. Fixed by setting `CLAUDEYE_INTERNAL=1` on compress subprocesses; inject-hook exits early when set.
 - ~~Notion import stub~~ — full implementation: pages + database rows, idempotent, AI-compressed (#9)
