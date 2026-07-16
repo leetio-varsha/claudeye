@@ -186,10 +186,13 @@ function renderControls() {
   `;
 }
 
-function renderLoading() {
+const VIEW_TITLES = { overview: "Обзор", sessions: "Сессии", notifications: "Уведомления", controls: "Управление" };
+
+function renderLoading(view) {
+  const title = VIEW_TITLES[view] || "Обзор";
   const lines = Array.from({ length: 6 }, (_, i) => `<div class="sk-line" style="width:${88 - i * 9}%"></div>`).join("");
   return `
-    <div class="view-title">Обзор</div>
+    <div class="view-title">${title}</div>
     <div class="view-sub">загружаю mem.db…</div>
     <div class="panel"><div class="skeleton">${lines}</div></div>
   `;
@@ -242,7 +245,7 @@ const state = { view: "overview", data: null };
 function render() {
   const c = document.getElementById("content");
   const d = state.data;
-  if (!d) { c.innerHTML = renderLoading(); return; }
+  if (!d) { c.innerHTML = renderLoading(state.view); return; }
   if (state.view === "overview") { c.innerHTML = renderOverview(d); drawChart(d.activity); }
   else if (state.view === "notifications") c.innerHTML = renderNotifications(d);
   else if (state.view === "sessions") c.innerHTML = renderSessions(d);
@@ -284,7 +287,14 @@ async function boot() {
     render();
   });
   document.getElementById("refreshBtn").addEventListener("click", async () => {
-    state.data = await loadData(); setStatus(state.data); render();
+    const btn = document.getElementById("refreshBtn");
+    if (btn.classList.contains("spinning")) return; // защита от повторных кликов
+    btn.classList.add("spinning");
+    try {
+      state.data = await loadData(); setStatus(state.data); render();
+    } finally {
+      btn.classList.remove("spinning");
+    }
   });
 }
 
