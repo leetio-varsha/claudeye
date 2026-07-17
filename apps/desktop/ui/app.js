@@ -12,6 +12,13 @@ const invoke = resolveInvoke();
 // именем — SyntaxError в WebKit, и весь скрипт молча умирает (#130)
 const inTauri = !!invoke;
 
+// Чистые presentation-хелперы вынесены в view-format.js (грузится раньше app.js)
+// и покрыты юнит-тестами. Фолбэки на случай, если файл не подгрузился.
+const VF = (typeof window !== "undefined" && window.ClaudeyeViewFormat) || {
+  schedulerViewModel: (l) => (Array.isArray(l) ? l : []),
+  commandToast: (cmd, out, ok) => ({ tone: ok === false ? "bad" : "good", title: cmd, detail: "" }),
+};
+
 const ICONS = {
   dashboard: 'M3 3h7v9H3V3zm11 0h7v5h-7V3zM3 15h7v6H3v-6zm11-4h7v10h-7V11z',
   list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
@@ -80,6 +87,11 @@ const SAMPLE = {
     { project: "claudeye", summary: "digest-регресс: 300s таймаут + retry", prompts: 41, ended: "" },
     { project: "wl-payments", summary: "WLPaymentForm.tsx — правки формы оплаты", prompts: 32, ended: "" },
     { project: "bdp", summary: "BACKLOG.md — груминг задач", prompts: 27, ended: "" },
+  ],
+  agents: [
+    { key: "insights", name: "Daily insights", schedule: "daily 09:00", installed: true, loaded: true },
+    { key: "digest", name: "Weekly digest", schedule: "weekly (Mon)", installed: true, loaded: true },
+    { key: "daemon", name: "Agent daemon", schedule: "hourly", installed: true, loaded: true },
   ],
 };
 
@@ -164,7 +176,24 @@ function renderSessions(d) {
   `;
 }
 
-function renderControls() {
+// sev из view-format ('good'|'warn'|'bad') → css-классы, которые реально есть
+// в styles.css (.sev.bad и .chip.good не определены)
+const AGENT_DOT = { good: "good", warn: "warn", bad: "crit" };
+const AGENT_CHIP = { good: "mut", warn: "warn", bad: "crit" };
+
+function rowAgent(a) {
+  const dot = AGENT_DOT[a.sev] || "mut";
+  const chip = AGENT_CHIP[a.sev] || "mut";
+  return `<div class="row"><span class="sev ${dot}"></span><span class="ttl">${a.name}</span><span class="chip ${chip}">${a.state}</span><span class="meta">${a.schedule}</span></div>`;
+}
+
+function renderAgentsPanel(list) {
+  const vm = VF.schedulerViewModel(list);
+  return vm.length ? vm.map(rowAgent).join("") : emptyState("Статус агентов недоступен");
+}
+
+function renderControls(d) {
+  const agents = state.agents || d.agents || [];
   return `
     <div class="view-title">Управление</div>
     <div class="view-sub">Обслуживание Claudeye и статус фоновых агентов.</div>
@@ -173,17 +202,31 @@ function renderControls() {
       <button class="btn primary" data-cmd="reindex">${icon("refresh")}Reindex эмбеддингов</button>
       <button class="btn" data-cmd="cleanup">${icon("trash")}Cleanup</button>
       <button class="btn" data-cmd="digest">${icon("file")}Сгенерировать digest</button>
-      <button class="btn" data-cmd="agents">${icon("pause")}Статус агентов</button>
+      <button class="btn" data-cmd="agents">${icon("pause")}Обновить статус</button>
       <button class="btn" data-cmd="board">${icon("link")}GitHub Project #4</button>
     </div>
     <div class="section">Launchd-агенты</div>
-    <div class="panel">
-      <div class="row"><span class="sev good"></span><span class="ttl">com.claudeye.daily-insights</span><span class="meta">09:00 ежедневно</span></div>
-      <div class="row"><span class="sev good"></span><span class="ttl">com.claudeye.weekly-digest</span><span class="meta">пн 06:00</span></div>
-      <div class="row"><span class="sev good"></span><span class="ttl">live hooks (SessionStart / PostToolUse)</span><span class="meta">активны</span></div>
-    </div>
-    <p class="hint">Кнопки вызывают Rust-команды (rusqlite + Command). В демо-режиме без Tauri — заглушки.</p>
+    <div class="panel" id="agentsPanel">${renderAgentsPanel(agents)}</div>
+    <p class="hint">Кнопки вызывают Rust-команды (rusqlite + Command). Статус агентов — из <code>claudeye scheduler status</code>. В демо-режиме без Tauri — заглушки.</p>
   `;
+}
+
+// Тянет живой статус launchd-агентов из cmd_agents_status (JSON) и
+// перерисовывает только панель, не дёргая весь вью.
+async function refreshAgentsPanel() {
+  if (!invoke) return;
+  try {
+    const out = await invoke("cmd_agents_status");
+    let parsed = null;
+    try { parsed = JSON.parse(out); } catch { parsed = null; }
+    if (Array.isArray(parsed)) {
+      state.agents = parsed;
+      const panel = document.getElementById("agentsPanel");
+      if (panel) panel.innerHTML = renderAgentsPanel(parsed);
+    }
+  } catch (e) {
+    console.error("agents status failed:", e);
+  }
 }
 
 const VIEW_TITLES = { overview: "Обзор", sessions: "Сессии", notifications: "Уведомления", controls: "Управление" };
@@ -226,7 +269,28 @@ function drawChart(activity) {
   });
 }
 
-async function runCommand(cmd) {
+let toastSeq = 0;
+
+function showToast(t) {
+  const wrap = document.getElementById("toasts");
+  if (!wrap) return;
+  const id = `toast-${++toastSeq}`;
+  const el = document.createElement("div");
+  el.className = `toast ${t.tone || "good"}`;
+  el.id = id;
+  el.innerHTML = `<span class="sev ${t.tone === "bad" ? "crit" : "good"}"></span>` +
+    `<div class="t-body"><div class="t-title">${t.title || ""}</div>` +
+    (t.detail ? `<div class="t-detail">${t.detail}</div>` : "") + `</div>`;
+  wrap.appendChild(el);
+  // авто-скрытие: ошибки висят дольше
+  const ttl = t.tone === "bad" ? 7000 : 4200;
+  setTimeout(() => {
+    el.classList.add("out");
+    setTimeout(() => el.remove(), 260);
+  }, ttl);
+}
+
+async function runCommand(cmd, btn) {
   const map = {
     reindex: "cmd_reindex", cleanup: "cmd_cleanup", digest: "cmd_digest",
     agents: "cmd_agents_status", board: "cmd_open_board",
@@ -234,8 +298,25 @@ async function runCommand(cmd) {
   if (cmd === "board" && inTauri && window.__TAURI__.opener) {
     try { await window.__TAURI__.opener.openUrl("https://github.com/users/leetio-varsha/projects/4"); return; } catch {}
   }
-  if (!invoke) { console.log("demo: would run", cmd); return; }
-  try { await invoke(map[cmd]); } catch (e) { console.error(cmd, e); }
+  // «Обновить статус» — не тост с сырым JSON, а перерисовка панели агентов
+  if (cmd === "agents") {
+    if (!invoke) { showToast({ tone: "good", title: "Статус агентов — демо", detail: "живые данные только в Tauri" }); return; }
+    await refreshAgentsPanel();
+    showToast({ tone: "good", title: "Статус агентов — обновлён" });
+    return;
+  }
+  if (!invoke) { showToast({ tone: "good", title: `${cmd} — демо`, detail: "команда выполняется только в Tauri" }); return; }
+  if (btn) { btn.disabled = true; btn.classList.add("busy"); }
+  showToast({ tone: "good", title: `${cmd}…`, detail: "выполняю" });
+  try {
+    const out = await invoke(map[cmd]);
+    showToast(VF.commandToast(cmd, out, true));
+  } catch (e) {
+    console.error(cmd, e);
+    showToast(VF.commandToast(cmd, String(e && e.message ? e.message : e), false));
+  } finally {
+    if (btn) { btn.disabled = false; btn.classList.remove("busy"); }
+  }
 }
 
 /* ── каркас ── */
@@ -249,9 +330,9 @@ function render() {
   if (state.view === "overview") { c.innerHTML = renderOverview(d); drawChart(d.activity); }
   else if (state.view === "notifications") c.innerHTML = renderNotifications(d);
   else if (state.view === "sessions") c.innerHTML = renderSessions(d);
-  else if (state.view === "controls") c.innerHTML = renderControls();
+  else if (state.view === "controls") { c.innerHTML = renderControls(d); refreshAgentsPanel(); }
 
-  c.querySelectorAll("[data-cmd]").forEach(b => b.addEventListener("click", () => runCommand(b.dataset.cmd)));
+  c.querySelectorAll("[data-cmd]").forEach(b => b.addEventListener("click", () => runCommand(b.dataset.cmd, b)));
 }
 
 function paintIcons() {

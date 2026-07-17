@@ -279,7 +279,9 @@ fn cmd_digest() -> String {
 
 #[tauri::command]
 fn cmd_agents_status() -> String {
-    run_claudeye(&["scheduler", "status"])
+    // --json → структурированный вывод для UI (renderAgentsPanel парсит его);
+    // человекочитаемый цветной формат остаётся у CLI без флага.
+    run_claudeye(&["scheduler", "status", "--json"])
 }
 
 #[tauri::command]
