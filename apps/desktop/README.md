@@ -45,7 +45,7 @@ npm run tauri build
 | `recent_notifications` | последний ряд `insights.alerts` (+ маппинг severity) |
 | `recent_sessions(limit)` | `sessions` по `started_at DESC` |
 | `cmd_reindex` / `cmd_cleanup` / `cmd_digest` | `claudeye <cmd>` |
-| `cmd_agents_status` | `claudeye scheduler status` |
+| `cmd_agents_status` | `claudeye scheduler status --json` (UI парсит JSON) |
 
 ## Статус
 
@@ -53,5 +53,10 @@ v1 запускается (`tauri dev`, Rust компилируется чист
 живой `mem.db` через `invoke`. **#129 (frontend UI) и #130 (rust-bridge)
 закрыты**: 4 вью, адаптив вплоть до `minWidth 720` (сайдбар сворачивается в
 иконочный рельс ≤760px), view-aware лоадер-скелетон, refresh-спиннер, пустые
-состояния. Открытые задачи: #131 (нативные actionable-нотификации),
-#132 (session mgmt), #133 (controls+tray), #134 (packaging — последним).
+состояния. **#133 (controls) в работе:** кнопки reindex/cleanup/digest
+показывают результат тостом (`ui/view-format.js` + `#toasts`), панель
+«Launchd-агенты» рендерит живой статус из `cmd_agents_status --json`
+(`schedulerViewModel`). Остаётся Rust-часть #133 — tray toggle
+(свернуть/развернуть окно) + `cargo build` для нового `--json`-флага.
+Открытые задачи: #131 (нативные actionable-нотификации),
+#132 (session mgmt), #133 (tray toggle — Rust), #134 (packaging — последним).
