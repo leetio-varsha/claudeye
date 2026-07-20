@@ -77,6 +77,54 @@ try {
 
 const db = new Database(DB_PATH, { readonly: false });
 
+// ─── int8 quantization (#138) ──────────────────────────────────────────────
+// DRIFT-GUARD: this is an inlined copy of src/quantize.js. This script is
+// deployed to ~/.claudeye/ and cannot import from the repo. Any change here
+// must mirror src/quantize.js — test/quantize.test.js asserts byte-for-byte
+// parity between the two implementations (see #118/#125 for prior drift bugs).
+
+const Q8_HEADER_BYTES = 8;
+const Q8_VERSION      = 1;
+
+function quantizeToI8(vector) {
+  const dims = vector.length;
+  let maxAbs = 0;
+  for (let i = 0; i < dims; i++) {
+    const a = Math.abs(vector[i]);
+    if (a > maxAbs) maxAbs = a;
+  }
+  const scale = maxAbs === 0 ? 0 : maxAbs / 127;
+  const buf = Buffer.allocUnsafe(Q8_HEADER_BYTES + dims);
+  buf[0] = 0x51; buf[1] = 0x38; buf[2] = Q8_VERSION; buf[3] = 0;
+  buf.writeFloatLE(scale, 4);
+  if (scale === 0) { buf.fill(0, Q8_HEADER_BYTES); return buf; }
+  for (let i = 0; i < dims; i++) {
+    let q = Math.round(vector[i] / scale);
+    if (q > 127) q = 127; else if (q < -127) q = -127;
+    buf.writeInt8(q, Q8_HEADER_BYTES + i);
+  }
+  return buf;
+}
+
+// Does this DB know about embeddings.format? If src/db.js migrations haven't
+// run yet, fall back to legacy float32 writes rather than failing the insert.
+const HAS_FORMAT_COL = db.prepare(`PRAGMA table_info(embeddings)`)
+  .all().some(c => c.name === 'format');
+
+// Opt-in, default OFF — mirrors isQuantizationEnabled() in src/quantize.js.
+const QUANTIZE = HAS_FORMAT_COL && (() => {
+  const env = process.env.CLAUDEYE_EMBEDDING_QUANTIZE;
+  if (env != null && env !== '') return ['1', 'true', 'yes', 'on'].includes(String(env).toLowerCase());
+  return getSettings().embedding_quantize === true;
+})();
+
+// Format-aware dimension check — mirrors vectorDimsSql() in src/quantize.js.
+// Must NOT compare raw byte length: an int8 vector is ~4x shorter but valid,
+// and treating it as degraded would re-embed the whole corpus against the API.
+const DIMS_SQL = HAS_FORMAT_COL
+  ? `(CASE WHEN e.format = 'i8' THEN length(e.vector) - ${Q8_HEADER_BYTES} ELSE length(e.vector) / 4 END)`
+  : `(length(e.vector) / 4)`;
+
 // ─── Select candidates ─────────────────────────────────────────────────────
 
 const MAX_PER_RUN  = 100;   // max obs to embed per scheduler run
@@ -87,7 +135,7 @@ const DELAY_MS     = 400;   // ms between batches
 const candidates = db.prepare(`
   SELECT o.id, o.summary FROM observations o
   LEFT JOIN embeddings e ON e.observation_id = o.id
-  WHERE (e.observation_id IS NULL OR length(e.vector) != ?)
+  WHERE (e.observation_id IS NULL OR ${DIMS_SQL} != ?)
     AND (
       (o.tool != 'git-commit' AND o.importance >= 0.5)
       OR
@@ -100,7 +148,7 @@ const candidates = db.prepare(`
     )
   ORDER BY o.importance DESC, o.created_at DESC
   LIMIT ?
-`).all(TARGET_DIMS * 4, MAX_PER_RUN);
+`).all(TARGET_DIMS, MAX_PER_RUN);
 
 if (candidates.length === 0) {
   log('nothing to reindex — exit 0');
@@ -162,19 +210,34 @@ async function embedBatch(texts) {
 
 // ─── Save embedding ────────────────────────────────────────────────────────
 
-const upsertEmbed = db.prepare(`
-  INSERT INTO embeddings (observation_id, vector, model, created_at)
-  VALUES (?, ?, ?, datetime('now'))
-  ON CONFLICT(observation_id) DO UPDATE SET
-    vector = excluded.vector,
-    model  = excluded.model,
-    created_at = excluded.created_at
-`);
+const upsertEmbed = HAS_FORMAT_COL
+  ? db.prepare(`
+      INSERT INTO embeddings (observation_id, vector, model, format, created_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(observation_id) DO UPDATE SET
+        vector = excluded.vector,
+        model  = excluded.model,
+        format = excluded.format,
+        created_at = excluded.created_at
+    `)
+  : db.prepare(`
+      INSERT INTO embeddings (observation_id, vector, model, created_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(observation_id) DO UPDATE SET
+        vector = excluded.vector,
+        model  = excluded.model,
+        created_at = excluded.created_at
+    `);
 
 function saveEmbed(obsId, floats, model) {
+  if (QUANTIZE) {
+    upsertEmbed.run(obsId, quantizeToI8(floats), model, 'i8');
+    return;
+  }
   const buf = Buffer.allocUnsafe(floats.length * 4);
   for (let i = 0; i < floats.length; i++) buf.writeFloatLE(floats[i], i * 4);
-  upsertEmbed.run(obsId, buf, model);
+  if (HAS_FORMAT_COL) upsertEmbed.run(obsId, buf, model, 'f32');
+  else upsertEmbed.run(obsId, buf, model);
 }
 
 // ─── Main loop ─────────────────────────────────────────────────────────────

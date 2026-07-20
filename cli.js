@@ -43,6 +43,18 @@ program.command('stats')
       console.log(`  Embedding dims:     ${mixed ? chalk.yellow(parts + " ⚠ mixed — run 'claudeye reindex'") : chalk.green(parts)}`);
     }
 
+    // Storage format split (#138) — surfaces how much is still un-quantized
+    if (metrics.embFormats?.length > 0) {
+      const fmt = metrics.embFormats
+        .map(f => `${f.format}: ${f.n} (${(f.bytes / 1024 / 1024).toFixed(1)} MB)`)
+        .join(', ');
+      const pendingF32 = metrics.embFormats.find(f => f.format === 'f32')?.n ?? 0;
+      console.log(`  Vector storage:     ${pendingF32 > 0 ? chalk.yellow(fmt) : chalk.green(fmt)}`);
+      if (pendingF32 > 0) {
+        console.log(chalk.dim(`                      ${pendingF32} float32 vectors — run 'claudeye quantize-embeddings' to shrink`));
+      }
+    }
+
     if (stats.projects.length) {
       console.log(chalk.bold('\n  Projects:'));
       for (const p of stats.projects) {
@@ -450,7 +462,8 @@ program.command('health')
     // Thresholds from issue #30: FTS > 200ms → Этап 3 trigger, vector > 500ms → Этап 4 trigger.
     try {
       const { ftsSearch, getObservationsWithEmbeddings } = await import('./src/db.js');
-      const { bufToFloat32, cosineSimilarity } = await import('./src/embeddings.js');
+      const { cosineSimilarity } = await import('./src/embeddings.js');
+      const { decodeVector } = await import('./src/quantize.js');
       const BENCH_QUERY = 'recent work tool usage';
 
       // FTS latency
@@ -463,10 +476,10 @@ program.command('health')
       const rows = getObservationsWithEmbeddings(null, 300);
       if (rows.length > 0) {
         // Simulate one cosine pass with a zero vector — measures DB I/O + JS CPU
-        const zeroDim = rows[0].vector ? bufToFloat32(rows[0].vector).length : 1536;
+        const zeroDim = rows[0].vector ? decodeVector(rows[0].vector, rows[0].format).length : 1536;
         const fakeQ = new Float32Array(zeroDim); // all zeros, but exercises the loop
         rows.slice(0, 100).forEach(r => {
-          if (r.vector) cosineSimilarity(fakeQ, bufToFloat32(r.vector));
+          if (r.vector) cosineSimilarity(fakeQ, decodeVector(r.vector, r.format));
         });
       }
       const vecMs = Date.now() - vecT0;
@@ -1420,6 +1433,64 @@ program.command('reindex')
       }
     } catch (err) {
       spinner.fail(err.message);
+    }
+  });
+
+// ─── quantize-embeddings (#138) ──────────────────────────────────────────
+
+program.command('quantize-embeddings')
+  .description('Convert stored float32 embedding vectors to int8 (~4x smaller)')
+  .option('--dry-run', 'Report what would change without writing')
+  .option('-b, --batch <n>', 'Rows per transaction', '500')
+  .option('-l, --limit <n>', 'Max vectors to convert this run')
+  .option('--vacuum', 'Run VACUUM afterwards to actually reclaim disk space')
+  .action(async (opts) => {
+    const { quantizeExistingEmbeddings } = await import('./src/quantize-migrate.js');
+    const ora = (await import('ora')).default;
+    const mb = (b) => `${(b / 1024 / 1024).toFixed(1)} MB`;
+
+    const spinner = ora('Scanning float32 vectors...').start();
+    try {
+      const r = quantizeExistingEmbeddings({
+        dryRun: opts.dryRun || false,
+        batchSize: parseInt(opts.batch),
+        limit: opts.limit ? parseInt(opts.limit) : null,
+        vacuum: opts.vacuum || false,
+        onProgress: ({ done, total }) => {
+          spinner.text = `Quantizing vectors... ${done}/${total}`;
+        },
+      });
+
+      if (r.total === 0) {
+        spinner.succeed('All embeddings are already int8. Nothing to do.');
+        return;
+      }
+
+      if (r.dryRun) {
+        spinner.info(
+          `${chalk.cyan(r.total)} float32 vectors: ${mb(r.bytesBefore)} → ~${mb(r.bytesAfter)} ` +
+          `(${chalk.green('−' + mb(r.bytesBefore - r.bytesAfter))})`
+        );
+        console.log(chalk.dim('  Dry run — nothing written. Re-run without --dry-run to apply.'));
+        console.log(chalk.dim('  Disk space is only reclaimed once VACUUM runs (--vacuum).'));
+        return;
+      }
+
+      spinner.succeed(
+        `Converted ${chalk.green(r.converted)}/${r.total} vectors` +
+        (r.errors ? `, ${chalk.red(r.errors)} errors` : '') +
+        ` — blobs ${mb(r.bytesBefore)} → ${mb(r.bytesAfter)}`
+      );
+      console.log(`  DB file: ${mb(r.sizeBefore)} → ${mb(r.sizeAfter)}`);
+      if (!r.vacuumed) {
+        console.log(chalk.yellow('  ⚠ Space not reclaimed yet — run with --vacuum (or `claudeye compact`) to shrink the file.'));
+      }
+      if (r.errors) {
+        console.log(chalk.dim(`  ${r.errors} vectors left as float32 — run 'claudeye reindex' to rebuild them.`));
+      }
+    } catch (err) {
+      spinner.fail(err.message);
+      process.exitCode = 1;
     }
   });
 

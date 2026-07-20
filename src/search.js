@@ -13,6 +13,7 @@
 import Database from 'better-sqlite3';
 import { ftsSearch, getObservationsWithEmbeddings, getRecentObservations, getDb, ARCHIVE_PATH } from './db.js';
 import { embed, cosineSimilarity, bufToFloat32 } from './embeddings.js';
+import { decodeVector } from './quantize.js';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -374,7 +375,7 @@ async function runVectorSearchWithVec(query, project) {
     let dimMismatchCount = 0;
     const results = rows
       .map(row => {
-        const vec = bufToFloat32(row.vector);
+        const vec = decodeVector(row.vector, row.format);
         if (queryVec.length !== vec.length) { dimMismatchCount++; return null; }
         const sim = cosineSimilarity(queryVec, vec);
         return { ...row, vectorScore: sim };
@@ -461,7 +462,10 @@ function _vectorOnDb(db, queryVec, project, limit = 300) {
     }
     return rows
       .map(row => {
-        const vec = bufToFloat32(row.vector);
+        // No `e.format` in these SELECTs on purpose: this runs against arbitrary
+        // db handles (incl. archive.db), where the column may be absent or in a
+        // different position. The blob is self-describing, so sniffing is safe.
+        const vec = decodeVector(row.vector);
         if (queryVec.length !== vec.length) return null;
         return { ...row, vectorScore: cosineSimilarity(queryVec, vec) };
       })
