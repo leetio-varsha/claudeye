@@ -253,6 +253,20 @@ claudeye cleanup --cowork-noise              # also clears already-imported nois
 claudeye cleanup --degenerate-sessions --dry-run  # preview empty '/' / $TMPDIR junk sessions (#122)
 claudeye cleanup --degenerate-sessions       # purge them (destructive; follow-up to #121 guard)
 
+# int8 vector quantization (#138) — embeddings are 65% of the DB; storing them
+# as int8 instead of float32 shrinks each vector ~4x (6144 → 1544 bytes).
+# Scale cancels out under cosine similarity, so search ranking is unaffected
+# (measured cosine drift < 0.5%, top-K set unchanged).
+claudeye quantize-embeddings --dry-run       # preview the saving, write nothing
+claudeye quantize-embeddings --vacuum        # convert + reclaim disk space
+claudeye quantize-embeddings --limit 5000    # incremental; partial state is fully readable
+
+# Writing NEW embeddings as int8 is opt-in (`embedding_quantize: true` in
+# ~/.claudeye/settings.json). Refresh the deployed copy of the backfill script
+# first — older ones detect degraded vectors by byte length and would re-embed
+# the whole corpus against the paid API:
+#   cp scripts/reindex-standalone.mjs ~/.claudeye/
+
 # Heavy-session retention (#116) — prune old low-importance obs from 450+ turn sessions
 claudeye retention --dry-run                 # preview (default: > 300 obs, older than 7d, importance < 0.5)
 claudeye retention                           # prune + VACUUM; decisions/git-commit always kept
@@ -480,6 +494,7 @@ Select via `settings.embedding_provider` (`openai` | `voyage` | `fallback`) or a
 - [x] GitHub Actions CI — automated tests on push (#66) ← #72
 - [x] Tool distribution anomaly — git-commit filtered from analytics (#67)
 - [x] DB auto-compact — silent maintenance triggers (retention 150MB, archive 250MB); user-facing health alarms warn 280 / crit 300, unified in `src/thresholds.js` (#74, #124)
+- [x] int8 vector quantization — embeddings 6144 → 1544 bytes/vector, −180 MB measured on a 41k-vector corpus; cosine drift < 0.5%, top-K unchanged (#138)
 
 ### Phase 2.6: Stability gate (May 2026)
 

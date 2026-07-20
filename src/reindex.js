@@ -7,6 +7,7 @@
 
 import { getDb, saveEmbedding } from './db.js';
 import { embedWithMeta, isEmbeddingEnabled } from './embeddings.js';
+import { vectorDimsSql } from './quantize.js';
 
 /**
  * Reindex observations that are missing embeddings or have degraded (non-1536) vectors.
@@ -51,7 +52,11 @@ export async function reindex(opts = {}) {
     const query = `
       SELECT o.id, o.summary FROM observations o
       LEFT JOIN embeddings e ON e.observation_id = o.id
-      WHERE (e.observation_id IS NULL OR length(e.vector) != ${1536 * 4})
+      -- Degraded = wrong dimensionality, NOT wrong byte length: an int8 vector
+      -- (#138) is ~4x shorter than float32 but perfectly valid. Comparing raw
+      -- byte length here would mark every quantized row as degraded and trigger
+      -- a full 40k re-embed against the paid API.
+      WHERE (e.observation_id IS NULL OR ${vectorDimsSql('e')} != 1536)
         AND (
           -- Non-git-commit: only importance >= 0.5 (compact prunes < 0.5 after 7d)
           (o.tool != 'git-commit' AND o.importance >= 0.5)

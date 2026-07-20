@@ -9,6 +9,10 @@
  */
 
 import Database from 'better-sqlite3';
+import {
+  quantizeToI8, decodeVector, vectorDimsSql, isQuantizationEnabled,
+  FORMAT_F32, FORMAT_I8, expectedByteLength,
+} from './quantize.js';
 import { existsSync, mkdirSync, statSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -61,6 +65,9 @@ function _migrateAnalytics(db) {
     addColumnIfMissing('observations', 'retry_count', 'INTEGER DEFAULT 0');
     addColumnIfMissing('observations', 'duration_ms', 'INTEGER');
     addColumnIfMissing('observations', 'decision_rationale', 'TEXT');  // #25 Decision Memory
+    // #138: storage format of embeddings.vector — 'f32' (raw Float32Array blob)
+    // or 'i8' (int8 scalar-quantized, ~4x smaller). Existing rows are f32.
+    addColumnIfMissing('embeddings', 'format', `TEXT NOT NULL DEFAULT '${FORMAT_F32}'`);
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS issues (
@@ -361,11 +368,14 @@ export function migrate(db = getDb()) {
       importance  REAL    NOT NULL DEFAULT 0.5    -- 0.0–1.0, set by AI
     );
 
-    -- Vector embeddings (Float32Array stored as BLOB, dim=1536)
+    -- Vector embeddings (BLOB, dim=1536).
+    -- format='f32': raw Float32Array blob (dims*4 bytes)
+    -- format='i8' : int8 scalar-quantized (8-byte header + dims bytes, ~4x smaller) — #138
     CREATE TABLE IF NOT EXISTS embeddings (
       observation_id INTEGER PRIMARY KEY REFERENCES observations(id) ON DELETE CASCADE,
       vector         BLOB    NOT NULL,
       model          TEXT    NOT NULL DEFAULT 'text-embedding-3-small',
+      format         TEXT    NOT NULL DEFAULT 'f32',
       created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -446,17 +456,25 @@ export function saveObservation({ sessionId, project, tool, summary, rawInput, r
  */
 export function saveEmbedding(observationId, float32Array, model = null) {
   const db = getDb();
-  const buf = Buffer.from(float32Array.buffer);
+
+  // #138: write int8 by default (~4x smaller). The read path is format-aware,
+  // so this can be toggled at any time without touching existing rows.
+  const quantize = isQuantizationEnabled();
+  const format = quantize ? FORMAT_I8 : FORMAT_F32;
+  const buf = quantize
+    ? quantizeToI8(float32Array)
+    : Buffer.from(float32Array.buffer, float32Array.byteOffset, float32Array.byteLength);
+
   if (model) {
     db.prepare(`
-      INSERT OR REPLACE INTO embeddings (observation_id, vector, model)
-      VALUES (?, ?, ?)
-    `).run(observationId, buf, model);
+      INSERT OR REPLACE INTO embeddings (observation_id, vector, model, format)
+      VALUES (?, ?, ?, ?)
+    `).run(observationId, buf, model, format);
   } else {
     db.prepare(`
-      INSERT OR REPLACE INTO embeddings (observation_id, vector)
-      VALUES (?, ?)
-    `).run(observationId, buf);
+      INSERT OR REPLACE INTO embeddings (observation_id, vector, format)
+      VALUES (?, ?, ?)
+    `).run(observationId, buf, format);
   }
 }
 
@@ -468,14 +486,14 @@ export function getObservationsWithEmbeddings(project = null, limit = 500) {
   if (project) {
     return db.prepare(`
       SELECT * FROM (
-        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
+        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector, e.format
         FROM observations o JOIN embeddings e ON e.observation_id = o.id
         WHERE o.project = ? AND o.tool != 'git-commit'
         ORDER BY o.created_at DESC LIMIT ?
       )
       UNION ALL
       SELECT * FROM (
-        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
+        SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector, e.format
         FROM observations o JOIN embeddings e ON e.observation_id = o.id
         WHERE o.project = ? AND o.tool = 'git-commit'
         ORDER BY o.created_at DESC LIMIT ?
@@ -496,14 +514,14 @@ export function getObservationsWithEmbeddings(project = null, limit = 500) {
   const poolSize = limit * 2;          // 600 rows — still fast to load
   const rawRows = db.prepare(`
     SELECT * FROM (
-      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
+      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector, e.format
       FROM observations o JOIN embeddings e ON e.observation_id = o.id
       WHERE o.tool != 'git-commit'
       ORDER BY o.created_at DESC LIMIT ?
     )
     UNION ALL
     SELECT * FROM (
-      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector
+      SELECT o.id, o.summary, o.tool, o.tags, o.importance, o.decision_rationale, o.created_at, o.project, e.vector, e.format
       FROM observations o JOIN embeddings e ON e.observation_id = o.id
       WHERE o.tool = 'git-commit'
       ORDER BY o.created_at DESC LIMIT ?
@@ -1543,11 +1561,18 @@ export function getDbMetrics() {
   const embCount = db.prepare('SELECT COUNT(*) as n FROM embeddings').get().n;
   const gitCommitCount = db.prepare("SELECT COUNT(*) as n FROM observations WHERE tool = 'git-commit'").get().n;
 
-  // Embedding dimension distribution (#53)
+  // Embedding dimension distribution (#53) — format-aware (#138), otherwise
+  // quantized rows would report a bogus 386 dims instead of 1536.
   const embDims = db.prepare(`
-    SELECT length(vector) / 4 as dims, COUNT(*) as n
-    FROM embeddings
+    SELECT ${vectorDimsSql('e')} as dims, COUNT(*) as n
+    FROM embeddings e
     GROUP BY dims ORDER BY n DESC
+  `).all();
+
+  // Storage format split (#138) — how much of the corpus is still float32.
+  const embFormats = db.prepare(`
+    SELECT format, COUNT(*) as n, SUM(length(vector)) as bytes
+    FROM embeddings GROUP BY format ORDER BY n DESC
   `).all();
 
   // Effective coverage: high-importance (>=0.5) non-git + top 50 git/project WITH embeddings (#75)
@@ -1578,7 +1603,7 @@ export function getDbMetrics() {
   `).get().n;
   const effectiveCoverage = searchableObs > 0 ? +(searchableWithEmb / searchableObs * 100).toFixed(1) : 100;
 
-  return { fileSizeMB, obsCount, embCount, gitCommitCount, embDims, effectiveCoverage, searchableObs, searchableWithEmb };
+  return { fileSizeMB, obsCount, embCount, gitCommitCount, embDims, embFormats, effectiveCoverage, searchableObs, searchableWithEmb };
 }
 
 // ─── Auto-Cleanup (#76) ─────────────────────────────────────────────────────
@@ -1690,10 +1715,15 @@ export function archiveObservations({
         )
       `).run(cutoff, keepImportance);
 
-      // 2. Copy embeddings
+      // 2. Copy embeddings.
+      // Explicit column list, NOT `SELECT *`: `format` (#138) lands mid-table in a
+      // freshly-created archive schema but is appended last by ALTER TABLE in an
+      // existing hot DB. Positional copy would silently swap format/created_at.
       db.prepare(`
         INSERT OR IGNORE INTO archive.embeddings
-        SELECT * FROM embeddings WHERE observation_id IN (
+          (observation_id, vector, model, format, created_at)
+        SELECT observation_id, vector, model, format, created_at
+        FROM embeddings WHERE observation_id IN (
           SELECT id FROM observations WHERE created_at < ? AND importance < ?
         )
       `).run(cutoff, keepImportance);
