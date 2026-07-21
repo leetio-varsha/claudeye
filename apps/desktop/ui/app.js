@@ -17,6 +17,8 @@ const inTauri = !!invoke;
 const VF = (typeof window !== "undefined" && window.ClaudeyeViewFormat) || {
   schedulerViewModel: (l) => (Array.isArray(l) ? l : []),
   commandToast: (cmd, out, ok) => ({ tone: ok === false ? "bad" : "good", title: cmd, detail: "" }),
+  notificationsViewModel: (l) => ({ rows: Array.isArray(l) ? l : [], badge: 0, toNotify: [] }),
+  nativeNotification: (r) => ({ title: "Claudeye", body: (r && r.title) || "", view: "notifications", key: "" }),
 };
 
 const ICONS = {
@@ -78,10 +80,11 @@ const SAMPLE = {
     values: [2,1,0,1,0,1,0,0,1,0,1,0,2,908],
   },
   notifications: [
-    { sev: "warn", title: "Объём работы вырос в 1.6× — recovery после починки хуков", meta: "" },
-    { sev: "good", title: "Хуки ожили — last_obs 06:08, 908 obs/24ч", meta: "" },
-    { sev: "info", title: "Покрытие эмбеддингов 74% → запусти reindex", meta: "" },
-    { sev: "mut", title: "DB 262 MB — плато, порог 280 MB не пробит", meta: "" },
+    { sev: "crit", title: "DB 520 MB — 1.7× критического порога", meta: "", status: "new", hash: "demo-db" },
+    { sev: "warn", title: "Объём работы вырос в 1.6× — recovery после починки хуков", meta: "", status: "shown", hash: "demo-vol" },
+    { sev: "good", title: "Хуки ожили — last_obs 06:08, 908 obs/24ч", meta: "", status: "new", hash: "demo-hooks" },
+    { sev: "info", title: "Покрытие эмбеддингов 74% → запусти reindex", meta: "", status: "new", hash: "demo-emb" },
+    { sev: "mut", title: "DB 262 MB — плато, порог 280 MB не пробит", meta: "", status: "dismissed", hash: "demo-old" },
   ],
   sessions: [
     { project: "claudeye", summary: "digest-регресс: 300s таймаут + retry", prompts: 41, ended: "" },
@@ -137,7 +140,7 @@ function renderOverview(d) {
     <div class="section">Активность · наблюдения в день (14 дней)</div>
     <div class="panel"><div class="chart-wrap" style="height:170px"><canvas id="activityChart"></canvas></div></div>
     <div class="section">Последние уведомления</div>
-    <div class="panel">${d.notifications.length ? d.notifications.slice(0, 4).map(rowNotif).join("") : emptyState("Пока нет уведомлений")}</div>
+    <div class="panel">${notifRows().length ? notifRows().slice(0, 4).map(rowNotif).join("") : emptyState("Пока нет уведомлений")}</div>
   `;
 }
 
@@ -145,17 +148,29 @@ function emptyState(text) {
   return `<div class="empty"><i>${icon("inbox")}</i><span>${text}</span></div>`;
 }
 
-function rowNotif(n) {
-  const chipSev = n.sev === "good" ? "mut" : n.sev;
-  return `<div class="row"><span class="sev ${n.sev}"></span><span class="ttl">${n.title}</span><span class="chip ${chipSev}">${SEV_LABEL[n.sev] || n.sev}</span><span class="meta">${fmtWhen(n.meta)}</span></div>`;
+// Строки ленты берём из VM (#131): дедуплицированные, без 'dismissed'.
+function notifRows() {
+  return (state.notifVM && state.notifVM.rows) || [];
 }
 
-function renderNotifications(d) {
+function rowNotif(n) {
+  const chipSev = n.sev === "good" ? "mut" : n.sev;
+  const isNew = (n.status || "new") === "new" && (n.sev === "crit" || n.sev === "warn");
+  const dot = isNew ? `<span class="chip new">новое</span>` : "";
+  return `<div class="row"><span class="sev ${n.sev}"></span><span class="ttl">${n.title}</span>${dot}<span class="chip ${chipSev}">${SEV_LABEL[n.sev] || n.sev}</span><span class="meta">${fmtWhen(n.meta)}</span></div>`;
+}
+
+function renderNotifications() {
+  const rows = notifRows();
+  const hidden = (state.data ? state.data.notifications.length : 0) - rows.length;
+  const hint = hidden > 0
+    ? `Скрыто ${hidden} ${plural(hidden, "запись", "записи", "записей")} (дубликаты и отклонённые).`
+    : "";
   return `
     <div class="view-title">Уведомления</div>
     <div class="view-sub">Лента insights и alerts. Заменяет эфемерные macOS-попапы — ничего не теряется.</div>
-    <div class="panel">${d.notifications.length ? d.notifications.map(rowNotif).join("") : emptyState("Пока нет уведомлений — insights появляются после ежедневного прогона в 09:00")}</div>
-    <p class="hint">Нативные попапы отключены (CLAUDEYE_NOTIFICATIONS=0). Здесь копится вся история; критические алерты будут дублироваться нативной нотификацией с deep-link (#131).</p>
+    <div class="panel">${rows.length ? rows.map(rowNotif).join("") : emptyState("Пока нет уведомлений — insights появляются после ежедневного прогона в 09:00")}</div>
+    <p class="hint">Обычные insights не всплывают — копятся здесь. Нативная нотификация уходит только на критические алерты, клик открывает этот экран (#131). ${hint}</p>
   `;
 }
 
@@ -321,14 +336,64 @@ async function runCommand(cmd, btn) {
 
 /* ── каркас ── */
 
-const state = { view: "overview", data: null };
+// notifSeen — ключи алертов, по которым нативная нотификация уже уходила в этой
+// сессии; переживает refresh, поэтому повторный клик «Обновить» не пере-алертит.
+const state = { view: "overview", data: null, notifVM: null, notifSeen: new Set() };
+
+// Программная навигация — используется и сайдбаром, и deep-link из нативной
+// нотификации (#131).
+function goToView(view) {
+  if (!VIEW_TITLES[view]) return;
+  state.view = view;
+  document.querySelectorAll(".navitem").forEach(n => {
+    n.classList.toggle("on", n.dataset.view === view);
+  });
+  render();
+}
+
+// Нативные нотификации: только crit + status 'new' + ещё не показанные.
+// Плагин уже зарегистрирован в main.rs (tauri_plugin_notification).
+async function pushNativeAlerts() {
+  const vmodel = state.notifVM;
+  if (!vmodel || !vmodel.toNotify.length) return;
+  const plugin = inTauri && window.__TAURI__ ? window.__TAURI__.notification : null;
+  for (const row of vmodel.toNotify) {
+    state.notifSeen.add(row.key); // помечаем до отправки — иначе гонка на refresh
+    const n = VF.nativeNotification(row);
+    if (!plugin || typeof plugin.sendNotification !== "function") continue;
+    try {
+      if (typeof plugin.isPermissionGranted === "function") {
+        let granted = await plugin.isPermissionGranted();
+        if (!granted && typeof plugin.requestPermission === "function") {
+          granted = (await plugin.requestPermission()) === "granted";
+        }
+        if (!granted) continue;
+      }
+      plugin.sendNotification({ title: n.title, body: n.body });
+    } catch (e) {
+      console.error("native notification failed:", e);
+    }
+  }
+}
+
+// Deep-link: клик по нотификации фокусит окно — открываем нужный экран.
+// Слушатель вешаем ОДИН раз за сессию, иначе каждый refresh плодил бы дубли.
+async function bindNotificationDeepLink() {
+  if (state.notifActionBound || !inTauri || !window.__TAURI__) return;
+  const plugin = window.__TAURI__.notification;
+  if (!plugin || typeof plugin.onAction !== "function") return;
+  state.notifActionBound = true;
+  try {
+    await plugin.onAction(() => goToView("notifications"));
+  } catch (_) { /* onAction есть не во всех версиях плагина — не критично */ }
+}
 
 function render() {
   const c = document.getElementById("content");
   const d = state.data;
   if (!d) { c.innerHTML = renderLoading(state.view); return; }
   if (state.view === "overview") { c.innerHTML = renderOverview(d); drawChart(d.activity); }
-  else if (state.view === "notifications") c.innerHTML = renderNotifications(d);
+  else if (state.view === "notifications") c.innerHTML = renderNotifications();
   else if (state.view === "sessions") c.innerHTML = renderSessions(d);
   else if (state.view === "controls") { c.innerHTML = renderControls(d); refreshAgentsPanel(); }
 
@@ -346,10 +411,11 @@ function setStatus(d) {
   bar.classList.toggle("up", up); bar.classList.toggle("down", !up);
   txt.textContent = up ? "хуки активны" : "хуки молчат";
   document.getElementById("dbLine").textContent = `mem.db · ${d.health.dbMb} MB`;
+  // Badge — из VM (#131): дедуп + без 'dismissed', а не сырой filter по ленте.
+  state.notifVM = VF.notificationsViewModel(d.notifications, state.notifSeen);
   const badge = document.getElementById("navBadge");
-  const actionable = d.notifications.filter(n => n.sev === "crit" || n.sev === "warn").length;
-  badge.hidden = actionable === 0;
-  if (actionable > 0) badge.textContent = actionable;
+  badge.hidden = state.notifVM.badge === 0;
+  if (state.notifVM.badge > 0) badge.textContent = state.notifVM.badge;
 }
 
 async function boot() {
@@ -358,14 +424,13 @@ async function boot() {
   state.data = await loadData();
   setStatus(state.data);
   render();
+  await bindNotificationDeepLink();
+  await pushNativeAlerts();
 
   document.getElementById("nav").addEventListener("click", (e) => {
     const item = e.target.closest(".navitem");
     if (!item) return;
-    document.querySelectorAll(".navitem").forEach(n => n.classList.remove("on"));
-    item.classList.add("on");
-    state.view = item.dataset.view;
-    render();
+    goToView(item.dataset.view);
   });
   document.getElementById("refreshBtn").addEventListener("click", async () => {
     const btn = document.getElementById("refreshBtn");
@@ -373,6 +438,7 @@ async function boot() {
     btn.classList.add("spinning");
     try {
       state.data = await loadData(); setStatus(state.data); render();
+      await pushNativeAlerts();
     } finally {
       btn.classList.remove("spinning");
     }
