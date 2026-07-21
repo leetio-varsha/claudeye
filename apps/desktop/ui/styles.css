@@ -195,6 +195,8 @@ canvas { display: block; width: 100% !important; }
 .chip.warn { color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); }
 .chip.info { color: var(--accent); background: var(--accent-bg); }
 .chip.mut  { color: var(--text-2); background: color-mix(in srgb, var(--text-3) 16%, transparent); }
+/* «новое» — непрочитанный actionable-алерт (#131) */
+.chip.new  { color: var(--accent); background: transparent; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
 
 /* пустые состояния и скелетон */
 .empty {

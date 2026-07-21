@@ -165,13 +165,29 @@ fn activity_14d() -> Activity {
     a
 }
 
+/// Одна строка ленты уведомлений (#131).
+///
+/// `status` / `hash` нужны фронту (`view-format.js → notificationsViewModel`)
+/// для дедупа и для решения, слать ли нативную нотификацию:
+///   - status — 'new'|'shown'|'dismissed'|'accepted'|'applied' (колонка advises.status);
+///              у alerts из insights такой колонки нет → всегда "new";
+///   - hash   — advises.observation_hash; у alerts пусто, фронт падает на
+///              фолбэк-ключ sev+title.
 #[derive(Serialize)]
 struct Notif {
     sev: String,
     title: String,
     meta: String,
+    status: String,
+    hash: String,
 }
 
+/// Лента = критичные/важные alerts из последнего прогона insights
+/// + поведенческие advises (таблица `advises`), новейшие первыми.
+///
+/// Severity для advises берём из `confidence`: high→warn, medium→info, low→mut.
+/// `crit` сознательно НЕ выдаём — критический уровень зарезервирован за
+/// alerts из insights, только он поднимает нативную нотификацию (#131).
 #[tauri::command]
 fn recent_notifications() -> Vec<Notif> {
     let mut out = Vec::new();
@@ -204,10 +220,48 @@ fn recent_notifications() -> Vec<Notif> {
                         .unwrap_or("")
                         .to_string(),
                     meta: created_at.clone(),
+                    status: "new".into(),
+                    hash: String::new(),
                 });
             }
         }
     }
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT observation, created_at, status, observation_hash, confidence
+           FROM advises
+          WHERE status != 'dismissed'
+          ORDER BY created_at DESC
+          LIMIT 20",
+    ) {
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        });
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                let (observation, created_at, status, hash, confidence) = row;
+                let sev = match confidence.as_str() {
+                    "high" => "warn",
+                    "medium" => "info",
+                    _ => "mut",
+                };
+                out.push(Notif {
+                    sev: sev.into(),
+                    title: observation,
+                    meta: created_at,
+                    status,
+                    hash,
+                });
+            }
+        }
+    }
+
     out
 }
 
