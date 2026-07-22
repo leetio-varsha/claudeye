@@ -19,6 +19,9 @@ const VF = (typeof window !== "undefined" && window.ClaudeyeViewFormat) || {
   commandToast: (cmd, out, ok) => ({ tone: ok === false ? "bad" : "good", title: cmd, detail: "" }),
   notificationsViewModel: (l) => ({ rows: Array.isArray(l) ? l : [], badge: 0, toNotify: [] }),
   nativeNotification: (r) => ({ title: "Claudeye", body: (r && r.title) || "", view: "notifications", key: "" }),
+  sessionDetailViewModel: (d) => ({ id: (d && d.id) || "", project: (d && d.project) || "", summary: (d && d.summary) || "", started: "", ended: "", prompts: 0, count: 0, rows: [], empty: true }),
+  searchViewModel: (h, q) => ({ query: q || "", count: Array.isArray(h) ? h.length : 0, rows: Array.isArray(h) ? h : [], empty: !(Array.isArray(h) && h.length) }),
+  sessionExport: (d, f) => (f === "json" ? JSON.stringify(d || {}, null, 2) : ""),
 };
 
 const ICONS = {
@@ -87,9 +90,9 @@ const SAMPLE = {
     { sev: "mut", title: "DB 262 MB — плато, порог 280 MB не пробит", meta: "", status: "dismissed", hash: "demo-old" },
   ],
   sessions: [
-    { project: "claudeye", summary: "digest-регресс: 300s таймаут + retry", prompts: 41, ended: "" },
-    { project: "wl-payments", summary: "WLPaymentForm.tsx — правки формы оплаты", prompts: 32, ended: "" },
-    { project: "bdp", summary: "BACKLOG.md — груминг задач", prompts: 27, ended: "" },
+    { id: "demo-1", project: "claudeye", summary: "digest-регресс: 300s таймаут + retry", prompts: 41, ended: "" },
+    { id: "demo-2", project: "wl-payments", summary: "WLPaymentForm.tsx — правки формы оплаты", prompts: 32, ended: "" },
+    { id: "demo-3", project: "bdp", summary: "BACKLOG.md — груминг задач", prompts: 27, ended: "" },
   ],
   agents: [
     { key: "insights", name: "Daily insights", schedule: "daily 09:00", installed: true, loaded: true },
@@ -174,20 +177,93 @@ function renderNotifications() {
   `;
 }
 
+// экранирование для значений, попадающих в innerHTML (summary/tags из mem.db,
+// пользовательский запрос) — иначе '<' в наблюдении ломает разметку/XSS.
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function tagChips(tags) {
+  if (!tags || !tags.length) return "";
+  return `<div class="tags">${tags.slice(0, 6).map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>`;
+}
+
+// строка наблюдения (drill-in и поиск)
+function rowObs(o) {
+  const rationale = o.rationale ? `<div class="rationale">${esc(o.rationale)}</div>` : "";
+  const projLine = o.project ? `${basename(o.project)} · ` : "";
+  return `
+    <div class="row obs">
+      <span class="sev ${o.sev}"></span>
+      <div style="min-width:0;flex:1">
+        <div class="ttl obs-ttl">${esc(o.title)}</div>
+        <div class="proj">${projLine}${esc(o.tool)}</div>
+        ${tagChips(o.tags)}
+        ${rationale}
+      </div>
+      <span class="meta">${fmtWhen(o.meta)}</span>
+    </div>`;
+}
+
 function renderSessions(d) {
+  const q = esc(state.sessionQuery || "");
   const rows = d.sessions.map(s => `
-    <div class="row">
+    <div class="row session" data-session-id="${esc(s.id)}">
       <span class="sev info"></span>
-      <div style="min-width:0">
-        <div class="ttl">${s.summary || "без описания"}</div>
+      <div style="min-width:0;flex:1">
+        <div class="ttl">${esc(s.summary || "без описания")}</div>
         <div class="proj">${basename(s.project)} · ${s.prompts} ${plural(s.prompts, "промпт", "промпта", "промптов")}</div>
       </div>
       <span class="meta">${fmtWhen(s.ended)}</span>
     </div>`).join("");
+  const results = state.searchVM ? renderSearchResults(state.searchVM) : "";
   return `
     <div class="view-title">Сессии</div>
-    <div class="view-sub">Сессии Claude Code и Cowork · последние ${d.sessions.length}.</div>
-    <div class="panel">${d.sessions.length ? rows : emptyState("Сессий пока нет")}</div>
+    <div class="view-sub">Клик по сессии — наблюдения из mem.db. Поиск — по всей памяти (FTS5).</div>
+    <div class="searchbar">
+      <input id="memSearch" type="search" placeholder="Поиск по памяти…" value="${q}" autocomplete="off" spellcheck="false" />
+      ${state.searchVM ? `<button class="btn" id="searchClear">Сбросить</button>` : ""}
+    </div>
+    ${results}
+    ${state.searchVM ? "" : `
+      <div class="section">Последние сессии · ${d.sessions.length}</div>
+      <div class="panel">${d.sessions.length ? rows : emptyState("Сессий пока нет")}</div>
+    `}
+  `;
+}
+
+function renderSearchResults(vm) {
+  const body = vm.empty
+    ? emptyState(`Ничего не найдено по «${esc(vm.query)}»`)
+    : vm.rows.map(rowObs).join("");
+  return `
+    <div class="section">Результаты поиска · ${vm.count} по «${esc(vm.query)}»</div>
+    <div class="panel">${body}</div>
+  `;
+}
+
+function renderSessionDetail() {
+  const vm = state.detailVM;
+  if (!vm) return renderLoading("sessions");
+  const when = [vm.started && `начало ${fmtWhen(vm.started)}`, vm.ended && `конец ${fmtWhen(vm.ended)}`]
+    .filter(Boolean).join(" · ");
+  const body = vm.empty
+    ? emptyState("В этой сессии нет наблюдений")
+    : vm.rows.map(rowObs).join("");
+  return `
+    <div class="detail-head">
+      <button class="btn" id="detailBack">← Сессии</button>
+      <div class="detail-export">
+        <button class="btn" data-export="md">Экспорт .md</button>
+        <button class="btn" data-export="json">Экспорт .json</button>
+      </div>
+    </div>
+    <div class="view-title">${esc(basename(vm.project) || "Сессия")}</div>
+    <div class="view-sub">${esc(vm.summary || "без описания")}</div>
+    <div class="section">${vm.count} ${plural(vm.count, "наблюдение", "наблюдения", "наблюдений")} · ${vm.prompts} ${plural(vm.prompts, "промпт", "промпта", "промптов")}${when ? " · " + when : ""}</div>
+    <div class="panel">${body}</div>
   `;
 }
 
@@ -338,17 +414,124 @@ async function runCommand(cmd, btn) {
 
 // notifSeen — ключи алертов, по которым нативная нотификация уже уходила в этой
 // сессии; переживает refresh, поэтому повторный клик «Обновить» не пере-алертит.
-const state = { view: "overview", data: null, notifVM: null, notifSeen: new Set() };
+const state = {
+  view: "overview", data: null, notifVM: null, notifSeen: new Set(),
+  // #132 session management
+  sessionQuery: "", searchVM: null, detailVM: null, detailId: null,
+};
 
 // Программная навигация — используется и сайдбаром, и deep-link из нативной
 // нотификации (#131).
 function goToView(view) {
   if (!VIEW_TITLES[view]) return;
+  // уход с «Сессии» сбрасывает drill-in и поиск, чтобы возврат был на список
+  if (view !== "sessions") { state.detailId = null; state.detailVM = null; }
   state.view = view;
   document.querySelectorAll(".navitem").forEach(n => {
     n.classList.toggle("on", n.dataset.view === view);
   });
   render();
+}
+
+// Открыть drill-in по сессии (#132): тянем наблюдения из mem.db.
+async function openSessionDetail(id) {
+  if (!id) return;
+  state.detailId = id;
+  if (!invoke) {
+    // демо-режим: строим detail из sample-сессии
+    const s = (state.data && state.data.sessions || []).find(x => x.id === id) || {};
+    state.detailVM = VF.sessionDetailViewModel({ ...s, observations: [] });
+    render();
+    return;
+  }
+  state.detailVM = null;
+  render(); // скелетон
+  try {
+    const detail = await invoke("session_detail", { id });
+    state.detailVM = VF.sessionDetailViewModel(detail);
+  } catch (e) {
+    console.error("session_detail failed:", e);
+    state.detailVM = VF.sessionDetailViewModel({ id });
+    showToast({ tone: "bad", title: "Не удалось открыть сессию", detail: String(e && e.message ? e.message : e) });
+  }
+  render();
+}
+
+// Поиск по памяти (#132): FTS5 через Rust search_memory.
+let searchSeq = 0;
+async function runMemSearch(query) {
+  const q = (query || "").trim();
+  state.sessionQuery = query || "";
+  if (!q) { state.searchVM = null; render(); return; }
+  if (!invoke) {
+    const hits = (state.data && state.data.sessions || [])
+      .filter(s => (s.summary || "").toLowerCase().includes(q.toLowerCase()))
+      .map(s => ({ id: s.id, summary: s.summary, tool: "", tags: "[]", importance: 0.5, rationale: "", created_at: s.ended, project: s.project }));
+    state.searchVM = VF.searchViewModel(hits, q);
+    render();
+    return;
+  }
+  const seq = ++searchSeq;
+  try {
+    const hits = await invoke("search_memory", { query: q, limit: 40 });
+    if (seq !== searchSeq) return; // устаревший ответ — игнор
+    state.searchVM = VF.searchViewModel(hits, q);
+  } catch (e) {
+    console.error("search_memory failed:", e);
+    state.searchVM = VF.searchViewModel([], q);
+  }
+  render();
+}
+
+// Экспорт текущей сессии (#132): собираем строку в view-format, кладём в
+// буфер обмена (нативного file-dialog пока нет — clipboard + тост).
+async function exportSession(format) {
+  if (!state.detailVM) return;
+  const detail = {
+    id: state.detailVM.id, project: state.detailVM.project, summary: state.detailVM.summary,
+    started: state.detailVM.started, ended: state.detailVM.ended, prompts: state.detailVM.prompts,
+    observations: state.detailVM.rows.map(r => ({
+      id: r.id, summary: r.title, tool: r.tool, tags: r.tags,
+      importance: r.importance, rationale: r.rationale, created_at: r.meta,
+    })),
+  };
+  const text = VF.sessionExport(detail, format);
+  let ok = false;
+  try {
+    if (inTauri && window.__TAURI__ && window.__TAURI__.clipboardManager) {
+      await window.__TAURI__.clipboardManager.writeText(text); ok = true;
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text); ok = true;
+    }
+  } catch (e) { console.error("clipboard write failed:", e); }
+  showToast(ok
+    ? { tone: "good", title: `Экспорт .${format} — в буфере`, detail: `${text.length} символов` }
+    : { tone: "bad", title: `Экспорт .${format}`, detail: "буфер обмена недоступен" });
+}
+
+function bindSessionEvents() {
+  const backBtn = document.getElementById("detailBack");
+  if (backBtn) backBtn.addEventListener("click", () => { state.detailId = null; state.detailVM = null; render(); });
+  document.querySelectorAll("[data-export]").forEach(b =>
+    b.addEventListener("click", () => exportSession(b.dataset.export)));
+  document.querySelectorAll(".row.session").forEach(r =>
+    r.addEventListener("click", () => openSessionDetail(r.dataset.sessionId)));
+  const clr = document.getElementById("searchClear");
+  if (clr) clr.addEventListener("click", () => runMemSearch(""));
+  const input = document.getElementById("memSearch");
+  if (input) {
+    let t = null;
+    input.addEventListener("input", () => {
+      state.sessionQuery = input.value; // не терять фокус/значение при дебаунсе
+      clearTimeout(t);
+      t = setTimeout(() => runMemSearch(input.value), 250);
+    });
+    // фокус в конец при перерисовке, если поиск активен
+    if (state.searchVM || state.sessionQuery) {
+      input.focus();
+      const v = input.value; input.value = ""; input.value = v;
+    }
+  }
 }
 
 // Нативные нотификации: только crit + status 'new' + ещё не показанные.
@@ -394,7 +577,10 @@ function render() {
   if (!d) { c.innerHTML = renderLoading(state.view); return; }
   if (state.view === "overview") { c.innerHTML = renderOverview(d); drawChart(d.activity); }
   else if (state.view === "notifications") c.innerHTML = renderNotifications();
-  else if (state.view === "sessions") c.innerHTML = renderSessions(d);
+  else if (state.view === "sessions") {
+    c.innerHTML = state.detailId ? renderSessionDetail() : renderSessions(d);
+    bindSessionEvents();
+  }
   else if (state.view === "controls") { c.innerHTML = renderControls(d); refreshAgentsPanel(); }
 
   c.querySelectorAll("[data-cmd]").forEach(b => b.addEventListener("click", () => runCommand(b.dataset.cmd, b)));

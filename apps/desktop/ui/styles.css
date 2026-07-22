@@ -237,6 +237,35 @@ canvas { display: block; width: 100% !important; }
 
 .hint { color: var(--text-3); font-size: 11px; margin-top: 10px; line-height: 1.6; }
 
+/* ── session management: поиск, drill-in, экспорт (#132) ── */
+.searchbar { display: flex; gap: 10px; align-items: center; margin: 4px 0 2px; }
+.searchbar input {
+  flex: 1; min-width: 0;
+  padding: 9px 13px; border: 1px solid var(--border-strong); border-radius: 9px;
+  background: var(--panel); color: var(--text); font: inherit; font-size: 13px;
+  transition: border-color 0.12s ease;
+}
+.searchbar input:focus { outline: none; border-color: var(--accent); }
+.searchbar input::placeholder { color: var(--text-3); }
+
+.row.session, .row.obs { cursor: default; }
+.row.session:hover { background: var(--panel-hover); }
+.row.obs { align-items: flex-start; }
+.row.obs .sev { margin-top: 5px; }
+.obs-ttl { white-space: normal; }
+.tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.tag {
+  font-size: 10px; color: var(--text-2);
+  background: color-mix(in srgb, var(--text-3) 14%, transparent);
+  padding: 1px 7px; border-radius: 20px;
+}
+.rationale {
+  margin-top: 5px; padding-left: 9px; font-size: 11px; line-height: 1.5;
+  color: var(--text-2); border-left: 2px solid var(--accent-soft);
+}
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.detail-export { display: flex; gap: 8px; }
+
 /* ── тосты по завершении команд (#133) ── */
 .toasts {
   position: fixed; right: 16px; bottom: 16px; z-index: 50;

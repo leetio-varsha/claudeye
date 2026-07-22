@@ -267,6 +267,7 @@ fn recent_notifications() -> Vec<Notif> {
 
 #[derive(Serialize)]
 struct Sess {
+    id: String,
     project: String,
     summary: String,
     prompts: i64,
@@ -283,7 +284,7 @@ fn recent_sessions(limit: Option<i64>) -> Vec<Sess> {
     let lim = limit.unwrap_or(12);
     // import-git сессии (0 промптов, служебные) — шум для этого вью
     let mut stmt = match conn.prepare(
-        "SELECT project, COALESCE(summary,''), prompt_count,
+        "SELECT id, project, COALESCE(summary,''), prompt_count,
                 COALESCE(ended_at, started_at)
          FROM sessions
          WHERE id NOT LIKE 'import-%'
@@ -295,15 +296,164 @@ fn recent_sessions(limit: Option<i64>) -> Vec<Sess> {
     };
     let rows = stmt.query_map([lim], |r| {
         Ok(Sess {
-            project: r.get(0)?,
-            summary: r.get(1)?,
-            prompts: r.get(2)?,
-            ended: r.get(3)?,
+            id: r.get(0)?,
+            project: r.get(1)?,
+            summary: r.get(2)?,
+            prompts: r.get(3)?,
+            ended: r.get(4)?,
         })
     });
     if let Ok(rows) = rows {
         for s in rows.flatten() {
             out.push(s);
+        }
+    }
+    out
+}
+
+/// Одно наблюдение для drill-in / поиска (#132).
+///
+/// ⚠️ AUP: сюда НЕ попадают `raw_input` / `raw_output` — только AI-сжатый
+/// `summary`, `decision_rationale` (#25 Decision Memory), теги и метаданные.
+/// Тот же safe-набор колонок, что отдаёт `recentObservations` в src/db.js.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Obs {
+    id: i64,
+    summary: String,
+    tool: String,
+    tags: String,
+    importance: f64,
+    rationale: String,
+    created_at: String,
+    project: String,
+}
+
+/// Полный drill-in по сессии: метаданные + её наблюдения (#132).
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SessionDetail {
+    id: String,
+    project: String,
+    summary: String,
+    started: String,
+    ended: String,
+    prompts: i64,
+    observations: Vec<Obs>,
+}
+
+/// Наблюдения одной сессии из mem.db, новейшие первыми.
+/// Читаем только safe-колонки (без raw_input/raw_output — AUP).
+#[tauri::command]
+fn session_detail(id: String) -> SessionDetail {
+    let mut d = SessionDetail::default();
+    let conn = match open_ro() {
+        Some(c) => c,
+        None => return d,
+    };
+
+    if let Ok((project, summary, started, ended, prompts)) = conn.query_row(
+        "SELECT project, COALESCE(summary,''), started_at,
+                COALESCE(ended_at, ''), prompt_count
+         FROM sessions WHERE id = ?1",
+        [&id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        },
+    ) {
+        d.id = id.clone();
+        d.project = project;
+        d.summary = summary;
+        d.started = started;
+        d.ended = ended;
+        d.prompts = prompts;
+    } else {
+        return d; // нет такой сессии — пустой detail
+    }
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, summary, tool, tags, importance,
+                COALESCE(decision_rationale, ''), created_at, project
+         FROM observations
+         WHERE session_id = ?1
+         ORDER BY created_at DESC, id DESC
+         LIMIT 300",
+    ) {
+        let rows = stmt.query_map([&id], |r| {
+            Ok(Obs {
+                id: r.get(0)?,
+                summary: r.get(1)?,
+                tool: r.get(2)?,
+                tags: r.get(3)?,
+                importance: r.get(4)?,
+                rationale: r.get(5)?,
+                created_at: r.get(6)?,
+                project: r.get(7)?,
+            })
+        });
+        if let Ok(rows) = rows {
+            for o in rows.flatten() {
+                d.observations.push(o);
+            }
+        }
+    }
+    d
+}
+
+/// Полнотекстовый поиск по памяти через FTS5 `fts_obs` (#132).
+///
+/// Зеркалит `ftsSearch` из src/db.js: чистим не-словарные символы, режем на
+/// слова и склеиваем через OR (recall важнее precision для drill-in),
+/// сортируем по bm25. Возвращаем тот же safe-набор колонок, что и drill-in.
+#[tauri::command]
+fn search_memory(query: String, limit: Option<i64>) -> Vec<Obs> {
+    let mut out = Vec::new();
+    let conn = match open_ro() {
+        Some(c) => c,
+        None => return out,
+    };
+    // sanitize: не-словарные символы → пробел, разбить на слова, склеить OR
+    let cleaned: String = query
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .collect();
+    let terms: Vec<&str> = cleaned.split_whitespace().filter(|s| !s.is_empty()).collect();
+    if terms.is_empty() {
+        return out;
+    }
+    let fts_query = terms.join(" OR ");
+    let lim = limit.unwrap_or(30);
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT o.id, o.summary, o.tool, o.tags, o.importance,
+                COALESCE(o.decision_rationale, ''), o.created_at, o.project
+         FROM fts_obs
+         JOIN observations o ON o.id = fts_obs.rowid
+         WHERE fts_obs MATCH ?1
+         ORDER BY bm25(fts_obs) LIMIT ?2",
+    ) {
+        let rows = stmt.query_map(rusqlite::params![fts_query, lim], |r| {
+            Ok(Obs {
+                id: r.get(0)?,
+                summary: r.get(1)?,
+                tool: r.get(2)?,
+                tags: r.get(3)?,
+                importance: r.get(4)?,
+                rationale: r.get(5)?,
+                created_at: r.get(6)?,
+                project: r.get(7)?,
+            })
+        });
+        if let Ok(rows) = rows {
+            for o in rows.flatten() {
+                out.push(o);
+            }
         }
     }
     out
@@ -377,6 +527,8 @@ fn main() {
             activity_14d,
             recent_notifications,
             recent_sessions,
+            session_detail,
+            search_memory,
             cmd_reindex,
             cmd_cleanup,
             cmd_digest,

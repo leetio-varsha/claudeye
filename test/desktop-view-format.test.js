@@ -27,8 +27,10 @@ function loadViewFormat() {
   return sandbox.ClaudeyeViewFormat;
 }
 
-const { schedulerViewModel, commandToast, notificationsViewModel, nativeNotification } =
-  loadViewFormat();
+const {
+  schedulerViewModel, commandToast, notificationsViewModel, nativeNotification,
+  parseTags, importanceSev, sessionDetailViewModel, searchViewModel, sessionExport,
+} = loadViewFormat();
 
 // ─── schedulerViewModel ──────────────────────────────────────────────────────
 
@@ -211,6 +213,117 @@ test('nativeNotification: caps long body and survives empty row', () => {
   const empty = nativeNotification(null);
   assert.equal(empty.body, '');
   assert.equal(empty.view, 'notifications');
+});
+
+// ─── session management: drill-in / поиск / экспорт (#132) ───────────────────
+
+// NB: view-format исполняется в vm-realm → его Array !== Array тест-realm,
+// deepStrictEqual падает на проверке прототипа. Приводим через Array.from.
+const arr = (a) => Array.from(a);
+
+test('parseTags: JSON-строка, готовый массив, мусор', () => {
+  assert.deepEqual(arr(parseTags('["bug","db"]')), ['bug', 'db']);
+  assert.deepEqual(arr(parseTags(['a', 1])), ['a', '1']);
+  assert.equal(parseTags('').length, 0);
+  assert.equal(parseTags(null).length, 0);
+  assert.equal(parseTags('не json').length, 0);
+  assert.equal(parseTags('{"a":1}').length, 0); // объект, не массив
+});
+
+test('importanceSev: пороги 0.75 / 0.4', () => {
+  assert.equal(importanceSev(0.9), 'warn');
+  assert.equal(importanceSev(0.75), 'warn');
+  assert.equal(importanceSev(0.5), 'info');
+  assert.equal(importanceSev(0.4), 'info');
+  assert.equal(importanceSev(0.2), 'mut');
+  assert.equal(importanceSev(undefined), 'mut');
+  assert.equal(importanceSev('nope'), 'mut');
+});
+
+test('sessionDetailViewModel: наблюдения → строки, camelCase createdAt', () => {
+  const vm = sessionDetailViewModel({
+    id: 's1', project: '/home/u/claudeye', summary: 'фикс хуков', prompts: 5,
+    started: '2026-07-22 09:00:00', ended: '2026-07-22 10:00:00',
+    observations: [
+      { id: 1, summary: 'правка install-hooks', tool: 'Edit', tags: '["hooks"]', importance: 0.8, rationale: 'ABI drift', createdAt: '2026-07-22 09:30:00', project: '/home/u/claudeye' },
+      { id: 2, summary: 'npm test', tool: 'Bash', tags: '[]', importance: 0.3 },
+    ],
+  });
+  assert.equal(vm.id, 's1');
+  assert.equal(vm.count, 2);
+  assert.equal(vm.empty, false);
+  assert.equal(vm.rows[0].sev, 'warn');
+  assert.deepEqual(arr(vm.rows[0].tags), ['hooks']);
+  assert.equal(vm.rows[0].rationale, 'ABI drift');
+  assert.equal(vm.rows[0].meta, '2026-07-22 09:30:00');
+  assert.equal(vm.rows[1].sev, 'mut');
+  assert.equal(vm.rows[1].meta, ''); // нет created_at → пусто
+});
+
+test('sessionDetailViewModel: пустой / битый вход', () => {
+  const empty = sessionDetailViewModel(null);
+  assert.equal(empty.empty, true);
+  assert.equal(empty.rows.length, 0);
+  assert.equal(empty.count, 0);
+  const noObs = sessionDetailViewModel({ id: 'x', observations: 'nope' });
+  assert.equal(noObs.empty, true);
+});
+
+test('searchViewModel: hits → строки + эхо запроса', () => {
+  const vm = searchViewModel([
+    { id: 7, summary: 'таймаут digest', tool: 'Bash', tags: '["digest"]', importance: 0.6, created_at: '2026-07-20 12:00:00' },
+  ], '  digest  ');
+  assert.equal(vm.query, 'digest');
+  assert.equal(vm.count, 1);
+  assert.equal(vm.empty, false);
+  assert.equal(vm.rows[0].sev, 'info');
+  assert.equal(vm.rows[0].meta, '2026-07-20 12:00:00'); // snake_case тоже читается
+  const none = searchViewModel([], 'zzz');
+  assert.equal(none.empty, true);
+  assert.equal(none.count, 0);
+});
+
+test('searchViewModel: защита от мусора', () => {
+  for (const bad of [null, undefined, 'nope', 42]) {
+    const vm = searchViewModel(bad, 'q');
+    assert.equal(vm.rows.length, 0);
+    assert.equal(vm.empty, true);
+  }
+});
+
+test('sessionExport json: структурный дамп без raw-полей', () => {
+  const detail = {
+    id: 's1', project: 'claudeye', summary: 'фикс', prompts: 2,
+    started: 'a', ended: 'b',
+    observations: [{ id: 1, summary: 's', tool: 'Edit', tags: '["t"]', importance: 0.9, rationale: 'r', createdAt: 'c' }],
+  };
+  const json = sessionExport(detail, 'json');
+  const parsed = JSON.parse(json);
+  assert.equal(parsed.id, 's1');
+  assert.equal(parsed.observations.length, 1);
+  assert.deepEqual(parsed.observations[0].tags, ['t']);
+  assert.equal(parsed.observations[0].summary, 's');
+  // никаких raw_input/raw_output
+  assert.ok(!/raw_input|raw_output/.test(json));
+});
+
+test('sessionExport md: заголовок, метаданные, наблюдения', () => {
+  const md = sessionExport({
+    id: 's1', project: 'claudeye', summary: 'фикс хуков', prompts: 3,
+    started: '2026-07-22', ended: '',
+    observations: [{ id: 1, summary: 'правка', tool: 'Edit', tags: '["hooks"]', importance: 0.8, rationale: 'ABI', createdAt: 'c' }],
+  }, 'md');
+  assert.match(md, /# Сессия claudeye/);
+  assert.match(md, /> фикс хуков/);
+  assert.match(md, /промптов: 3/);
+  assert.match(md, /- правка `Edit`/);
+  assert.match(md, /теги: hooks/);
+  assert.match(md, /обоснование: ABI/);
+});
+
+test('sessionExport md: пустая сессия не падает', () => {
+  const md = sessionExport({ id: 'x', project: 'p', observations: [] }, 'md');
+  assert.match(md, /нет наблюдений/);
 });
 
 // ─── источник правды: сам файл должен оставаться текстовым ───────────────────
