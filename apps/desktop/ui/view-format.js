@@ -172,11 +172,149 @@
     };
   }
 
+  // ── Session drill-in / поиск / экспорт (#132) ───────────────────────────
+  // Shapes the raw rows from the Rust `session_detail` / `search_memory`
+  // commands into render-ready view models, and serializes a session to
+  // md/json. Kept here (no DOM / no SQLite) so the tricky bits — tag parsing,
+  // importance→severity, export formatting — are unit-tested against the
+  // SHIPPED source.
+  //
+  // AUP: observation rows NEVER carry raw_input/raw_output — the Rust side
+  // only selects summary/tool/tags/importance/rationale/created_at. Nothing
+  // here reconstructs raw payloads.
+
+  // tags ship as a JSON array string ('["a","b"]'); tolerate already-parsed
+  // arrays, malformed JSON, and null.
+  function parseTags(tags) {
+    if (Array.isArray(tags)) return tags.map(String);
+    if (typeof tags !== 'string' || !tags.trim()) return [];
+    try {
+      var arr = JSON.parse(tags);
+      return Array.isArray(arr) ? arr.map(String) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // importance 0..1 → severity dot: ≥0.75 warn (важное), ≥0.4 info, иначе mut.
+  function importanceSev(v) {
+    var n = typeof v === 'number' ? v : parseFloat(v);
+    if (!isFinite(n)) return 'mut';
+    if (n >= 0.75) return 'warn';
+    if (n >= 0.4) return 'info';
+    return 'mut';
+  }
+
+  function observationRow(o) {
+    return {
+      id: (o && o.id) || 0,
+      title: (o && o.summary) || 'без описания',
+      tool: (o && o.tool) || '',
+      tags: parseTags(o && o.tags),
+      rationale: (o && o.rationale) || '',
+      importance: (o && typeof o.importance === 'number') ? o.importance : 0,
+      sev: importanceSev(o && o.importance),
+      meta: (o && o.createdAt) || (o && o.created_at) || '',
+      project: (o && o.project) || '',
+    };
+  }
+
+  // Drill-in model for one session: header meta + its observation rows.
+  function sessionDetailViewModel(detail) {
+    var d = detail || {};
+    var obs = Array.isArray(d.observations) ? d.observations : [];
+    return {
+      id: d.id || '',
+      project: d.project || '',
+      summary: d.summary || '',
+      started: d.started || '',
+      ended: d.ended || '',
+      prompts: typeof d.prompts === 'number' ? d.prompts : 0,
+      count: obs.length,
+      rows: obs.map(observationRow),
+      empty: obs.length === 0,
+    };
+  }
+
+  // Search results model. `query` echoed back for the "N по запросе …" header.
+  function searchViewModel(hits, query) {
+    var rows = (Array.isArray(hits) ? hits : []).map(observationRow);
+    return {
+      query: (query || '').trim(),
+      count: rows.length,
+      rows: rows,
+      empty: rows.length === 0,
+    };
+  }
+
+  // Serialize a session detail to a shareable string. format: 'json' | 'md'.
+  // JSON is the structured detail as-is; md is a human-readable digest.
+  function sessionExport(detail, format) {
+    var vm = sessionDetailViewModel(detail);
+    if (format === 'json') {
+      return JSON.stringify(
+        {
+          id: vm.id,
+          project: vm.project,
+          summary: vm.summary,
+          started: vm.started,
+          ended: vm.ended,
+          prompts: vm.prompts,
+          observations: vm.rows.map(function (r) {
+            return {
+              id: r.id,
+              summary: r.title,
+              tool: r.tool,
+              tags: r.tags,
+              importance: r.importance,
+              rationale: r.rationale,
+              created_at: r.meta,
+            };
+          }),
+        },
+        null,
+        2
+      );
+    }
+    // markdown
+    var lines = [];
+    lines.push('# Сессия ' + (vm.project || vm.id || '—'));
+    lines.push('');
+    if (vm.summary) lines.push('> ' + vm.summary);
+    var head = [];
+    if (vm.started) head.push('начало: ' + vm.started);
+    if (vm.ended) head.push('конец: ' + vm.ended);
+    head.push('промптов: ' + vm.prompts);
+    head.push('наблюдений: ' + vm.count);
+    lines.push('');
+    lines.push('_' + head.join(' · ') + '_');
+    lines.push('');
+    lines.push('## Наблюдения');
+    lines.push('');
+    if (vm.empty) {
+      lines.push('_нет наблюдений_');
+    } else {
+      vm.rows.forEach(function (r) {
+        var tail = r.tool ? ' `' + r.tool + '`' : '';
+        lines.push('- ' + r.title + tail);
+        if (r.tags.length) lines.push('  - теги: ' + r.tags.join(', '));
+        if (r.rationale) lines.push('  - обоснование: ' + r.rationale);
+      });
+    }
+    lines.push('');
+    return lines.join('\n');
+  }
+
   var api = {
     schedulerViewModel: schedulerViewModel,
     commandToast: commandToast,
     notificationsViewModel: notificationsViewModel,
     nativeNotification: nativeNotification,
+    parseTags: parseTags,
+    importanceSev: importanceSev,
+    sessionDetailViewModel: sessionDetailViewModel,
+    searchViewModel: searchViewModel,
+    sessionExport: sessionExport,
   };
 
   if (typeof window !== 'undefined') window.ClaudeyeViewFormat = api;
