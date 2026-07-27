@@ -499,7 +499,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Открыть Claudeye", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Показать / скрыть окно", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let _tray = TrayIconBuilder::new()
@@ -507,10 +507,16 @@ fn main() {
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
+                    // readiness (#133): tray сворачивает/разворачивает окно —
+                    // видимое прячем, скрытое показываем и фокусируем.
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
                         }
                     }
                     _ => {}
