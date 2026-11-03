@@ -80,7 +80,7 @@ const SAMPLE = {
   health: { hooksUp: true, lastObs: "06:08", obs24h: 908, sessions7d: 14, projects: 3, quota: "1.6×", embPct: 74, streak: 20, dbMb: 262 },
   activity: {
     labels: ["25","26","27","28","29","30","01","02","03","04","05","06","07","08"],
-    values: [2,1,0,1,0,1,0,0,1,0,1,0,2,908],
+    values: [412,655,590,120,80,702,866,731,0,0,540,812,690,908],
   },
   notifications: [
     { sev: "crit", title: "DB 520 MB — 1.7× the critical threshold", meta: "", status: "new", hash: "demo-db" },
@@ -91,8 +91,8 @@ const SAMPLE = {
   ],
   sessions: [
     { id: "demo-1", project: "claudeye", summary: "digest regression: 300s timeout + retry", prompts: 41, ended: "" },
-    { id: "demo-2", project: "wl-payments", summary: "WLPaymentForm.tsx — payment form fixes", prompts: 32, ended: "" },
-    { id: "demo-3", project: "bdp", summary: "BACKLOG.md — backlog grooming", prompts: 27, ended: "" },
+    { id: "demo-2", project: "my-web-app", summary: "PaymentForm.tsx — checkout validation fixes", prompts: 32, ended: "" },
+    { id: "demo-3", project: "docs", summary: "BACKLOG.md — backlog grooming", prompts: 27, ended: "" },
   ],
   agents: [
     { key: "insights", name: "Daily insights", schedule: "daily 09:00", installed: true, loaded: true },
