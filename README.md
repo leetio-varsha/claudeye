@@ -10,6 +10,16 @@ It's not just memory. Memory is the foundation — the real product is the advis
 
 Long-term vision: a persistent behavioral model of the individual user, portable across AI assistants as they evolve.
 
+![Claudeye desktop: overview with activity, notifications and health](docs/images/desktop-overview.png)
+
+What an advise looks like in practice:
+
+> **Observation.** Your sessions in `my-web-app` routinely run past 250 prompts; the last five averaged 310.
+> **Why it matters.** Past ~200 prompts the context is mostly stale and every answer costs more quota for less precision.
+> **Proposal.** A `UserPromptSubmit` hook that nudges you to `/compact` at 180 prompts and opens a fresh session at 250.
+> **Implementation.** Ready-to-apply hook draft, one command to install, one to undo.
+
+
 ---
 
 ## Quick Start
