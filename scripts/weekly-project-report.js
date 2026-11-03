@@ -8,7 +8,11 @@
  *   4. Session time distribution
  */
 
+import { homedir } from 'os';
 import { getDb } from '../src/db.js';
+
+// SQL literal of the home directory prefix, so project paths render as ~/...
+const HOME_SQL = `'${homedir().replace(/'/g, "''")}/'`;
 
 /**
  * Generate cross-project friction heatmap data.
@@ -23,7 +27,7 @@ export function generateProjectHeatmap({ days = 7 } = {}) {
   // 1. Projects ranked by friction (using session friction_score + observation importance)
   const projects = db.prepare(`
     SELECT
-      REPLACE(REPLACE(o.project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project,
+      REPLACE(o.project, ${HOME_SQL}, '~/') as project,
       COUNT(DISTINCT s.id) as sessions,
       COUNT(o.id) as total_obs,
       SUM(CASE WHEN o.importance >= 0.8 THEN 1 ELSE 0 END) as critical_obs,
@@ -43,7 +47,7 @@ export function generateProjectHeatmap({ days = 7 } = {}) {
   // 2. Week-over-week trends: compare this period vs previous period
   const trends = db.prepare(`
     SELECT
-      REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project,
+      REPLACE(project, ${HOME_SQL}, '~/') as project,
       ROUND(AVG(CASE WHEN created_at >= date('now', '-' || ? || ' days') THEN importance END), 3) as current_imp,
       ROUND(AVG(CASE WHEN created_at < date('now', '-' || ? || ' days')
                       AND created_at >= date('now', '-' || (? * 2) || ' days') THEN importance END), 3) as prev_imp,
@@ -61,7 +65,7 @@ export function generateProjectHeatmap({ days = 7 } = {}) {
   // 3. File/module hotspots — repeated high-importance observations on same summary patterns
   const hotspots = db.prepare(`
     SELECT
-      REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project,
+      REPLACE(project, ${HOME_SQL}, '~/') as project,
       tool,
       SUBSTR(summary, 1, 120) as summary_prefix,
       COUNT(*) as occurrences,
@@ -79,7 +83,7 @@ export function generateProjectHeatmap({ days = 7 } = {}) {
   // 4. Session time sinks — projects with longest/most sessions
   const timeSinks = db.prepare(`
     SELECT
-      REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project,
+      REPLACE(project, ${HOME_SQL}, '~/') as project,
       COUNT(*) as session_count,
       SUM(prompt_count) as total_prompts,
       MAX(prompt_count) as max_prompts,

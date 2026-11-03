@@ -30,6 +30,7 @@ console.log('\nGit commits today:', git.n);
 
 // Estimate hook overhead: how much context does inject-hook add?
 const { buildContext } = await import('../src/search.js');
-const ctx = await buildContext('test query', '/Users/lord/Sites/Entravel/entravel-rn');
+const project = process.argv[2] || process.cwd();
+const ctx = await buildContext('test query', project);
 const ctxTokens = ctx ? Math.round(ctx.length / 4) : 0;
 console.log('\nInject-hook context size:', ctx?.length || 0, 'chars (~' + ctxTokens + ' tokens per message)');

@@ -16,7 +16,7 @@ Long-term vision: a persistent behavioral model of the individual user, portable
 
 ```bash
 # Clone and install
-git clone git@github.com:leetio-varsha/claudeye.git
+git clone https://github.com/leetio-varsha/claudeye.git
 cd claudeye
 npm install
 

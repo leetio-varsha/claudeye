@@ -3,8 +3,11 @@
  * Friction analysis script for #78
  * Run: node scripts/friction-analysis.js
  */
+import { homedir } from 'os';
 import { getDb } from '../src/db.js';
 const db = getDb();
+// SQL literal of the home directory prefix, so project paths render as ~/...
+const HOME_SQL = `'${homedir().replace(/'/g, "''")}/'`;
 
 console.log('=== TOP 15 HIGH-FRICTION SESSIONS ===\n');
 const topFriction = db.prepare(`
@@ -29,7 +32,7 @@ topFriction.forEach((s, i) => {
 console.log('\n=== FRICTION BY PROJECT (avg, sessions) ===\n');
 const byProject = db.prepare(`
   SELECT
-    REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as proj,
+    REPLACE(project, ${HOME_SQL}, '~/') as proj,
     AVG(friction_score) as avg_f,
     COUNT(*) as sessions,
     SUM(CASE WHEN friction_score > 0.2 THEN 1 ELSE 0 END) as high_friction_sessions

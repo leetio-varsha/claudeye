@@ -47,7 +47,7 @@ HARD REQUIREMENTS — response MUST be a valid JSON object, no markdown, no prea
 
 RULES:
 - Return 3–7 advises, ordered by confidence (high first).
-- Each advise describes BEHAVIOR, not a metric. Bad: "2 sessions exceeded 250 prompts". Good: "You routinely hold multi-hour sessions in entravel-fe that grow past 250 prompts, letting context accumulate beyond the useful horizon."
+- Each advise describes BEHAVIOR, not a metric. Bad: "2 sessions exceeded 250 prompts". Good: "You routinely hold multi-hour sessions in my-web-app that grow past 250 prompts, letting context accumulate beyond the useful horizon."
 - The "proposal" MUST be a concrete automation — a hook name, a CLI command, a scheduler, or a script path. Never generic advice like "be careful".
 - If data lacks signal for a dimension, skip it. Do NOT invent findings.
 - Reference real project names and real numbers when supporting the observation.
