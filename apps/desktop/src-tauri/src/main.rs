@@ -116,7 +116,7 @@ fn dashboard_summary() -> Health {
     h.quota = if base > 0.0 && recent / base >= 1.3 {
         format!("{:.1}×", recent / base)
     } else {
-        "норма".into()
+        "normal".into()
     };
     h
 }
@@ -499,8 +499,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Показать / скрыть окно", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Выйти", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Show / Hide Window", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
