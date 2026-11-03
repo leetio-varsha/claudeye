@@ -29,16 +29,16 @@
       var sev, state;
       if (!installed) {
         sev = 'bad';
-        state = 'не установлен';
+        state = 'not installed';
       } else if (loaded) {
         sev = 'good';
-        state = 'работает';
+        state = 'running';
       } else {
         sev = 'warn';
-        state = 'установлен, не загружен';
+        state = 'installed, not loaded';
       }
       return {
-        name: (s && (s.name || s.key)) || 'агент',
+        name: (s && (s.name || s.key)) || 'agent',
         schedule: (s && s.schedule) || '',
         sev: sev,
         state: state,
@@ -47,10 +47,10 @@
   }
 
   var CMD_LABEL = {
-    reindex: 'Reindex эмбеддингов',
+    reindex: 'Reindex embeddings',
     cleanup: 'Cleanup',
-    digest: 'Генерация digest',
-    agents: 'Статус агентов',
+    digest: 'Generate digest',
+    agents: 'Agent status',
     board: 'GitHub Project',
   };
 
@@ -76,7 +76,7 @@
     if (detail.length > 120) detail = detail.slice(0, 117) + '…';
     return {
       tone: failed ? 'bad' : 'good',
-      title: (CMD_LABEL[cmd] || cmd) + (failed ? ' — ошибка' : ' — готово'),
+      title: (CMD_LABEL[cmd] || cmd) + (failed ? ' — failed' : ' — done'),
       detail: detail,
     };
   }
@@ -165,7 +165,7 @@
     var title = (row && row.title) || '';
     var body = title.length > 160 ? title.slice(0, 157) + '…' : title;
     return {
-      title: 'Claudeye — критический алерт',
+      title: 'Claudeye — critical alert',
       body: body,
       view: 'notifications',
       key: (row && row.key) || '',
@@ -208,7 +208,7 @@
   function observationRow(o) {
     return {
       id: (o && o.id) || 0,
-      title: (o && o.summary) || 'без описания',
+      title: (o && o.summary) || 'no summary',
       tool: (o && o.tool) || '',
       tags: parseTags(o && o.tags),
       rationale: (o && o.rationale) || '',
@@ -278,27 +278,27 @@
     }
     // markdown
     var lines = [];
-    lines.push('# Сессия ' + (vm.project || vm.id || '—'));
+    lines.push('# Session ' + (vm.project || vm.id || '—'));
     lines.push('');
     if (vm.summary) lines.push('> ' + vm.summary);
     var head = [];
-    if (vm.started) head.push('начало: ' + vm.started);
-    if (vm.ended) head.push('конец: ' + vm.ended);
-    head.push('промптов: ' + vm.prompts);
-    head.push('наблюдений: ' + vm.count);
+    if (vm.started) head.push('started: ' + vm.started);
+    if (vm.ended) head.push('ended: ' + vm.ended);
+    head.push('prompts: ' + vm.prompts);
+    head.push('observations: ' + vm.count);
     lines.push('');
     lines.push('_' + head.join(' · ') + '_');
     lines.push('');
-    lines.push('## Наблюдения');
+    lines.push('## Observations');
     lines.push('');
     if (vm.empty) {
-      lines.push('_нет наблюдений_');
+      lines.push('_no observations_');
     } else {
       vm.rows.forEach(function (r) {
         var tail = r.tool ? ' `' + r.tool + '`' : '';
         lines.push('- ' + r.title + tail);
-        if (r.tags.length) lines.push('  - теги: ' + r.tags.join(', '));
-        if (r.rationale) lines.push('  - обоснование: ' + r.rationale);
+        if (r.tags.length) lines.push('  - tags: ' + r.tags.join(', '));
+        if (r.rationale) lines.push('  - rationale: ' + r.rationale);
       });
     }
     lines.push('');

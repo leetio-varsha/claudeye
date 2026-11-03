@@ -1,78 +1,78 @@
-# Claudeye — Идея
+# Claudeye — The Idea
 
-## Что это
+## What it is
 
-Claudeye — **персональный поведенческий слой для работы с AI**. Система наблюдает как человек работает с AI-ассистентом, находит паттерны которые он сам не видит, и предлагает конкретные автоматизации с готовой имплементацией.
+Claudeye is a **personal behavioral layer for AI work**. The system observes how a person works with an AI assistant, finds patterns they do not see themselves, and proposes concrete automations with a ready implementation.
 
-Не «память для Claude Code». Не «Datadog для dev». Это другая категория — **behavioral analytics + actionable advisor** которая со временем превращается в модель конкретного пользователя.
+Not "memory for Claude Code". Not "Datadog for dev". It is a different category — **behavioral analytics + actionable advisor** that over time turns into a model of a specific user.
 
-## Что уже работает
+## What already works
 
-Claude Code — первая поверхность. Хуки захватывают каждое взаимодействие (tool calls, prompts, decisions), compress через AI, сохраняют в локальную SQLite с FTS5 + vector search.
+Claude Code is the first surface. Hooks capture every interaction (tool calls, prompts, decisions), compress it with AI, and store it in a local SQLite database with FTS5 + vector search.
 
-Поверх этого:
-- **Memory** — foundation, не продукт. Контекст из прошлых сессий автоматически подставляется в релевантные места. Anthropic это коммодитизирует в течение года — мы не закладываемся на это как на defensible value.
-- **Rule-based insights** — friction scores, hotspots, repeat-fixes, quota burn, session length, hook health. Ежедневный scheduler пишет alerts.
-- **Behavioral Advisor (core)** — Claude-powered модуль анализирует поведение за 7-30 дней и выдаёт конкретные советы в структуре _observation → why it matters → proposed automation → implementation draft → confidence_. Дедуп через observation_hash, память о dismissed/accepted чтобы не повторяться.
-- **Automation Advisor** — ROI-scored рекомендации по автоматизации всего workflow (task management, code review, monitoring, docs, communications).
+On top of that:
+- **Memory** — the foundation, not the product. Context from past sessions is injected automatically where it is relevant. Anthropic will commoditize this within a year; we do not treat it as defensible value.
+- **Rule-based insights** — friction scores, hotspots, repeat fixes, quota burn, session length, hook health. A daily scheduler writes alerts.
+- **Behavioral Advisor (core)** — a Claude-powered module analyzes 7-30 days of behavior and produces concrete advice structured as _observation → why it matters → proposed automation → implementation draft → confidence_. Deduplicated through an observation hash, with memory of dismissed/accepted items so it does not repeat itself.
+- **Automation Advisor** — ROI-scored recommendations for automating the whole workflow (task management, code review, monitoring, docs, communications).
 
 ## Product ladder
 
-Четыре ступени, одна конечная цель.
+Four steps, one end goal.
 
-**1. Observe** (есть) — telemetry слой. Хуки видят всё.
+**1. Observe** (done) — the telemetry layer. Hooks see everything.
 
-**2. Advise** (есть, Phase 1 закрыт в #87) — advisor находит паттерны и предлагает автоматизации с имплементацией. Юзер решает accept/dismiss, система учится на этом.
+**2. Advise** (done) — the advisor finds patterns and proposes automations with an implementation. The user accepts or dismisses; the system learns from that.
 
-**3. Act** (Phase 3, 6 мес) — advisor не просто предлагает, а **делает**. Пишет hook, открывает PR, настраивает scheduler — юзер одним кликом принимает или отклоняет. Человек становится пилотом, не пишущим код. Рычаг огромный: 80% работы уже в implementation draft, если система закроет оставшиеся 20% — меняется роль самого разработчика внутри инструмента. См. #24.
+**3. Act** — the advisor does not just propose, it **does**: writes the hook, opens the PR, configures the scheduler, and the user accepts or rejects with one click. The person becomes a pilot rather than someone writing code. The leverage is huge: 80% of the work is already in the implementation draft; if the system closes the remaining 20%, the developer's role inside the tool changes.
 
-**4. Learn** (Phase 4, 6-12 мес) — feedback loop (#21). Система видит какие советы ты принял, какие отклонил, что из принятых реально заработало, что откатил. Advisor становится **персонализированным** за 2-3 недели. Твой advisor ≠ advisor другого пользователя.
+**4. Learn** — the feedback loop. The system sees which advice you accepted, which you dismissed, which accepted changes actually worked and which were rolled back. The advisor becomes **personalized** within 2-3 weeks. Your advisor is not another user's advisor.
 
-**Endgame: Model** — Digital Twin (#29). Если у системы месяцы поведенческих данных о человеке — паттерны, решения, предпочтения, темп, сильные/слабые места — это модель конкретного человека. И она становится **инфраструктурным слоем**: любой AI-ассистент в будущем может подключиться к этой модели и работать _как этот человек_ или _с учётом его особенностей_.
+**Endgame: Model** — the Digital Twin. Months of behavioral data about a person — patterns, decisions, preferences, pace, strengths and weaknesses — add up to a model of that specific person. And it becomes an **infrastructure layer**: any future AI assistant can plug into that model and work _as this person_ or _with awareness of their particular traits_.
 
-Endgame определяет почему всё остальное имеет смысл. Мы не строим отдельный инструмент для Claude Code — мы строим персональный слой который человек носит с собой через все AI-инструменты которые появятся.
+The endgame is why everything else makes sense. We are not building a separate tool for Claude Code; we are building the personal layer a person carries with them through every AI tool that comes next.
 
-## Почему это defensible
+## Why it is defensible
 
-- **Anthropic не сделает:** у них 100+M юзеров, персонализация под каждого не приоритет. Они ship'ят среднее, не индивидуальное.
-- **Cursor/Copilot не сделают:** у них конфликт интересов с выбором модели и с observability по usage. Они прячут метрики за seats.
-- **OSS memory tools не сделают:** у них нет telemetry foundation — они решают только retrieval-слой.
+- **Anthropic will not do it:** with 100M+ users, per-person personalization is not a priority. They ship the average, not the individual.
+- **Cursor/Copilot will not do it:** they have a conflict of interest around model choice and usage observability. They hide metrics behind seats.
+- **OSS memory tools will not do it:** they have no telemetry foundation — they only solve the retrieval layer.
 
-Moat не в памяти. Moat в (а) **behavioral data aggregated across sessions + projects + time**, (б) **advisor с implementation drafts** который превращает совет в готовый merge, (в) **local-first privacy** — raw data не покидает машину, вверх уходят только агрегированные сигналы.
+The moat is not in memory. The moat is in (a) **behavioral data aggregated across sessions, projects and time**, (b) **an advisor with implementation drafts** that turns advice into a ready merge, and (c) **local-first privacy** — raw data never leaves the machine; only aggregated signals go up.
 
-## Масштабирование: команды
+## Scaling: teams
 
-Те же принципы работают на уровне команды. Каждый дев локально — raw данные на машине. Вверх уходят только агрегированные метрики: friction, модели, плагины, паттерны.
+The same principles work at the team level. Every developer keeps raw data locally on their machine. Only aggregated metrics go up: friction, models, plugins, patterns.
 
-Тех-лид видит где команда буксует, какие инструменты _реально_ работают (vs куплены), что можно стандартизировать. Нарратив для buyer'а: «мы платим $30/seat за Copilot — что мы получаем». Ни Cursor, ни Copilot этот ответ не дают. Claudeye даёт.
+A tech lead sees where the team gets stuck, which tools _actually_ work (as opposed to being paid for), and what can be standardized. The narrative for the buyer: "we pay $30/seat for Copilot — what do we get for it?" Neither Cursor nor Copilot answers that. Claudeye does.
 
-Команда — это не отдельный продукт, а агрегация того же персонального слоя. Иерархический CLAUDE.md (global → team → project → personal), Shared Knowledge Base с privacy-first обменом, онбординг за `npx claudeye join <token>`. Всё уже в backlog (#34-#40).
+A team is not a separate product; it is an aggregation of the same personal layer. A hierarchical CLAUDE.md (global → team → project → personal), a shared knowledge base with privacy-first exchange, onboarding via `npx claudeye join <token>`.
 
-## Масштабирование: не только разработчики
+## Scaling: beyond developers
 
-Claude сейчас уже не только dev-tool. PM'ы, writers, researchers, lawyers, analysts, consultants используют его ежедневно. Cowork mode (в котором работает эта беседа) позиционируется как consumer productivity.
+Claude is already more than a dev tool. PMs, writers, researchers, lawyers, analysts and consultants use it daily. Cowork mode is positioned as consumer productivity.
 
-**Behavioral layer применим ко всем этим ролям одинаково.** Infrastructure та же (telemetry, advisor, feedback loop). Меняется только UI и словарь паттернов:
-- PM: «ты правишь один и тот же brief 15 раз — вот шаблон»
-- Writer: «ты часто просишь Claude переписать одно место — здесь системная проблема в структуре»
-- Researcher: «ты задаёшь похожие вопросы в разных чатах — вот сведённая база ответов»
+**The behavioral layer applies to all of these roles in the same way.** The infrastructure is identical (telemetry, advisor, feedback loop). Only the UI and the vocabulary of patterns change:
+- PM: "you edit the same brief 15 times — here is a template"
+- Writer: "you keep asking Claude to rewrite the same passage — there is a structural problem here"
+- Researcher: "you ask similar questions in different chats — here is a consolidated answer base"
 
-Если Anthropic откроет extensions для Claude Desktop / Cowork — Claudeye становится «аналитика для твоей работы с Claude» для ~10-100M человек. TAM ×1000 vs только Claude Code.
+If Anthropic opens extensions for Claude Desktop / Cowork, Claudeye becomes "analytics for your work with Claude" for ~10-100M people. TAM ×1000 compared with Claude Code alone.
 
-## Монетизация — три вектора
+## Monetization — three vectors
 
-**Solo (foothold, не destination).** OSS core + paid tier $5-10/мес за cloud sync, advanced advisor, email digest. Используется как distribution channel и источник feedback на advisor'е. Потолок рынка ~$120k-3M ARR при 1-5% conversion от 100-500k серьёзных Claude Code юзеров.
+**Solo (foothold, not destination).** OSS core + a paid tier at $5-10/month for cloud sync, the advanced advisor and an email digest. Used as a distribution channel and a source of feedback on the advisor. Market ceiling around $120k-3M ARR at 1-5% conversion of 100-500k serious Claude Code users.
 
-**Teams (B2B money).** $20-40/seat. Аудитория — engineering managers / CTO'ы ищущие ответ «мы эффективны с AI или нет». 6-12 мес работы над team features + SOC2-ish compliance. Выход через 5-10 design-partners, не broad launch.
+**Teams (B2B money).** $20-40/seat. The audience is engineering managers / CTOs looking for an answer to "are we effective with AI or not". 6-12 months of work on team features plus SOC2-ish compliance. Launch through 5-10 design partners, not a broad release.
 
-**Non-devs (asymmetric bet).** Если extensions API для Claude Desktop / Cowork откроется — retool UI, infrastructure та же. TAM ×100-1000. Это Series A вопрос и история «поведенческий слой для работы с AI» для массового рынка.
+**Non-devs (asymmetric bet).** If an extensions API for Claude Desktop / Cowork opens up — retool the UI, keep the infrastructure. TAM ×100-1000. This is a Series A question and the "behavioral layer for AI work" story for the mass market.
 
-## Стратегия
+## Strategy
 
 _observe → advise → act → learn → model_
 
-Идём по ступенькам. Сейчас: **advise** работает, entering **act** phase через #24 автопилот. Одновременно — solo usage и ранние team design-partners. Non-devs пивот — когда откроется поверхность.
+Step by step. Today: **advise** works and we are entering the **act** phase through the autopilot. In parallel: solo usage and early team design partners. The non-dev pivot comes when the surface opens up.
 
-Open-source ядро. Монетизация — на advisor-слое и team aggregation. Raw data всегда локально. Агрегация всегда опциональна.
+Open-source core. Monetization on the advisor layer and team aggregation. Raw data always local. Aggregation always optional.
 
-Принцип: **privacy-first, insight-driven, не слежка**.
+Principle: **privacy-first, insight-driven, not surveillance**.

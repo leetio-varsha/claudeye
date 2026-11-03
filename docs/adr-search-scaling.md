@@ -28,8 +28,8 @@ JS cosine similarity is O(n) over the loaded rows, not over the full DB.
 | Project | Rows loaded | DB load | JS compute | Total |
 |---|---|---|---|---|
 | astrosphere (10,385 emb) | 300 | 2.6 ms | 1.9 ms | **4.5 ms** |
-| entravel-fe (1,376 emb) | 318 | 1.8 ms | 0.5 ms | **2.4 ms** |
-| entravel-rn (769 emb) | 350 | 2.6 ms | 0.5 ms | **3.1 ms** |
+| my-web-app (1,376 emb) | 318 | 1.8 ms | 0.5 ms | **2.4 ms** |
+| my-mobile-app (769 emb) | 350 | 2.6 ms | 0.5 ms | **3.1 ms** |
 | claudeye (607 emb) | 300 | 2.2 ms | 0.4 ms | **2.6 ms** |
 
 Key insight: **query time is determined by the LIMIT (300-350 rows), not by total embeddings in DB**.

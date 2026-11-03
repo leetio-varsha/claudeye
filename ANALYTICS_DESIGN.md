@@ -149,7 +149,7 @@ DATA:
 
 ```bash
 claudeye analytics                    # global overview
-claudeye analytics --project entravel # per-project
+claudeye analytics --project my-web-app # per-project
 claudeye analytics --plugins          # plugin effectiveness matrix
 claudeye analytics --models           # model comparison
 claudeye analytics --issues           # issue resolution metrics

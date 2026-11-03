@@ -13,19 +13,19 @@
       <!-- drag-region работает только если атрибут стоит на САМОМ элементе под курсором,
            дети без атрибута перехватывают mousedown — поэтому дублируем на всех потомках -->
       <div class="tb-status" id="hookStatus" data-tauri-drag-region>
-        <span class="dot" id="hookDot" data-tauri-drag-region></span><span id="hookText" data-tauri-drag-region>проверяю…</span>
+        <span class="dot" id="hookDot" data-tauri-drag-region></span><span id="hookText" data-tauri-drag-region>checking…</span>
       </div>
     </header>
 
     <div class="body">
       <nav class="sidebar" id="nav">
-        <button class="navitem on" data-view="overview" title="Обзор"><i data-icon="dashboard"></i><span>Обзор</span></button>
-        <button class="navitem" data-view="sessions" title="Сессии"><i data-icon="list"></i><span>Сессии</span></button>
-        <button class="navitem" data-view="notifications" title="Уведомления"><i data-icon="bell"></i><span>Уведомления</span><span class="badge" id="navBadge" hidden>0</span></button>
-        <button class="navitem" data-view="controls" title="Управление"><i data-icon="sliders"></i><span>Управление</span></button>
+        <button class="navitem on" data-view="overview" title="Overview"><i data-icon="dashboard"></i><span>Overview</span></button>
+        <button class="navitem" data-view="sessions" title="Sessions"><i data-icon="list"></i><span>Sessions</span></button>
+        <button class="navitem" data-view="notifications" title="Notifications"><i data-icon="bell"></i><span>Notifications</span><span class="badge" id="navBadge" hidden>0</span></button>
+        <button class="navitem" data-view="controls" title="Controls"><i data-icon="sliders"></i><span>Controls</span></button>
         <div class="side-foot">
           <div class="db-line"><i data-icon="db"></i><span id="dbLine">mem.db</span></div>
-          <button class="refresh" id="refreshBtn" title="Обновить"><i data-icon="refresh"></i></button>
+          <button class="refresh" id="refreshBtn" title="Refresh"><i data-icon="refresh"></i></button>
         </div>
       </nav>
 

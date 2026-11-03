@@ -44,9 +44,9 @@ test('schedulerViewModel: maps the three launchd states', () => {
   assert.deepEqual(vmodel.map(v => v.sev), ['good', 'warn', 'bad']);
   assert.equal(vmodel[0].name, 'Daily insights');
   assert.equal(vmodel[0].schedule, 'daily 09:00');
-  assert.equal(vmodel[0].state, 'работает');
-  assert.match(vmodel[1].state, /не загружен/);
-  assert.match(vmodel[2].state, /не установлен/);
+  assert.equal(vmodel[0].state, 'running');
+  assert.match(vmodel[1].state, /not loaded/);
+  assert.match(vmodel[2].state, /not installed/);
 });
 
 test('schedulerViewModel: matches scheduler-status.js JSON shape', async () => {
@@ -80,7 +80,7 @@ test('commandToast: success strips ANSI and takes first meaningful line', () => 
   const t = commandToast('reindex', ansi, true);
   assert.equal(t.tone, 'good');
   assert.match(t.title, /Reindex/);
-  assert.match(t.title, /готово/);
+  assert.match(t.title, /done/);
   assert.equal(t.detail.includes(''), false, 'ANSI stripped');
   assert.match(t.detail, /Reindexed 42 embeddings/);
 });
@@ -88,13 +88,13 @@ test('commandToast: success strips ANSI and takes first meaningful line', () => 
 test('commandToast: "error:" stdout ⇒ bad tone', () => {
   const t = commandToast('cleanup', 'error: no such file', true);
   assert.equal(t.tone, 'bad');
-  assert.match(t.title, /ошибка/);
+  assert.match(t.title, /failed/);
 });
 
 test('commandToast: ok===false (invoke threw) ⇒ bad tone', () => {
   const t = commandToast('digest', 'timed out', false);
   assert.equal(t.tone, 'bad');
-  assert.match(t.title, /Генерация digest|digest/);
+  assert.match(t.title, /Generate digest|digest/);
 });
 
 test('commandToast: caps very long detail', () => {
@@ -313,17 +313,17 @@ test('sessionExport md: заголовок, метаданные, наблюде
     started: '2026-07-22', ended: '',
     observations: [{ id: 1, summary: 'правка', tool: 'Edit', tags: '["hooks"]', importance: 0.8, rationale: 'ABI', createdAt: 'c' }],
   }, 'md');
-  assert.match(md, /# Сессия claudeye/);
+  assert.match(md, /# Session claudeye/);
   assert.match(md, /> фикс хуков/);
-  assert.match(md, /промптов: 3/);
+  assert.match(md, /prompts: 3/);
   assert.match(md, /- правка `Edit`/);
-  assert.match(md, /теги: hooks/);
-  assert.match(md, /обоснование: ABI/);
+  assert.match(md, /tags: hooks/);
+  assert.match(md, /rationale: ABI/);
 });
 
 test('sessionExport md: пустая сессия не падает', () => {
   const md = sessionExport({ id: 'x', project: 'p', observations: [] }, 'md');
-  assert.match(md, /нет наблюдений/);
+  assert.match(md, /no observations/);
 });
 
 // ─── источник правды: сам файл должен оставаться текстовым ───────────────────

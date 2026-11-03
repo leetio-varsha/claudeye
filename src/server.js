@@ -7,9 +7,12 @@
 
 import express from 'express';
 import { join } from 'path';
+import { homedir } from 'os';
 import { getDb, getStats, createShareToken, getShareToken, listShareTokens, revokeShareToken } from './db.js';
 
 const __dir = new URL('.', import.meta.url).pathname;
+// SQL literal of the home directory prefix, so project paths render as ~/... in the viewer.
+const HOME_SQL = `'${homedir().replace(/'/g, "''")}/'`;
 
 // ─── Input validation helpers (#70) ───────────────────────────────────────
 
@@ -110,7 +113,7 @@ export function createServer(port = 47777) {
     // Projects ranked by friction (avg importance of high-imp observations)
     const projects = db.prepare(`
       SELECT
-        REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project,
+        REPLACE(project, ${HOME_SQL}, '~/') as project,
         COUNT(*) as total_obs,
         SUM(CASE WHEN importance >= 0.8 THEN 1 ELSE 0 END) as critical_obs,
         ROUND(AVG(importance), 3) as avg_importance,
@@ -126,7 +129,7 @@ export function createServer(port = 47777) {
     // Top friction observations (recent critical)
     const hotObs = db.prepare(`
       SELECT summary, tool, importance, created_at,
-        REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project
+        REPLACE(project, ${HOME_SQL}, '~/') as project
       FROM observations
       WHERE importance >= 0.8 AND created_at >= date('now', '-' || ? || ' days') AND tool != 'git-commit'
       ORDER BY created_at DESC
@@ -153,7 +156,7 @@ export function createServer(port = 47777) {
     const dailyFocus = db.prepare(`
       SELECT
         date(created_at) as day,
-        REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project,
+        REPLACE(project, ${HOME_SQL}, '~/') as project,
         COUNT(*) as obs
       FROM observations
       WHERE created_at >= date('now', '-' || ? || ' days') AND tool != 'git-commit'
@@ -249,7 +252,7 @@ export function createServer(port = 47777) {
     // Sessions with high friction (many critical obs in single session)
     const hardSessions = db.prepare(`
       SELECT session_id,
-        REPLACE(REPLACE(project, '/Users/lord/Sites/', ''), '/Users/lord/Documents/Claude/Projects/', '') as project,
+        REPLACE(project, ${HOME_SQL}, '~/') as project,
         COUNT(*) as obs,
         SUM(CASE WHEN importance >= 0.8 THEN 1 ELSE 0 END) as critical,
         MIN(created_at) as started, MAX(created_at) as ended
@@ -324,7 +327,7 @@ export function createServer(port = 47777) {
     const db = getDb();
     const rows = db.prepare(`
       SELECT
-        REPLACE(project, '/Users/lord/Sites/', '~/') as project,
+        REPLACE(project, ${HOME_SQL}, '~/') as project,
         COUNT(*) as obs_count,
         ROUND(AVG(importance), 2) as avg_importance,
         COUNT(DISTINCT session_id) as sessions,

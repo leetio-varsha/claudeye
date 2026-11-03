@@ -59,11 +59,11 @@ function fmtWhen(s) {
   if (isNaN(d)) return s;
   const now = new Date();
   const day = (x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
-  const hm = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  if (day(d) === day(now)) return `сегодня ${hm}`;
+  const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  if (day(d) === day(now)) return `today ${hm}`;
   const yest = new Date(now); yest.setDate(now.getDate() - 1);
-  if (day(d) === day(yest)) return `вчера ${hm}`;
-  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+  if (day(d) === day(yest)) return `yesterday ${hm}`;
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
 }
 
 function basename(p) {
@@ -72,7 +72,7 @@ function basename(p) {
   return parts[parts.length - 1] || p;
 }
 
-const SEV_LABEL = { crit: "критично", warn: "важно", info: "инфо", good: "ок", mut: "норма" };
+const SEV_LABEL = { crit: "critical", warn: "warning", info: "info", good: "ok", mut: "normal" };
 
 /* ── данные ── */
 
@@ -83,16 +83,16 @@ const SAMPLE = {
     values: [2,1,0,1,0,1,0,0,1,0,1,0,2,908],
   },
   notifications: [
-    { sev: "crit", title: "DB 520 MB — 1.7× критического порога", meta: "", status: "new", hash: "demo-db" },
-    { sev: "warn", title: "Объём работы вырос в 1.6× — recovery после починки хуков", meta: "", status: "shown", hash: "demo-vol" },
-    { sev: "good", title: "Хуки ожили — last_obs 06:08, 908 obs/24ч", meta: "", status: "new", hash: "demo-hooks" },
-    { sev: "info", title: "Покрытие эмбеддингов 74% → запусти reindex", meta: "", status: "new", hash: "demo-emb" },
-    { sev: "mut", title: "DB 262 MB — плато, порог 280 MB не пробит", meta: "", status: "dismissed", hash: "demo-old" },
+    { sev: "crit", title: "DB 520 MB — 1.7× the critical threshold", meta: "", status: "new", hash: "demo-db" },
+    { sev: "warn", title: "Workload up 1.6× — recovery after the hook fix", meta: "", status: "shown", hash: "demo-vol" },
+    { sev: "good", title: "Hooks are back — last_obs 06:08, 908 obs/24h", meta: "", status: "new", hash: "demo-hooks" },
+    { sev: "info", title: "Embedding coverage 74% → run reindex", meta: "", status: "new", hash: "demo-emb" },
+    { sev: "mut", title: "DB 262 MB — plateau, 280 MB threshold not crossed", meta: "", status: "dismissed", hash: "demo-old" },
   ],
   sessions: [
-    { id: "demo-1", project: "claudeye", summary: "digest-регресс: 300s таймаут + retry", prompts: 41, ended: "" },
-    { id: "demo-2", project: "wl-payments", summary: "WLPaymentForm.tsx — правки формы оплаты", prompts: 32, ended: "" },
-    { id: "demo-3", project: "bdp", summary: "BACKLOG.md — груминг задач", prompts: 27, ended: "" },
+    { id: "demo-1", project: "claudeye", summary: "digest regression: 300s timeout + retry", prompts: 41, ended: "" },
+    { id: "demo-2", project: "wl-payments", summary: "WLPaymentForm.tsx — payment form fixes", prompts: 32, ended: "" },
+    { id: "demo-3", project: "bdp", summary: "BACKLOG.md — backlog grooming", prompts: 27, ended: "" },
   ],
   agents: [
     { key: "insights", name: "Daily insights", schedule: "daily 09:00", installed: true, loaded: true },
@@ -128,22 +128,22 @@ function kpiCard(label, value, delta, tone) {
 function renderOverview(d) {
   const h = d.health;
   const embTone = h.embPct >= 80 ? "good" : h.embPct >= 55 ? "mut" : "warn";
-  const embDelta = h.embPct >= 80 ? "покрытие ок" : h.embPct >= 55 ? "догоняет" : "нужен reindex";
+  const embDelta = h.embPct >= 80 ? "coverage ok" : h.embPct >= 55 ? "catching up" : "reindex needed";
   const cards = [
-    kpiCard("Наблюдения / 24ч", h.obs24h, h.hooksUp ? "хуки активны" : "хуки молчат", h.hooksUp ? "good" : "bad"),
-    kpiCard("Сессии / 7д", h.sessions7d, `${h.projects} ${plural(h.projects, "проект", "проекта", "проектов")}`, "mut"),
-    kpiCard("Темп", h.quota, h.quota === "норма" ? "стабильный" : "выше среднего", h.quota === "норма" ? "mut" : "warn"),
-    kpiCard("Эмбеддинги", `${h.embPct}%`, embDelta, embTone),
-    kpiCard("Health streak", h.streak, h.streak > 0 ? "зелёных подряд" : "нет прогонов инвариантов", h.streak > 0 ? "good" : "mut"),
+    kpiCard("Observations / 24h", h.obs24h, h.hooksUp ? "hooks active" : "hooks silent", h.hooksUp ? "good" : "bad"),
+    kpiCard("Sessions / 7d", h.sessions7d, `${h.projects} ${plural(h.projects, "project", "projects", "projects")}`, "mut"),
+    kpiCard("Pace", h.quota, h.quota === "normal" ? "steady" : "above average", h.quota === "normal" ? "mut" : "warn"),
+    kpiCard("Embeddings", `${h.embPct}%`, embDelta, embTone),
+    kpiCard("Health streak", h.streak, h.streak > 0 ? "green days in a row" : "no invariant runs yet", h.streak > 0 ? "good" : "mut"),
   ].join("");
   return `
-    <div class="view-title">Обзор</div>
-    <div class="view-sub">memory + analytics для Claude Code · ${inTauri ? "живые данные mem.db" : "демо-данные"}</div>
+    <div class="view-title">Overview</div>
+    <div class="view-sub">memory + analytics for Claude Code · ${inTauri ? "live data from mem.db" : "demo data"}</div>
     <div class="kpi">${cards}</div>
-    <div class="section">Активность · наблюдения в день (14 дней)</div>
+    <div class="section">Activity · observations per day (14 days)</div>
     <div class="panel"><div class="chart-wrap" style="height:170px"><canvas id="activityChart"></canvas></div></div>
-    <div class="section">Последние уведомления</div>
-    <div class="panel">${notifRows().length ? notifRows().slice(0, 4).map(rowNotif).join("") : emptyState("Пока нет уведомлений")}</div>
+    <div class="section">Recent notifications</div>
+    <div class="panel">${notifRows().length ? notifRows().slice(0, 4).map(rowNotif).join("") : emptyState("No notifications yet")}</div>
   `;
 }
 
@@ -159,7 +159,7 @@ function notifRows() {
 function rowNotif(n) {
   const chipSev = n.sev === "good" ? "mut" : n.sev;
   const isNew = (n.status || "new") === "new" && (n.sev === "crit" || n.sev === "warn");
-  const dot = isNew ? `<span class="chip new">новое</span>` : "";
+  const dot = isNew ? `<span class="chip new">new</span>` : "";
   return `<div class="row"><span class="sev ${n.sev}"></span><span class="ttl">${n.title}</span>${dot}<span class="chip ${chipSev}">${SEV_LABEL[n.sev] || n.sev}</span><span class="meta">${fmtWhen(n.meta)}</span></div>`;
 }
 
@@ -167,13 +167,13 @@ function renderNotifications() {
   const rows = notifRows();
   const hidden = (state.data ? state.data.notifications.length : 0) - rows.length;
   const hint = hidden > 0
-    ? `Скрыто ${hidden} ${plural(hidden, "запись", "записи", "записей")} (дубликаты и отклонённые).`
+    ? `${hidden} ${plural(hidden, "entry", "entries", "entries")} hidden (duplicates and dismissed).`
     : "";
   return `
-    <div class="view-title">Уведомления</div>
-    <div class="view-sub">Лента insights и alerts. Заменяет эфемерные macOS-попапы — ничего не теряется.</div>
-    <div class="panel">${rows.length ? rows.map(rowNotif).join("") : emptyState("Пока нет уведомлений — insights появляются после ежедневного прогона в 09:00")}</div>
-    <p class="hint">Обычные insights не всплывают — копятся здесь. Нативная нотификация уходит только на критические алерты, клик открывает этот экран (#131). ${hint}</p>
+    <div class="view-title">Notifications</div>
+    <div class="view-sub">Feed of insights and alerts. Replaces ephemeral macOS popups — nothing gets lost.</div>
+    <div class="panel">${rows.length ? rows.map(rowNotif).join("") : emptyState("No notifications yet — insights appear after the daily 09:00 run")}</div>
+    <p class="hint">Regular insights do not pop up — they collect here. A native notification is sent only for critical alerts; clicking it opens this screen. ${hint}</p>
   `;
 }
 
@@ -213,33 +213,33 @@ function renderSessions(d) {
     <div class="row session" data-session-id="${esc(s.id)}">
       <span class="sev info"></span>
       <div style="min-width:0;flex:1">
-        <div class="ttl">${esc(s.summary || "без описания")}</div>
-        <div class="proj">${basename(s.project)} · ${s.prompts} ${plural(s.prompts, "промпт", "промпта", "промптов")}</div>
+        <div class="ttl">${esc(s.summary || "no summary")}</div>
+        <div class="proj">${basename(s.project)} · ${s.prompts} ${plural(s.prompts, "prompt", "prompts", "prompts")}</div>
       </div>
       <span class="meta">${fmtWhen(s.ended)}</span>
     </div>`).join("");
   const results = state.searchVM ? renderSearchResults(state.searchVM) : "";
   return `
-    <div class="view-title">Сессии</div>
-    <div class="view-sub">Клик по сессии — наблюдения из mem.db. Поиск — по всей памяти (FTS5).</div>
+    <div class="view-title">Sessions</div>
+    <div class="view-sub">Click a session to see its observations from mem.db. Search covers all memory (FTS5).</div>
     <div class="searchbar">
-      <input id="memSearch" type="search" placeholder="Поиск по памяти…" value="${q}" autocomplete="off" spellcheck="false" />
-      ${state.searchVM ? `<button class="btn" id="searchClear">Сбросить</button>` : ""}
+      <input id="memSearch" type="search" placeholder="Search memory…" value="${q}" autocomplete="off" spellcheck="false" />
+      ${state.searchVM ? `<button class="btn" id="searchClear">Clear</button>` : ""}
     </div>
     ${results}
     ${state.searchVM ? "" : `
-      <div class="section">Последние сессии · ${d.sessions.length}</div>
-      <div class="panel">${d.sessions.length ? rows : emptyState("Сессий пока нет")}</div>
+      <div class="section">Recent sessions · ${d.sessions.length}</div>
+      <div class="panel">${d.sessions.length ? rows : emptyState("No sessions yet")}</div>
     `}
   `;
 }
 
 function renderSearchResults(vm) {
   const body = vm.empty
-    ? emptyState(`Ничего не найдено по «${esc(vm.query)}»`)
+    ? emptyState(`Nothing found for "${esc(vm.query)}"`)
     : vm.rows.map(rowObs).join("");
   return `
-    <div class="section">Результаты поиска · ${vm.count} по «${esc(vm.query)}»</div>
+    <div class="section">Search results · ${vm.count} for "${esc(vm.query)}"</div>
     <div class="panel">${body}</div>
   `;
 }
@@ -247,22 +247,22 @@ function renderSearchResults(vm) {
 function renderSessionDetail() {
   const vm = state.detailVM;
   if (!vm) return renderLoading("sessions");
-  const when = [vm.started && `начало ${fmtWhen(vm.started)}`, vm.ended && `конец ${fmtWhen(vm.ended)}`]
+  const when = [vm.started && `started ${fmtWhen(vm.started)}`, vm.ended && `ended ${fmtWhen(vm.ended)}`]
     .filter(Boolean).join(" · ");
   const body = vm.empty
-    ? emptyState("В этой сессии нет наблюдений")
+    ? emptyState("This session has no observations")
     : vm.rows.map(rowObs).join("");
   return `
     <div class="detail-head">
-      <button class="btn" id="detailBack">← Сессии</button>
+      <button class="btn" id="detailBack">← Sessions</button>
       <div class="detail-export">
-        <button class="btn" data-export="md">Экспорт .md</button>
-        <button class="btn" data-export="json">Экспорт .json</button>
+        <button class="btn" data-export="md">Export .md</button>
+        <button class="btn" data-export="json">Export .json</button>
       </div>
     </div>
-    <div class="view-title">${esc(basename(vm.project) || "Сессия")}</div>
-    <div class="view-sub">${esc(vm.summary || "без описания")}</div>
-    <div class="section">${vm.count} ${plural(vm.count, "наблюдение", "наблюдения", "наблюдений")} · ${vm.prompts} ${plural(vm.prompts, "промпт", "промпта", "промптов")}${when ? " · " + when : ""}</div>
+    <div class="view-title">${esc(basename(vm.project) || "Session")}</div>
+    <div class="view-sub">${esc(vm.summary || "no summary")}</div>
+    <div class="section">${vm.count} ${plural(vm.count, "observation", "observations", "observations")} · ${vm.prompts} ${plural(vm.prompts, "prompt", "prompts", "prompts")}${when ? " · " + when : ""}</div>
     <div class="panel">${body}</div>
   `;
 }
@@ -280,25 +280,25 @@ function rowAgent(a) {
 
 function renderAgentsPanel(list) {
   const vm = VF.schedulerViewModel(list);
-  return vm.length ? vm.map(rowAgent).join("") : emptyState("Статус агентов недоступен");
+  return vm.length ? vm.map(rowAgent).join("") : emptyState("Agent status unavailable");
 }
 
 function renderControls(d) {
   const agents = state.agents || d.agents || [];
   return `
-    <div class="view-title">Управление</div>
-    <div class="view-sub">Обслуживание Claudeye и статус фоновых агентов.</div>
-    <div class="section">Действия</div>
+    <div class="view-title">Controls</div>
+    <div class="view-sub">Claudeye maintenance and background agent status.</div>
+    <div class="section">Actions</div>
     <div class="ctrls">
-      <button class="btn primary" data-cmd="reindex">${icon("refresh")}Reindex эмбеддингов</button>
+      <button class="btn primary" data-cmd="reindex">${icon("refresh")}Reindex embeddings</button>
       <button class="btn" data-cmd="cleanup">${icon("trash")}Cleanup</button>
-      <button class="btn" data-cmd="digest">${icon("file")}Сгенерировать digest</button>
-      <button class="btn" data-cmd="agents">${icon("pause")}Обновить статус</button>
+      <button class="btn" data-cmd="digest">${icon("file")}Generate digest</button>
+      <button class="btn" data-cmd="agents">${icon("pause")}Refresh status</button>
       <button class="btn" data-cmd="board">${icon("link")}GitHub Project #4</button>
     </div>
-    <div class="section">Launchd-агенты</div>
+    <div class="section">Launchd agents</div>
     <div class="panel" id="agentsPanel">${renderAgentsPanel(agents)}</div>
-    <p class="hint">Кнопки вызывают Rust-команды (rusqlite + Command). Статус агентов — из <code>claudeye scheduler status</code>. В демо-режиме без Tauri — заглушки.</p>
+    <p class="hint">Buttons call Rust commands (rusqlite + Command). Agent status comes from <code>claudeye scheduler status</code>. Outside Tauri (demo mode) these are stubs.</p>
   `;
 }
 
@@ -320,14 +320,14 @@ async function refreshAgentsPanel() {
   }
 }
 
-const VIEW_TITLES = { overview: "Обзор", sessions: "Сессии", notifications: "Уведомления", controls: "Управление" };
+const VIEW_TITLES = { overview: "Overview", sessions: "Sessions", notifications: "Notifications", controls: "Controls" };
 
 function renderLoading(view) {
-  const title = VIEW_TITLES[view] || "Обзор";
+  const title = VIEW_TITLES[view] || "Overview";
   const lines = Array.from({ length: 6 }, (_, i) => `<div class="sk-line" style="width:${88 - i * 9}%"></div>`).join("");
   return `
     <div class="view-title">${title}</div>
-    <div class="view-sub">загружаю mem.db…</div>
+    <div class="view-sub">loading mem.db…</div>
     <div class="panel"><div class="skeleton">${lines}</div></div>
   `;
 }
@@ -351,7 +351,7 @@ function drawChart(activity) {
     data: { labels: activity.labels, datasets: [{ data: activity.values, backgroundColor: colors, borderRadius: 3, maxBarThickness: 22 }] },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => Math.round(c.parsed.y) + " наблюдений" } } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => Math.round(c.parsed.y) + " observations" } } },
       scales: {
         x: { grid: { display: false }, ticks: { color: tickColor, font: { size: 10 } } },
         y: { grid: { color: gridColor }, ticks: { color: tickColor, font: { size: 10 }, maxTicksLimit: 4 } },
@@ -391,14 +391,14 @@ async function runCommand(cmd, btn) {
   }
   // «Обновить статус» — не тост с сырым JSON, а перерисовка панели агентов
   if (cmd === "agents") {
-    if (!invoke) { showToast({ tone: "good", title: "Статус агентов — демо", detail: "живые данные только в Tauri" }); return; }
+    if (!invoke) { showToast({ tone: "good", title: "Agent status — demo", detail: "live data only inside Tauri" }); return; }
     await refreshAgentsPanel();
-    showToast({ tone: "good", title: "Статус агентов — обновлён" });
+    showToast({ tone: "good", title: "Agent status — refreshed" });
     return;
   }
-  if (!invoke) { showToast({ tone: "good", title: `${cmd} — демо`, detail: "команда выполняется только в Tauri" }); return; }
+  if (!invoke) { showToast({ tone: "good", title: `${cmd} — demo`, detail: "commands run only inside Tauri" }); return; }
   if (btn) { btn.disabled = true; btn.classList.add("busy"); }
-  showToast({ tone: "good", title: `${cmd}…`, detail: "выполняю" });
+  showToast({ tone: "good", title: `${cmd}…`, detail: "running" });
   try {
     const out = await invoke(map[cmd]);
     showToast(VF.commandToast(cmd, out, true));
@@ -452,7 +452,7 @@ async function openSessionDetail(id) {
   } catch (e) {
     console.error("session_detail failed:", e);
     state.detailVM = VF.sessionDetailViewModel({ id });
-    showToast({ tone: "bad", title: "Не удалось открыть сессию", detail: String(e && e.message ? e.message : e) });
+    showToast({ tone: "bad", title: "Could not open session", detail: String(e && e.message ? e.message : e) });
   }
   render();
 }
@@ -505,8 +505,8 @@ async function exportSession(format) {
     }
   } catch (e) { console.error("clipboard write failed:", e); }
   showToast(ok
-    ? { tone: "good", title: `Экспорт .${format} — в буфере`, detail: `${text.length} символов` }
-    : { tone: "bad", title: `Экспорт .${format}`, detail: "буфер обмена недоступен" });
+    ? { tone: "good", title: `Export .${format} — copied to clipboard`, detail: `${text.length} characters` }
+    : { tone: "bad", title: `Export .${format}`, detail: "clipboard unavailable" });
 }
 
 function bindSessionEvents() {
@@ -595,7 +595,7 @@ function setStatus(d) {
   const txt = document.getElementById("hookText");
   const up = d.health.hooksUp;
   bar.classList.toggle("up", up); bar.classList.toggle("down", !up);
-  txt.textContent = up ? "хуки активны" : "хуки молчат";
+  txt.textContent = up ? "hooks active" : "hooks silent";
   document.getElementById("dbLine").textContent = `mem.db · ${d.health.dbMb} MB`;
   // Badge — из VM (#131): дедуп + без 'dismissed', а не сырой filter по ленте.
   state.notifVM = VF.notificationsViewModel(d.notifications, state.notifSeen);

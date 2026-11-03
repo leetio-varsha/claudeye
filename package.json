@@ -2,6 +2,7 @@
   "name": "claudeye",
   "version": "1.0.0",
   "description": "Production-ready personal memory for Claude Code",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "claudeye": "./cli.js"
