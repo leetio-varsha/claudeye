@@ -168,48 +168,45 @@ Three hook scripts, one SQLite file, that's it.
 
 ## Desktop app (Tauri) — `apps/desktop/`
 
-Нативное macOS-приложение в стиле Tahoe / Liquid Glass поверх `~/.claudeye/mem.db`.
-Заменяет эфемерные macOS-попапы постоянным дашбордом: аналитика, управление
-сессиями, центр уведомлений, панель обслуживания (reindex / cleanup / digest).
+A native macOS app (Tauri v2) in a Tahoe / Liquid Glass style on top of
+`~/.claudeye/mem.db`. It replaces ephemeral macOS popups with a persistent
+dashboard: analytics, session management, a notification center and a
+maintenance panel (reindex / cleanup / digest).
 
-Stack: Tauri v2 (Rust + rusqlite, tray, нативные нотификации) + Vite/Chart.js.
-Каркас v1 — эпик [#128](https://github.com/leetio-varsha/claudeye/issues/128).
+Stack: Tauri v2 (Rust + rusqlite, tray, native notifications) + a no-build
+vanilla JS frontend with Chart.js.
 
 ```bash
 cd apps/desktop
 npm install
-npm run tauri dev      # требует Rust toolchain (rustup)
+npm run tauri dev      # requires the Rust toolchain (rustup)
 ```
 
-Попапы отключены по умолчанию (`CLAUDEYE_NOTIFICATIONS=0`); insights по-прежнему
-пишутся в БД и показываются в приложении.
+Popups are off by default (`CLAUDEYE_NOTIFICATIONS=0`); insights are still
+written to the database and shown in the app.
 
-**Центр уведомлений ([#131](https://github.com/leetio-varsha/claudeye/issues/131)).**
-Лента объединяет alerts последнего прогона insights и поведенческие советы из
-таблицы `advises`, дедуплицируя их по `observation_hash`. Записи со статусом
-`dismissed` скрыты и не считаются в badge сайдбара, который показывает число
-actionable (`crit` + `warn`) уведомлений. Обычные insights **не всплывают** —
-нативная macOS-нотификация уходит только на критический алерт со статусом
-`new`, один раз за сессию, и клик по ней открывает экран «Уведомления».
+**Notification center.** The feed merges the alerts of the latest insights run
+with behavioral advises from the `advises` table, deduplicated by
+`observation_hash`. Dismissed entries are hidden and excluded from the sidebar
+badge, which counts actionable (`crit` + `warn`) notifications. Regular
+insights never pop up — a native macOS notification is sent only for a critical
+alert with status `new`, once per session, and clicking it opens the
+Notifications screen.
 
-**Управление сессиями ([#132](https://github.com/leetio-varsha/claudeye/issues/132)).**
-Клик по сессии открывает drill-in: её наблюдения из `mem.db` с тегами и
-`decision_rationale` (мотивировкой решений), новейшие первыми. Поле поиска над
-списком ищет по всей памяти через FTS5 (`fts_obs`) — вводишь запрос, получаешь
-релевантные наблюдения из любого проекта. Любую сессию можно выгрузить в
-Markdown или JSON (кнопки «Экспорт» — результат кладётся в буфер обмена).
-Приложение читает только AI-сжатые summary и метаданные — сырые вход/выход
-инструментов (`raw_input`/`raw_output`) не покидают БД.
+**Session management.** Clicking a session opens a drill-in: its observations
+from `mem.db` with tags and `decision_rationale`, newest first. The search
+field above the list queries all memory through FTS5 (`fts_obs`) and returns
+relevant observations from any project. Any session can be exported as Markdown
+or JSON (the Export buttons copy the result to the clipboard). The app reads
+only AI-compressed summaries and metadata — raw tool input/output
+(`raw_input` / `raw_output`) never leaves the database.
 
-**Управление и tray ([#133](https://github.com/leetio-varsha/claudeye/issues/133)).**
-Вью «Управление» запускает `reindex` / `cleanup` / `digest` и открывает борд
-одной кнопкой; результат каждой команды всплывает тостом, а панель
-«Launchd-агенты» показывает живой статус трёх шедулеров из
-`claudeye scheduler status --json`. Иконка в menu-bar (tray) переключает окно:
-клик по «Показать / скрыть окно» сворачивает видимое приложение и разворачивает
-скрытое. Осталась только упаковка —
-[#134](https://github.com/leetio-varsha/claudeye/issues/134) (DMG, подпись,
-notarization).
+**Controls and tray.** The Controls view runs `reindex` / `cleanup` /
+`digest` and opens the project board with one click; each command reports its
+result as a toast, and the "Launchd agents" panel shows the live status of the
+three schedulers from `claudeye scheduler status --json`. The menu-bar (tray)
+icon toggles the window: "Show / Hide Window" hides a visible app and brings a
+hidden one back. Packaging (DMG, code signing, notarization) is not done yet.
 
 ---
 
@@ -244,7 +241,7 @@ claudeye import jira --url https://acme.atlassian.net --email you@acme --token <
 claudeye import jira --project-key ENG --limit 200
 # JIRA_URL / JIRA_EMAIL / JIRA_API_TOKEN env vars also accepted
 
-# Jira sprint data (#23) — sprints (active/closed/future) с goal и done/total counts
+# Jira sprint data (#23) — sprints (active/closed/future) with goal and done/total counts
 claudeye import jira --sprints
 claudeye import jira --sprints --board 12 --project-key ENG
 
@@ -253,7 +250,7 @@ claudeye import linear --token <api-key>
 claudeye import linear --team ENG --limit 200
 # LINEAR_API_KEY env var also accepted
 
-# Slack (#23, read-first) — channel messages + threads («поиск решений в обсуждениях»)
+# Slack (#23, read-first) — channel messages + threads ("find decisions in discussions")
 claudeye import slack --token xoxb-...                  # all member channels, last 30 days
 claudeye import slack --channel dev,general --days 90   # specific channels, deeper lookback
 # SLACK_TOKEN / SLACK_BOT_TOKEN env vars also accepted.
@@ -273,7 +270,7 @@ claudeye import sentry --query "is:unresolved level:error" --no-stacks
 # their transcripts from disk. Deduped via cowork_imports (UNIQUE cli_session_id).
 # Daily run is wired into the unified scheduler.
 # Noise filter + intra-session dedup + assistant-text bundling (#93) keep the
-# import lean — empty TodoWrite, repeated `screenshot {}`, 'Да', etc. are dropped.
+# import lean — empty TodoWrite, repeated `screenshot {}`, one-word replies, etc. are dropped.
 claudeye import cowork
 claudeye import cowork --force               # wipes + re-imports (applies new filters)
 claudeye cleanup --cowork-noise              # also clears already-imported noise/dupes

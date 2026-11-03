@@ -1,62 +1,56 @@
 # Claudeye Desktop
 
-Нативное macOS-приложение (Tauri v2) в стиле Tahoe / Liquid Glass поверх
-`~/.claudeye/mem.db`. Заменяет эфемерные macOS-попапы постоянным дашбордом +
-центром уведомлений и панелью управления.
+A native macOS app (Tauri v2) in a Tahoe / Liquid Glass style on top of
+`~/.claudeye/mem.db`. It replaces ephemeral macOS popups with a persistent
+dashboard, a notification center and a control panel.
 
-## Стек
+## Stack
 
-- **Shell:** Tauri v2 (Rust), tray/menu-bar, transparent + overlay title bar (`macOSPrivateApi`), нативные нотификации.
-- **Bridge:** Rust-команды на `rusqlite` читают `mem.db` в read-only. CLI-действия (`reindex`, `cleanup`, `digest`) через `std::process::Command`.
-- **Frontend:** no-build статика в `ui/` (`frontendDist`), vanilla JS + вендорный Chart.js (`ui/vendor/chart.umd.js`). Без Vite/esbuild — компилируется только Rust. `withGlobalTauri: true` даёт `window.__TAURI__` в обычном `<script>`. Degradeит на демо-данные вне Tauri.
+- **Shell:** Tauri v2 (Rust), tray / menu-bar icon, transparent + overlay title bar (`macOSPrivateApi`), native notifications.
+- **Bridge:** Rust commands on `rusqlite` read `mem.db` read-only. CLI actions (`reindex`, `cleanup`, `digest`) run through `std::process::Command`.
+- **Frontend:** no-build static files in `ui/` (`frontendDist`), vanilla JS + a vendored Chart.js (`ui/vendor/chart.umd.js`). No Vite/esbuild — only the Rust side is compiled. `withGlobalTauri: true` exposes `window.__TAURI__` to a plain `<script>`. Outside Tauri the frontend degrades to demo data.
 
-## Вью (v1)
+## Views (v1)
 
-1. **Обзор** — KPI + график активности 14д + последние уведомления.
-2. **Сессии** — список сессий Claude Code / Cowork, drill-in, поиск по памяти.
-3. **Уведомления** — лента insights/alerts вместо попапов; critical дублируется нативной нотификацией.
-4. **Управление** — reindex / cleanup / digest / статус агентов / board.
+1. **Overview** — KPIs + 14-day activity chart + latest notifications.
+2. **Sessions** — Claude Code / Cowork sessions, drill-in, memory search.
+3. **Notifications** — insights/alerts feed instead of popups; critical alerts are mirrored as native notifications.
+4. **Controls** — reindex / cleanup / digest / agent status / project board.
 
-## Запуск (dev, с терминалом)
+## Run (dev, with a terminal)
 
-Требуется Node 20+ и Rust toolchain (`rustup`).
+Requires Node 20+ and the Rust toolchain (`rustup`).
 
 ```bash
 cd apps/desktop
-npm install        # только @tauri-apps/cli (без install-скриптов)
+npm install        # only @tauri-apps/cli (no install scripts)
 npm run tauri dev
 ```
 
-## Сборка в приложение (без терминала)
+## Build the app bundle
 
 ```bash
 npm run tauri build
 # → src-tauri/target/release/bundle/macos/Claudeye.app  (+ dmg)
 ```
 
-Перетащить `Claudeye.app` в `/Applications` — запускается из Launchpad как обычная программа.
+Drag `Claudeye.app` into `/Applications`; it launches from Launchpad like any other app.
 
-## Rust-команды (bridge)
+## Rust commands (bridge)
 
-| Команда | SQL / действие |
+| Command | SQL / action |
 |---|---|
-| `dashboard_summary` | obs/24ч, сессии/7д, проекты, emb %, размер БД, hooks_up, health streak |
-| `activity_14d` | наблюдения по дням за 14 дней |
-| `recent_notifications` | последний ряд `insights.alerts` (+ маппинг severity) |
-| `recent_sessions(limit)` | `sessions` по `started_at DESC` |
+| `dashboard_summary` | obs/24h, sessions/7d, projects, embedding %, DB size, hooks_up, health streak |
+| `activity_14d` | observations per day for the last 14 days |
+| `recent_notifications` | latest `insights.alerts` row merged with `advises` (+ severity mapping) |
+| `recent_sessions(limit)` | `sessions` ordered by `started_at DESC` |
+| `session_detail(id)` | session metadata + its observations (safe columns only, newest first) |
+| `search_memory(query, limit)` | FTS5 search over `fts_obs`, mirrors `ftsSearch` in `src/db.js` |
 | `cmd_reindex` / `cmd_cleanup` / `cmd_digest` | `claudeye <cmd>` |
-| `cmd_agents_status` | `claudeye scheduler status --json` (UI парсит JSON) |
+| `cmd_agents_status` | `claudeye scheduler status --json` (parsed by the UI) |
 
-## Статус
+Pure presentation helpers live in `ui/view-format.js` (loaded as a classic
+script before `app.js`, no DOM access) and are covered by
+`test/desktop-view-format.test.js` in the root test suite.
 
-v1 запускается (`tauri dev`, Rust компилируется чисто ~38с). Frontend читает
-живой `mem.db` через `invoke`. **#129 (frontend UI) и #130 (rust-bridge)
-закрыты**: 4 вью, адаптив вплоть до `minWidth 720` (сайдбар сворачивается в
-иконочный рельс ≤760px), view-aware лоадер-скелетон, refresh-спиннер, пустые
-состояния. **#133 (controls) в работе:** кнопки reindex/cleanup/digest
-показывают результат тостом (`ui/view-format.js` + `#toasts`), панель
-«Launchd-агенты» рендерит живой статус из `cmd_agents_status --json`
-(`schedulerViewModel`). Остаётся Rust-часть #133 — tray toggle
-(свернуть/развернуть окно) + `cargo build` для нового `--json`-флага.
-Открытые задачи: #131 (нативные actionable-нотификации),
-#132 (session mgmt), #133 (tray toggle — Rust), #134 (packaging — последним).
+Packaging (DMG, code signing, notarization) is not done yet.

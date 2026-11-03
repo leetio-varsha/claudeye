@@ -1,10 +1,10 @@
-# Иконка Claudeye Desktop
+# Claudeye Desktop icon
 
-- `claudeye-mark.svg` — исходный марк (радиальный «глаз-пульс», #857AF0).
-- `claudeye-appicon-solid.svg` — **актуальная** иконка приложения: сплошная фиолетовая squircle-заливка, белый глаз с пульсом, 16 коротких жирных лучей. Тонкие лучи оригинального марка в размере дока сливались в кашу — для иконки марк упрощён и утолщён.
-- `claudeye-appicon.svg` — первая версия (марк как есть на тёмной подложке), оставлена для истории.
+- `claudeye-mark.svg` — the original mark (radial "eye-pulse", #857AF0).
+- `claudeye-appicon-solid.svg` — the **current** app icon: solid purple squircle fill, white eye with a pulse, 16 short bold rays. The thin rays of the original mark blurred together at dock size, so the mark is simplified and thickened for the icon.
+- `claudeye-appicon.svg` — the first version (the mark as is on a dark background), kept for reference.
 
-Перегенерация иконок (все размеры + .icns/.ico) из композиции:
+Regenerate all icon sizes (+ .icns/.ico) from the composition:
 
 ```bash
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu \
