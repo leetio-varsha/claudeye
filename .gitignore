@@ -1,4 +1,9 @@
 node_modules/
 .DS_Store
 *.db
-~/.claudeye/
+
+# IDE
+.idea/
+
+# Generated analyzer output and local scratch
+outputs/
